@@ -274,7 +274,9 @@ fn configure_linux() -> Vec<String> {
 }
 
 /// Minimum required FFmpeg version for pkg-config detection.
-const FFMPEG_MIN_VERSION: &str = "6.0";
+/// FFmpeg 7.x introduced enum-based SwsFlags (SwsFlags_SWS_*), which is
+/// incompatible with the #define macros used in 6.x. Only 7.x is supported.
+const FFMPEG_MIN_VERSION: &str = "7.0";
 
 /// pkg-config library names for FFmpeg components.
 const PKGCONFIG_LIBS: &[&str] = &[
