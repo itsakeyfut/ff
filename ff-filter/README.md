@@ -2,7 +2,10 @@
 
 Safe, high-level video and audio filter graph operations — no `unsafe` code required.
 
-> **Status: Not yet implemented.** This crate is a placeholder for future development.
+![Coming Soon](https://img.shields.io/badge/status-coming%20soon-yellow)
+
+> **⚠️ Coming Soon — This crate is a placeholder and not yet implemented.**
+> The API is under design. Do not use in production.
 
 ## Overview
 
