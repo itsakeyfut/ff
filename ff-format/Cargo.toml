@@ -1,0 +1,18 @@
+[package]
+name = "ff-format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Common types for video/audio processing - the Rust way"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "media", "format"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[dependencies]
+ff-common = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

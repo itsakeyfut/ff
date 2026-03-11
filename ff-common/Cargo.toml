@@ -1,0 +1,17 @@
+[package]
+name = "ff-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Common types and utilities for FFmpeg-based media processing"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "media", "common"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[dependencies]
+# No external dependencies - this is a pure Rust foundation crate
+
+[lints]
+workspace = true

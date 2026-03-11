@@ -1,0 +1,20 @@
+[package]
+name = "ff-filter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Video and audio filter graph operations - the Rust way"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "filter", "effect"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[dependencies]
+ff-common = { workspace = true }
+ff-format = { workspace = true }
+ff-sys = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

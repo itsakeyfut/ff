@@ -1,0 +1,26 @@
+[package]
+name = "ff-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Media file metadata extraction - the Rust way"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "media", "probe"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[dependencies]
+ff-format = { workspace = true }
+ff-sys = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "probe_bench"
+harness = false
+
+[lints]
+workspace = true

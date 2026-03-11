@@ -1,0 +1,69 @@
+[workspace]
+members = [
+  "ff-sys",
+  "ff-common",
+  "ff-format",
+  "ff-probe",
+  "ff-decode",
+  "ff-encode",
+  "ff-filter",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/itsakeyfut/ff"
+authors = ["itsakeyfut"]
+
+[workspace.dependencies]
+# Internal ff-* dependencies
+ff-sys = { path = "ff-sys", version = "0.1.0" }
+ff-common = { path = "ff-common", version = "0.1.0" }
+ff-format = { path = "ff-format", version = "0.1.0" }
+ff-filter = { path = "ff-filter", version = "0.1.0" }
+
+# Error handling
+thiserror = "2.0.17"
+
+# Image processing
+image = { version = "0.25.9", default-features = false }
+
+# Build tools
+bindgen = "0.72.1"
+pkg-config = "0.3.32"
+vcpkg = "0.2.15"
+
+# Testing
+criterion = "0.8.1"
+
+# OS
+winapi = "0.3.9"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+rust_2024_compatibility = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+# Enable lint groups
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Deny dangerous patterns
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+# Allow reasonable exceptions
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+if_not_else = "allow"
+match_same_arms = "allow"
+uninlined_format_args = "allow"
+redundant_closure_for_method_calls = "allow"

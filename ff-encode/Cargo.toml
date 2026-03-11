@@ -1,0 +1,41 @@
+[package]
+name = "ff-encode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Video and audio encoding - the Rust way"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "media", "encode"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[dependencies]
+ff-format = { workspace = true }
+ff-sys = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+# Default: LGPL-compatible only (safe for commercial use without licensing fees)
+default = ["hwaccel"]
+
+# Hardware acceleration support (NVENC, QSV, AMF, VideoToolbox, VA-API)
+# All hardware encoders are LGPL-compatible
+hwaccel = []
+
+# Enable GPL codecs (libx264, libx265)
+# WARNING: Enabling this feature requires GPL compliance
+# Commercial use requires licensing fees from MPEG LA
+# Only enable if you have appropriate licenses or for non-commercial use
+gpl = []
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+# Benchmark configuration
+[[bench]]
+name = "encode_bench"
+harness = false
+
+[lints]
+workspace = true

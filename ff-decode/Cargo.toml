@@ -1,0 +1,34 @@
+[package]
+name = "ff-decode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Video and audio decoding - the Rust way"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "media", "decode"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[dependencies]
+ff-common = { workspace = true }
+ff-format = { workspace = true }
+ff-sys = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+winapi = { workspace = true, features = ["processthreadsapi", "psapi"] }
+
+[features]
+default = ["hwaccel"]
+hwaccel = []  # Hardware acceleration
+
+[[bench]]
+name = "decode_bench"
+harness = false
+
+[lints]
+workspace = true

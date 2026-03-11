@@ -1,0 +1,726 @@
+//! Audio decoder builder for constructing audio decoders with custom configuration.
+//!
+//! This module provides the [`AudioDecoderBuilder`] type which enables fluent
+//! configuration of audio decoders. Use [`AudioDecoder::open()`] to start building.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use ff_format::{AudioFrame, AudioStreamInfo, SampleFormat};
+
+use crate::audio::decoder_inner::AudioDecoderInner;
+use crate::error::DecodeError;
+
+/// Internal configuration for the audio decoder.
+#[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_field_names)]
+#[allow(dead_code)] // Fields will be used when SwResample is fully implemented
+pub(crate) struct AudioDecoderConfig {
+    /// Output sample format (None = use source format)
+    pub output_format: Option<SampleFormat>,
+    /// Output sample rate (None = use source sample rate)
+    pub output_sample_rate: Option<u32>,
+    /// Output channel count (None = use source channel count)
+    pub output_channels: Option<u32>,
+}
+
+/// Builder for configuring and constructing an [`AudioDecoder`].
+///
+/// This struct provides a fluent interface for setting up decoder options
+/// before opening an audio file. It is created by calling [`AudioDecoder::open()`].
+///
+/// # Examples
+///
+/// ## Basic Usage
+///
+/// ```ignore
+/// use ff_decode::AudioDecoder;
+///
+/// let decoder = AudioDecoder::open("audio.mp3")?
+///     .build()?;
+/// ```
+///
+/// ## With Custom Format and Sample Rate
+///
+/// ```ignore
+/// use ff_decode::AudioDecoder;
+/// use ff_format::SampleFormat;
+///
+/// let decoder = AudioDecoder::open("audio.mp3")?
+///     .output_format(SampleFormat::F32)
+///     .output_sample_rate(48000)
+///     .build()?;
+/// ```
+#[derive(Debug)]
+pub struct AudioDecoderBuilder {
+    /// Path to the media file
+    path: PathBuf,
+    /// Output sample format (None = use source format)
+    output_format: Option<SampleFormat>,
+    /// Output sample rate (None = use source sample rate)
+    output_sample_rate: Option<u32>,
+    /// Output channel count (None = use source channel count)
+    output_channels: Option<u32>,
+}
+
+impl AudioDecoderBuilder {
+    /// Creates a new builder for the specified file path.
+    ///
+    /// This is an internal constructor; use [`AudioDecoder::open()`] instead.
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            output_format: None,
+            output_sample_rate: None,
+            output_channels: None,
+        }
+    }
+
+    /// Sets the output sample format for decoded frames.
+    ///
+    /// If not set, frames are returned in the source format. Setting an
+    /// output format enables automatic conversion during decoding.
+    ///
+    /// # Common Formats
+    ///
+    /// - [`SampleFormat::F32`] - 32-bit float, most common for editing
+    /// - [`SampleFormat::I16`] - 16-bit integer, CD quality
+    /// - [`SampleFormat::F32p`] - Planar 32-bit float, efficient for processing
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    /// use ff_format::SampleFormat;
+    ///
+    /// let decoder = AudioDecoder::open("audio.mp3")?
+    ///     .output_format(SampleFormat::F32)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn output_format(mut self, format: SampleFormat) -> Self {
+        self.output_format = Some(format);
+        self
+    }
+
+    /// Sets the output sample rate in Hz.
+    ///
+    /// If not set, frames are returned at the source sample rate. Setting an
+    /// output sample rate enables automatic resampling during decoding.
+    ///
+    /// # Common Sample Rates
+    ///
+    /// - 44100 Hz - CD quality audio
+    /// - 48000 Hz - Professional audio, most common in video
+    /// - 96000 Hz - High-resolution audio
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    ///
+    /// // Resample to 48kHz
+    /// let decoder = AudioDecoder::open("audio.mp3")?
+    ///     .output_sample_rate(48000)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn output_sample_rate(mut self, sample_rate: u32) -> Self {
+        self.output_sample_rate = Some(sample_rate);
+        self
+    }
+
+    /// Sets the output channel count.
+    ///
+    /// If not set, frames are returned with the source channel count. Setting an
+    /// output channel count enables automatic channel remixing during decoding.
+    ///
+    /// # Common Channel Counts
+    ///
+    /// - 1 - Mono
+    /// - 2 - Stereo
+    /// - 6 - 5.1 surround sound
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    ///
+    /// // Convert to stereo
+    /// let decoder = AudioDecoder::open("audio.mp3")?
+    ///     .output_channels(2)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn output_channels(mut self, channels: u32) -> Self {
+        self.output_channels = Some(channels);
+        self
+    }
+
+    /// Returns the configured file path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns the configured output format, if any.
+    #[must_use]
+    pub fn get_output_format(&self) -> Option<SampleFormat> {
+        self.output_format
+    }
+
+    /// Returns the configured output sample rate, if any.
+    #[must_use]
+    pub fn get_output_sample_rate(&self) -> Option<u32> {
+        self.output_sample_rate
+    }
+
+    /// Returns the configured output channel count, if any.
+    #[must_use]
+    pub fn get_output_channels(&self) -> Option<u32> {
+        self.output_channels
+    }
+
+    /// Builds the audio decoder with the configured options.
+    ///
+    /// This method opens the media file, initializes the decoder context,
+    /// and prepares for frame decoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The file cannot be found ([`DecodeError::FileNotFound`])
+    /// - The file contains no audio stream ([`DecodeError::NoAudioStream`])
+    /// - The codec is not supported ([`DecodeError::UnsupportedCodec`])
+    /// - Other `FFmpeg` errors occur ([`DecodeError::Ffmpeg`])
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    ///
+    /// let decoder = AudioDecoder::open("audio.mp3")?
+    ///     .build()?;
+    ///
+    /// // Start decoding
+    /// for frame in decoder.frames().take(100) {
+    ///     let frame = frame?;
+    ///     // Process frame...
+    /// }
+    /// ```
+    pub fn build(self) -> Result<AudioDecoder, DecodeError> {
+        // Verify the file exists
+        if !self.path.exists() {
+            return Err(DecodeError::FileNotFound {
+                path: self.path.clone(),
+            });
+        }
+
+        // Build the internal configuration
+        let config = AudioDecoderConfig {
+            output_format: self.output_format,
+            output_sample_rate: self.output_sample_rate,
+            output_channels: self.output_channels,
+        };
+
+        // Create the decoder inner
+        let (inner, stream_info) = AudioDecoderInner::new(
+            &self.path,
+            self.output_format,
+            self.output_sample_rate,
+            self.output_channels,
+        )?;
+
+        Ok(AudioDecoder {
+            path: self.path,
+            config,
+            inner,
+            stream_info,
+        })
+    }
+}
+
+/// An audio decoder for extracting audio frames from media files.
+///
+/// The decoder provides frame-by-frame access to audio content with support
+/// for resampling and format conversion.
+///
+/// # Construction
+///
+/// Use [`AudioDecoder::open()`] to create a builder, then call [`AudioDecoderBuilder::build()`]:
+///
+/// ```ignore
+/// use ff_decode::AudioDecoder;
+/// use ff_format::SampleFormat;
+///
+/// let decoder = AudioDecoder::open("audio.mp3")?
+///     .output_format(SampleFormat::F32)
+///     .output_sample_rate(48000)
+///     .build()?;
+/// ```
+///
+/// # Frame Decoding
+///
+/// Frames can be decoded one at a time or using an iterator:
+///
+/// ```ignore
+/// // Decode one frame
+/// if let Some(frame) = decoder.decode_one()? {
+///     println!("Frame with {} samples", frame.samples());
+/// }
+///
+/// // Use iterator
+/// for frame in decoder.frames().take(100) {
+///     let frame = frame?;
+///     // Process frame...
+/// }
+/// ```
+///
+/// # Seeking
+///
+/// The decoder supports seeking to specific positions:
+///
+/// ```ignore
+/// use std::time::Duration;
+///
+/// // Seek to 30 seconds
+/// decoder.seek(Duration::from_secs(30))?;
+/// ```
+pub struct AudioDecoder {
+    /// Path to the media file
+    path: PathBuf,
+    /// Decoder configuration
+    #[allow(dead_code)]
+    config: AudioDecoderConfig,
+    /// Internal decoder state
+    inner: AudioDecoderInner,
+    /// Audio stream information
+    stream_info: AudioStreamInfo,
+}
+
+impl AudioDecoder {
+    /// Opens a media file and returns a builder for configuring the decoder.
+    ///
+    /// This is the entry point for creating a decoder. The returned builder
+    /// allows setting options before the decoder is fully initialized.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the media file to decode.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    ///
+    /// // Simple usage
+    /// let decoder = AudioDecoder::open("audio.mp3")?
+    ///     .build()?;
+    ///
+    /// // With options
+    /// let decoder = AudioDecoder::open("audio.mp3")?
+    ///     .output_format(SampleFormat::F32)
+    ///     .output_sample_rate(48000)
+    ///     .build()?;
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This method does not validate that the file exists or is a valid
+    /// media file. Validation occurs when [`AudioDecoderBuilder::build()`] is called.
+    pub fn open(path: impl AsRef<Path>) -> AudioDecoderBuilder {
+        AudioDecoderBuilder::new(path.as_ref().to_path_buf())
+    }
+
+    // =========================================================================
+    // Information Methods
+    // =========================================================================
+
+    /// Returns the audio stream information.
+    ///
+    /// This contains metadata about the audio stream including sample rate,
+    /// channel count, codec, and format characteristics.
+    #[must_use]
+    pub fn stream_info(&self) -> &AudioStreamInfo {
+        &self.stream_info
+    }
+
+    /// Returns the sample rate in Hz.
+    #[must_use]
+    pub fn sample_rate(&self) -> u32 {
+        self.stream_info.sample_rate()
+    }
+
+    /// Returns the number of audio channels.
+    #[must_use]
+    pub fn channels(&self) -> u32 {
+        self.stream_info.channels()
+    }
+
+    /// Returns the total duration of the audio.
+    ///
+    /// Returns [`Duration::ZERO`] if duration is unknown.
+    #[must_use]
+    pub fn duration(&self) -> Duration {
+        self.stream_info.duration().unwrap_or(Duration::ZERO)
+    }
+
+    /// Returns the current playback position.
+    #[must_use]
+    pub fn position(&self) -> Duration {
+        self.inner.position()
+    }
+
+    /// Returns `true` if the end of stream has been reached.
+    #[must_use]
+    pub fn is_eof(&self) -> bool {
+        self.inner.is_eof()
+    }
+
+    /// Returns the file path being decoded.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    // =========================================================================
+    // Decoding Methods
+    // =========================================================================
+
+    /// Decodes the next audio frame.
+    ///
+    /// This method reads and decodes a single frame from the audio stream.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(frame))` - A frame was successfully decoded
+    /// - `Ok(None)` - End of stream reached, no more frames
+    /// - `Err(_)` - An error occurred during decoding
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError`] if:
+    /// - Reading from the file fails
+    /// - Decoding the frame fails
+    /// - Sample format conversion fails
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    ///
+    /// let mut decoder = AudioDecoder::open("audio.mp3")?.build()?;
+    ///
+    /// while let Some(frame) = decoder.decode_one()? {
+    ///     println!("Frame with {} samples", frame.samples());
+    ///     // Process frame...
+    /// }
+    /// ```
+    pub fn decode_one(&mut self) -> Result<Option<AudioFrame>, DecodeError> {
+        self.inner.decode_one()
+    }
+
+    /// Returns an iterator over decoded frames.
+    ///
+    /// This provides a convenient way to iterate over all frames in the audio.
+    /// The iterator will continue until end of stream or an error occurs.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    ///
+    /// let mut decoder = AudioDecoder::open("audio.mp3")?.build()?;
+    ///
+    /// // Process first 100 frames
+    /// for frame in decoder.frames().take(100) {
+    ///     let frame = frame?;
+    ///     // Process frame...
+    /// }
+    /// ```
+    pub fn frames(&mut self) -> AudioFrameIterator<'_> {
+        AudioFrameIterator { decoder: self }
+    }
+
+    /// Decodes all frames and returns their raw PCM data.
+    ///
+    /// This method decodes the entire audio file and returns all samples
+    /// as a contiguous byte buffer.
+    ///
+    /// # Performance
+    ///
+    /// - Memory scales with audio duration and quality
+    /// - For 10 minutes of stereo 48kHz F32 audio: ~110 MB
+    ///
+    /// # Returns
+    ///
+    /// A byte vector containing all audio samples in the configured output format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError`] if:
+    /// - Decoding any frame fails
+    /// - The file cannot be read
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    /// use ff_format::SampleFormat;
+    ///
+    /// let mut decoder = AudioDecoder::open("audio.mp3")?
+    ///     .output_format(SampleFormat::F32)
+    ///     .build()?;
+    ///
+    /// let samples = decoder.decode_all()?;
+    /// println!("Decoded {} bytes", samples.len());
+    /// ```
+    ///
+    /// # Memory Usage
+    ///
+    /// Stereo 48kHz F32 audio:
+    /// - 1 minute: ~11 MB
+    /// - 5 minutes: ~55 MB
+    /// - 10 minutes: ~110 MB
+    pub fn decode_all(&mut self) -> Result<Vec<u8>, DecodeError> {
+        let mut buffer = Vec::new();
+
+        for frame_result in self.frames() {
+            let frame = frame_result?;
+
+            // Collect samples from all planes
+            for plane in frame.planes() {
+                buffer.extend_from_slice(plane);
+            }
+        }
+
+        Ok(buffer)
+    }
+
+    /// Decodes all frames within a specified time range.
+    ///
+    /// This method seeks to the start position and decodes all frames until
+    /// the end position is reached. Frames outside the range are skipped.
+    ///
+    /// # Arguments
+    ///
+    /// * `start` - Start of the time range (inclusive).
+    /// * `end` - End of the time range (exclusive).
+    ///
+    /// # Returns
+    ///
+    /// A byte vector containing audio samples within `[start, end)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError`] if:
+    /// - Seeking to the start position fails
+    /// - Decoding frames fails
+    /// - The time range is invalid (start >= end)
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    /// use std::time::Duration;
+    ///
+    /// let mut decoder = AudioDecoder::open("audio.mp3")?.build()?;
+    ///
+    /// // Decode audio from 5s to 10s
+    /// let samples = decoder.decode_range(
+    ///     Duration::from_secs(5),
+    ///     Duration::from_secs(10),
+    /// )?;
+    ///
+    /// println!("Decoded {} bytes", samples.len());
+    /// ```
+    pub fn decode_range(&mut self, start: Duration, end: Duration) -> Result<Vec<u8>, DecodeError> {
+        // Validate range
+        if start >= end {
+            return Err(DecodeError::DecodingFailed {
+                timestamp: Some(start),
+                reason: format!(
+                    "Invalid time range: start ({start:?}) must be before end ({end:?})"
+                ),
+            });
+        }
+
+        // Seek to start position (keyframe mode for efficiency)
+        self.seek(start, crate::SeekMode::Keyframe)?;
+
+        // Collect frames in the range
+        let mut buffer = Vec::new();
+
+        for frame_result in self.frames() {
+            let frame = frame_result?;
+            let frame_time = frame.timestamp().as_duration();
+
+            // Stop if we've passed the end of the range
+            if frame_time >= end {
+                break;
+            }
+
+            // Only collect frames within the range
+            if frame_time >= start {
+                for plane in frame.planes() {
+                    buffer.extend_from_slice(plane);
+                }
+            }
+        }
+
+        Ok(buffer)
+    }
+
+    // =========================================================================
+    // Seeking Methods
+    // =========================================================================
+
+    /// Seeks to a specified position in the audio stream.
+    ///
+    /// This method performs efficient seeking without reopening the file.
+    ///
+    /// # Arguments
+    ///
+    /// * `position` - Target position to seek to.
+    /// * `mode` - Seek mode (Keyframe, Exact, or Backward).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::SeekFailed`] if:
+    /// - The target position is beyond the audio duration
+    /// - The file format doesn't support seeking
+    /// - The seek operation fails internally
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::{AudioDecoder, SeekMode};
+    /// use std::time::Duration;
+    ///
+    /// let mut decoder = AudioDecoder::open("audio.mp3")?.build()?;
+    ///
+    /// // Seek to 30 seconds with keyframe mode (fast)
+    /// decoder.seek(Duration::from_secs(30), SeekMode::Keyframe)?;
+    ///
+    /// // Seek to exact position (slower but precise)
+    /// decoder.seek(Duration::from_secs(45), SeekMode::Exact)?;
+    ///
+    /// // Decode next frame
+    /// if let Some(frame) = decoder.decode_one()? {
+    ///     println!("Frame at {:?}", frame.timestamp().as_duration());
+    /// }
+    /// ```
+    pub fn seek(&mut self, position: Duration, mode: crate::SeekMode) -> Result<(), DecodeError> {
+        self.inner.seek(position, mode)
+    }
+
+    /// Flushes the decoder's internal buffers.
+    ///
+    /// This method clears any cached frames and resets the decoder state.
+    /// The decoder is ready to receive new packets after flushing.
+    pub fn flush(&mut self) {
+        self.inner.flush();
+    }
+}
+
+/// Iterator over decoded audio frames.
+///
+/// Created by calling [`AudioDecoder::frames()`]. Yields frames until the end
+/// of the stream is reached or an error occurs.
+pub struct AudioFrameIterator<'a> {
+    decoder: &'a mut AudioDecoder,
+}
+
+impl Iterator for AudioFrameIterator<'_> {
+    type Item = Result<AudioFrame, DecodeError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.decoder.decode_one() {
+            Ok(Some(frame)) => Some(Ok(frame)),
+            Ok(None) => None, // EOF
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_builder_default_values() {
+        let builder = AudioDecoderBuilder::new(PathBuf::from("test.mp3"));
+
+        assert_eq!(builder.path(), Path::new("test.mp3"));
+        assert!(builder.get_output_format().is_none());
+        assert!(builder.get_output_sample_rate().is_none());
+        assert!(builder.get_output_channels().is_none());
+    }
+
+    #[test]
+    fn test_builder_output_format() {
+        let builder =
+            AudioDecoderBuilder::new(PathBuf::from("test.mp3")).output_format(SampleFormat::F32);
+
+        assert_eq!(builder.get_output_format(), Some(SampleFormat::F32));
+    }
+
+    #[test]
+    fn test_builder_output_sample_rate() {
+        let builder = AudioDecoderBuilder::new(PathBuf::from("test.mp3")).output_sample_rate(48000);
+
+        assert_eq!(builder.get_output_sample_rate(), Some(48000));
+    }
+
+    #[test]
+    fn test_builder_output_channels() {
+        let builder = AudioDecoderBuilder::new(PathBuf::from("test.mp3")).output_channels(2);
+
+        assert_eq!(builder.get_output_channels(), Some(2));
+    }
+
+    #[test]
+    fn test_builder_chaining() {
+        let builder = AudioDecoderBuilder::new(PathBuf::from("test.mp3"))
+            .output_format(SampleFormat::F32)
+            .output_sample_rate(48000)
+            .output_channels(2);
+
+        assert_eq!(builder.get_output_format(), Some(SampleFormat::F32));
+        assert_eq!(builder.get_output_sample_rate(), Some(48000));
+        assert_eq!(builder.get_output_channels(), Some(2));
+    }
+
+    #[test]
+    fn test_decoder_open() {
+        let builder = AudioDecoder::open("audio.mp3");
+        assert_eq!(builder.path(), Path::new("audio.mp3"));
+    }
+
+    #[test]
+    fn test_build_file_not_found() {
+        let result = AudioDecoder::open("nonexistent_file_12345.mp3").build();
+
+        assert!(result.is_err());
+        match result {
+            Err(DecodeError::FileNotFound { path }) => {
+                assert!(
+                    path.to_string_lossy()
+                        .contains("nonexistent_file_12345.mp3")
+                );
+            }
+            Err(e) => panic!("Expected FileNotFound error, got: {e:?}"),
+            Ok(_) => panic!("Expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_decoder_config_default() {
+        let config = AudioDecoderConfig::default();
+
+        assert!(config.output_format.is_none());
+        assert!(config.output_sample_rate.is_none());
+        assert!(config.output_channels.is_none());
+    }
+}

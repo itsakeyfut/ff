@@ -1,0 +1,47 @@
+[package]
+name = "ff-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Low-level FFmpeg FFI bindings for Rust"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["ffmpeg", "ffi", "video", "audio", "multimedia"]
+categories = ["external-ffi-bindings", "multimedia::video", "multimedia::audio"]
+
+[lib]
+# Disable doc tests - generated bindings contain FFmpeg C documentation
+# that includes invalid Rust code examples (mathematical formulas)
+doctest = false
+
+[build-dependencies]
+bindgen = { workspace = true }
+pkg-config = { workspace = true }
+
+[target.'cfg(windows)'.build-dependencies]
+vcpkg = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+image = { workspace = true, features = ["png"] }
+
+[features]
+default = []
+
+[[bench]]
+name = "swscale_bench"
+harness = false
+
+[[bench]]
+name = "swresample_bench"
+harness = false
+
+# Override workspace lints for FFI crate - generated bindings can't be fixed
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+# Generated bindings use patterns that clippy warns about
+all = "allow"
+pedantic = "allow"
