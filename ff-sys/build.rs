@@ -53,6 +53,9 @@ fn main() {
         other => panic!("Unsupported platform: {other}"),
     };
 
+    // Emit cfg flags based on detected FFmpeg/library API variants
+    emit_api_cfg_flags(&include_paths);
+
     // Generate FFI bindings
     generate_bindings(&include_paths);
 }
@@ -287,10 +290,10 @@ fn configure_linux() -> Vec<String> {
 /// | libswscale     | 7.x       | 8.x       |
 /// | libswresample  | 4.x       | 5.x       |
 const PKGCONFIG_LIBS: &[(&str, &str)] = &[
-    ("libavformat",   "61.0"),
-    ("libavcodec",    "61.0"),
-    ("libavutil",     "59.0"),
-    ("libswscale",    "8.0"),
+    ("libavformat", "61.0"),
+    ("libavcodec", "61.0"),
+    ("libavutil", "59.0"),
+    ("libswscale", "8.0"),
     ("libswresample", "5.0"),
 ];
 
@@ -325,6 +328,70 @@ fn try_pkgconfig_unix() -> Option<Vec<String>> {
     }
 
     if all_found { Some(include_paths) } else { None }
+}
+
+/// Emit Cargo cfg flags for FFmpeg API variants based on library versions.
+///
+/// Different FFmpeg major versions ship different API shapes for the same
+/// functionality. We detect the installed version from the headers and emit
+/// cfg flags so that Rust source code can conditionally compile the correct
+/// constant/type names without relying on platform assumptions.
+///
+/// # libswscale SWS flags
+///
+/// | FFmpeg suite | libswscale | SWS_* constants |
+/// |-------------|------------|-----------------|
+/// | 7.x         | 8.x        | `#define` macros → `SWS_FAST_BILINEAR` etc. |
+/// | 8.x         | 9.x        | C enum `SwsFlags` → `SwsFlags_SWS_FAST_BILINEAR` etc. |
+///
+/// Emits `ffmpeg_sws_flags_enum` when libswscale major version ≥ 9.
+fn emit_api_cfg_flags(include_paths: &[String]) {
+    let swscale_major = read_version_major(include_paths, "libswscale");
+
+    if let Some(major) = swscale_major {
+        if major >= 9 {
+            // FFmpeg 8.x: SWS_* flags are a C enum, bindgen generates SwsFlags_SWS_*
+            println!("cargo:rustc-cfg=ffmpeg8");
+        }
+    } else {
+        println!(
+            "cargo:warning=Could not detect libswscale version; \
+             assuming FFmpeg 7.x (#define SWS_* constants)"
+        );
+    }
+}
+
+/// Read the major version number from a libav*/libsw* version header.
+///
+/// Searches `include_paths` for `<lib>/version_major.h` (preferred) or
+/// `<lib>/version.h` and returns the value of `LIB*_VERSION_MAJOR`.
+fn read_version_major(include_paths: &[String], lib: &str) -> Option<u32> {
+    for base in include_paths {
+        let base = Path::new(base).join(lib);
+        let candidates = [base.join("version_major.h"), base.join("version.h")];
+
+        for path in &candidates {
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            // Look for a line like:  #define LIBSWSCALE_VERSION_MAJOR  9
+            let needle = format!(
+                "LIB{}_VERSION_MAJOR",
+                lib.trim_start_matches("lib").to_ascii_uppercase()
+            );
+            for line in content.lines() {
+                if line.contains(&needle) {
+                    if let Some(val) = line.split_whitespace().last() {
+                        if let Ok(n) = val.parse::<u32>() {
+                            return Some(n);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Generate FFI bindings using bindgen.

@@ -12,7 +12,8 @@
 use crate::{AudioCodec, EncodeError, VideoCodec};
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
-    AVChannelLayout, AVCodecContext, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AV1,
+    AVChannelLayout, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
+    AVCodecID_AV_CODEC_ID_AV1,
     AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264,
     AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG4,
     AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PRORES,
@@ -1228,7 +1229,7 @@ impl Drop for VideoEncoderInner {
 
 // Helper functions
 
-fn codec_to_id(codec: VideoCodec) -> i32 {
+fn codec_to_id(codec: VideoCodec) -> AVCodecID {
     match codec {
         VideoCodec::H264 => AVCodecID_AV_CODEC_ID_H264,
         VideoCodec::H265 => AVCodecID_AV_CODEC_ID_HEVC,
@@ -1254,7 +1255,7 @@ pub(super) fn preset_to_string(preset: &crate::Preset) -> String {
 }
 
 /// Convert AudioCodec to FFmpeg AVCodecID.
-fn audio_codec_to_id(codec: AudioCodec) -> i32 {
+fn audio_codec_to_id(codec: AudioCodec) -> AVCodecID {
     match codec {
         AudioCodec::Aac => AVCodecID_AV_CODEC_ID_AAC,
         AudioCodec::Opus => AVCodecID_AV_CODEC_ID_OPUS,
