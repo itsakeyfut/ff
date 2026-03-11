@@ -1,0 +1,125 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Please provide enough information to help us evaluate and prioritize it.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A concise description of the feature in 1-2 sentences.
+      placeholder: Add support for the `scale` filter in ff-filter to resize video frames.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Who benefits from it?
+      placeholder: |
+        I'm building a video transcoding service that needs to resize frames before encoding.
+        Currently there is no way to do this with ff without dropping down to raw ff-sys calls.
+
+        Target user: video editing software developers / streaming service developers
+    validations:
+      required: true
+
+  - type: textarea
+    id: detailed_description
+    attributes:
+      label: Detailed Description
+      description: Describe the desired behavior, API shape, and any edge cases to consider.
+      placeholder: |
+        A `scale` filter that wraps libavfilter's `scale` filter:
+        - Accepts target width and height as pixel values or FFmpeg expressions (e.g. "iw/2")
+        - Integrates with the FilterGraph builder API
+        - Preserves aspect ratio when one dimension is set to -1
+
+        ```rust
+        let graph = FilterGraph::builder()
+            .scale(1280, 720)
+            .build()?;
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches have you tried or considered?
+      placeholder: |
+        - Using ff-sys directly: works but requires unsafe code in user code
+        - Pre-processing with an external tool: not viable for real-time pipelines
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Links to FFmpeg documentation, related issues, or prior art.
+      placeholder: |
+        - FFmpeg scale filter docs: https://ffmpeg.org/ffmpeg-filters.html#scale
+        - Related issue: #45
+        - Similar crate: ...
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature to you?
+      options:
+        - Low - Nice to have
+        - Medium - Would improve my workflow
+        - High - Blocking my use case
+      default: 0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: target_crate
+    attributes:
+      label: Target Crate
+      description: Which crate should this feature be added to?
+      options:
+        - ff-filter
+        - ff-encode
+        - ff-decode
+        - ff-probe
+        - ff-format
+        - ff-common
+        - ff-sys
+        - New crate
+        - Unknown
+      default: 8
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to help implement this feature
+          required: false
+        - label: I can provide test cases or sample media files
+          required: false
+        - label: I can help with documentation
+          required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched existing issues to ensure this is not a duplicate
+          required: true
+        - label: I have checked the roadmap to see if this is already planned
+          required: false
+        - label: This feature aligns with the project's goals (safe Rust video/audio processing)
+          required: false
