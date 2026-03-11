@@ -206,3 +206,7 @@ at your option.
 ### FFmpeg License
 
 This project links against FFmpeg, which is licensed under [LGPL 2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html) by default. The `gpl` feature of `ff-encode` enables GPL-licensed codecs (libx264, libx265) — see [`ff-encode`](./ff-encode/README.md) for details.
+
+## Test Assets
+
+The audio fixture used in integration tests is provided by [Music Atelier Amacha](https://amachamusic.chagasi.com/) (甘茶の音楽工房), composed by Amacha. Used with permission under the site's free-use terms.

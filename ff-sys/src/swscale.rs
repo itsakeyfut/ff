@@ -30,64 +30,101 @@ use crate::{
 /// These flags can be combined with bitwise OR to specify the scaling algorithm
 /// and additional options for `get_context()`.
 pub mod scale_flags {
+    // FFmpeg 7.x (libswscale 8.x): SWS_* are #define macros.
+    // FFmpeg 8.x (libswscale 9.x): SWS_* are members of the C enum `SwsFlags`.
+    // build.rs detects the version and emits `ffmpeg8` for the latter.
+
     /// Fast bilinear scaling (low quality, fast).
     ///
     /// Uses a simple bilinear interpolation that is faster but produces
     /// lower quality results. Good for real-time preview.
+    #[cfg(ffmpeg8)]
     pub const FAST_BILINEAR: i32 = crate::SwsFlags_SWS_FAST_BILINEAR as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const FAST_BILINEAR: i32 = crate::SWS_FAST_BILINEAR as i32;
 
     /// Bilinear scaling (medium quality, medium speed).
     ///
     /// Standard bilinear interpolation. Good balance between speed and quality.
+    #[cfg(ffmpeg8)]
     pub const BILINEAR: i32 = crate::SwsFlags_SWS_BILINEAR as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const BILINEAR: i32 = crate::SWS_BILINEAR as i32;
 
     /// Bicubic scaling (high quality, slower).
     ///
     /// Bicubic interpolation produces smoother results than bilinear,
     /// but is computationally more expensive.
+    #[cfg(ffmpeg8)]
     pub const BICUBIC: i32 = crate::SwsFlags_SWS_BICUBIC as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const BICUBIC: i32 = crate::SWS_BICUBIC as i32;
 
     /// Experimental algorithm.
+    #[cfg(ffmpeg8)]
     pub const X: i32 = crate::SwsFlags_SWS_X as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const X: i32 = crate::SWS_X as i32;
 
     /// Nearest neighbor scaling (no interpolation).
     ///
     /// Fastest algorithm but produces blocky results. Useful for pixel art
     /// or when exact pixel values must be preserved.
+    #[cfg(ffmpeg8)]
     pub const POINT: i32 = crate::SwsFlags_SWS_POINT as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const POINT: i32 = crate::SWS_POINT as i32;
 
     /// Area averaging scaling.
     ///
     /// Good for downscaling. Averages source pixels that map to each
     /// destination pixel.
+    #[cfg(ffmpeg8)]
     pub const AREA: i32 = crate::SwsFlags_SWS_AREA as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const AREA: i32 = crate::SWS_AREA as i32;
 
     /// Luma bicubic, chroma bilinear.
     ///
     /// Uses bicubic interpolation for luminance and bilinear for chrominance.
     /// Good compromise for video content.
+    #[cfg(ffmpeg8)]
     pub const BICUBLIN: i32 = crate::SwsFlags_SWS_BICUBLIN as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const BICUBLIN: i32 = crate::SWS_BICUBLIN as i32;
 
     /// Gaussian scaling.
     ///
     /// Uses a Gaussian filter for interpolation.
+    #[cfg(ffmpeg8)]
     pub const GAUSS: i32 = crate::SwsFlags_SWS_GAUSS as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const GAUSS: i32 = crate::SWS_GAUSS as i32;
 
     /// Sinc scaling.
     ///
     /// Uses a sinc filter. Produces high quality results but is slow.
+    #[cfg(ffmpeg8)]
     pub const SINC: i32 = crate::SwsFlags_SWS_SINC as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const SINC: i32 = crate::SWS_SINC as i32;
 
     /// Lanczos scaling (high quality).
     ///
     /// Uses a Lanczos windowed sinc filter. Produces very high quality
     /// results, especially for downscaling. Good for final export.
+    #[cfg(ffmpeg8)]
     pub const LANCZOS: i32 = crate::SwsFlags_SWS_LANCZOS as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const LANCZOS: i32 = crate::SWS_LANCZOS as i32;
 
     /// Spline scaling.
     ///
     /// Uses natural bicubic spline interpolation.
+    #[cfg(ffmpeg8)]
     pub const SPLINE: i32 = crate::SwsFlags_SWS_SPLINE as i32;
+    #[cfg(not(ffmpeg8))]
+    pub const SPLINE: i32 = crate::SWS_SPLINE as i32;
 }
 
 // ============================================================================

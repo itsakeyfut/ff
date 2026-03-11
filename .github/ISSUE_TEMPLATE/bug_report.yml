@@ -1,0 +1,119 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please provide detailed information to help us understand and fix the issue.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A concise description of the bug in 1-2 sentences.
+      placeholder: ff-decode panics when decoding a corrupted H.264 file instead of returning an error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current Behavior
+      description: What is currently happening?
+      placeholder: |
+        Calling `Decoder::decode_frame()` on a corrupted MP4 file causes a panic
+        instead of returning `Err(...)`. The process terminates immediately with no
+        useful error message.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+      placeholder: |
+        `decode_frame()` should return `Err(ff_common::Error::...)` so the caller
+        can handle the failure gracefully.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal code or steps to reproduce the bug.
+      placeholder: |
+        ```rust
+        use ff_decode::Decoder;
+
+        let mut decoder = Decoder::open("corrupted.mp4")?;
+        let frame = decoder.decode_frame()?; // panics here
+        ```
+
+        Or run: `cargo test --package ff-decode -- test_name`
+    validations:
+      required: true
+
+  - type: textarea
+    id: error_output
+    attributes:
+      label: Error Output / Backtrace
+      description: Include any error messages, panics, or backtraces (`RUST_BACKTRACE=1`).
+      placeholder: |
+        thread 'main' panicked at 'called `Option::unwrap()` on a `None` value', ff-decode/src/decoder_inner.rs:142
+        stack backtrace:
+           0: rust_begin_unwind
+           1: ff_decode::decoder_inner::decode_frame
+           ...
+      render: shell
+
+  - type: input
+    id: crate_version
+    attributes:
+      label: Crate Version
+      description: Which version of the ff crate are you using?
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Provide your environment information.
+      placeholder: |
+        - OS: Ubuntu 24.04 / macOS 15 / Windows 11
+        - Rust: rustc 1.93.0 (output of `rustc --version`)
+        - FFmpeg: 7.1 (output of `ffmpeg -version`)
+        - Architecture: x86_64 / aarch64
+        - Hardware acceleration: NVENC / VAAPI / none
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Any other context that might be helpful (sample file, related issues, workarounds).
+      placeholder: |
+        - Only reproducible with files encoded by a specific encoder
+        - Workaround: pre-validating the file with ff-probe avoids the panic
+        - Related to issue #123
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have searched existing issues to ensure this is not a duplicate
+          required: true
+        - label: I have provided a minimal reproduction case
+          required: true
+        - label: I have tested on the latest published version
+          required: false

@@ -12,12 +12,12 @@
 use crate::{AudioCodec, EncodeError};
 use ff_format::AudioFrame;
 use ff_sys::{
-    AVChannelLayout, AVCodecContext, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_FLAC,
-    AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
-    AVCodecID_AV_CODEC_ID_VORBIS, AVFormatContext, AVFrame, SwrContext, av_frame_alloc,
-    av_frame_free, av_interleaved_write_frame, av_packet_alloc, av_packet_free, av_packet_unref,
-    av_write_trailer, avcodec, avformat_alloc_output_context2, avformat_free_context,
-    avformat_new_stream, avformat_write_header, swresample,
+    AVChannelLayout, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
+    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_OPUS,
+    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_VORBIS, AVFormatContext, AVFrame,
+    SwrContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_packet_alloc,
+    av_packet_free, av_packet_unref, av_write_trailer, avcodec, avformat_alloc_output_context2,
+    avformat_free_context, avformat_new_stream, avformat_write_header, swresample,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -530,7 +530,7 @@ impl Drop for AudioEncoderInner {
 // Helper functions
 
 /// Convert AudioCodec to FFmpeg AVCodecID.
-fn codec_to_id(codec: AudioCodec) -> i32 {
+fn codec_to_id(codec: AudioCodec) -> AVCodecID {
     match codec {
         AudioCodec::Aac => AVCodecID_AV_CODEC_ID_AAC,
         AudioCodec::Opus => AVCodecID_AV_CODEC_ID_OPUS,

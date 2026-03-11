@@ -25,12 +25,12 @@ fn assets_dir() -> PathBuf {
 
 /// Returns the path to the test video file.
 fn test_video_path() -> PathBuf {
-    assets_dir().join("videos/noma-brain-power.mp4")
+    assets_dir().join("video/gameplay.mp4")
 }
 
 /// Returns the path to the test audio file.
 fn test_audio_path() -> PathBuf {
-    assets_dir().join("audio/noma-brain-power.mp3")
+    assets_dir().join("audio/konekonoosanpo.mp3")
 }
 
 /// Measures the execution time of a function and returns (result, duration).

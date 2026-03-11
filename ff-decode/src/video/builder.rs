@@ -750,17 +750,17 @@ impl VideoDecoder {
     ///
     /// # Choosing a Seek Mode
     ///
-    /// - **Use [`SeekMode::Keyframe`]** for:
+    /// - **Use [`crate::SeekMode::Keyframe`]** for:
     ///   - Video player scrubbing (approximate positioning)
     ///   - Thumbnail generation
     ///   - Quick preview navigation
     ///
-    /// - **Use [`SeekMode::Exact`]** for:
+    /// - **Use [`crate::SeekMode::Exact`]** for:
     ///   - Frame-accurate editing
     ///   - Precise timestamp extraction
     ///   - Quality-critical operations
     ///
-    /// - **Use [`SeekMode::Backward`]** for:
+    /// - **Use [`crate::SeekMode::Backward`]** for:
     ///   - Guaranteed keyframe positioning
     ///   - Preparing for forward playback
     ///

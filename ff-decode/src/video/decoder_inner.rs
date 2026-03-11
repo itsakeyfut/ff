@@ -33,8 +33,9 @@ use ff_format::color::{ColorPrimaries, ColorRange, ColorSpace};
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 use ff_sys::{
-    AVBufferRef, AVCodecContext, AVCodecID, AVFormatContext, AVFrame,
-    AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat, SwsContext,
+    AVBufferRef, AVCodecContext, AVCodecID, AVColorPrimaries, AVColorRange, AVColorSpace,
+    AVFormatContext, AVFrame, AVHWDeviceType, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket,
+    AVPixelFormat, SwsContext,
 };
 
 use crate::HardwareAccel;
@@ -261,7 +262,7 @@ impl VideoDecoderInner {
     /// Maps our `HardwareAccel` enum to the corresponding FFmpeg `AVHWDeviceType`.
     ///
     /// Returns `None` for `Auto` and `None` variants as they require special handling.
-    fn hw_accel_to_device_type(accel: HardwareAccel) -> Option<i32> {
+    fn hw_accel_to_device_type(accel: HardwareAccel) -> Option<AVHWDeviceType> {
         match accel {
             HardwareAccel::Auto => None,
             HardwareAccel::None => None,
@@ -750,14 +751,14 @@ impl VideoDecoderInner {
     }
 
     /// Converts FFmpeg color space to our ColorSpace enum.
-    fn convert_color_space(space: i32) -> ColorSpace {
-        if space == ff_sys::AVColorSpace_AVCOL_SPC_BT709 as i32 {
+    fn convert_color_space(space: AVColorSpace) -> ColorSpace {
+        if space == ff_sys::AVColorSpace_AVCOL_SPC_BT709 {
             ColorSpace::Bt709
-        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT470BG as i32
-            || space == ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M as i32
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT470BG
+            || space == ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M
         {
             ColorSpace::Bt601
-        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL as i32 {
+        } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL {
             ColorSpace::Bt2020
         } else {
             // WARNING: Unknown color space, using Bt709 as fallback
@@ -767,10 +768,10 @@ impl VideoDecoderInner {
     }
 
     /// Converts FFmpeg color range to our ColorRange enum.
-    fn convert_color_range(range: i32) -> ColorRange {
-        if range == ff_sys::AVColorRange_AVCOL_RANGE_JPEG as i32 {
+    fn convert_color_range(range: AVColorRange) -> ColorRange {
+        if range == ff_sys::AVColorRange_AVCOL_RANGE_JPEG {
             ColorRange::Full
-        } else if range == ff_sys::AVColorRange_AVCOL_RANGE_MPEG as i32 {
+        } else if range == ff_sys::AVColorRange_AVCOL_RANGE_MPEG {
             ColorRange::Limited
         } else {
             // WARNING: Unknown color range, using Limited as fallback
@@ -780,14 +781,14 @@ impl VideoDecoderInner {
     }
 
     /// Converts FFmpeg color primaries to our ColorPrimaries enum.
-    fn convert_color_primaries(primaries: i32) -> ColorPrimaries {
-        if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT709 as i32 {
+    fn convert_color_primaries(primaries: AVColorPrimaries) -> ColorPrimaries {
+        if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT709 {
             ColorPrimaries::Bt709
-        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG as i32
-            || primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M as i32
+        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG
+            || primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M
         {
             ColorPrimaries::Bt601
-        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020 as i32 {
+        } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020 {
             ColorPrimaries::Bt2020
         } else {
             // WARNING: Unknown color primaries, using Bt709 as fallback
