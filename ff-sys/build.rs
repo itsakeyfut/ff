@@ -273,18 +273,25 @@ fn configure_linux() -> Vec<String> {
     );
 }
 
-/// Minimum required FFmpeg version for pkg-config detection.
-/// FFmpeg 7.x introduced enum-based SwsFlags (SwsFlags_SWS_*), which is
-/// incompatible with the #define macros used in 6.x. Only 7.x is supported.
-const FFMPEG_MIN_VERSION: &str = "7.0";
-
-/// pkg-config library names for FFmpeg components.
-const PKGCONFIG_LIBS: &[&str] = &[
-    "libavformat",
-    "libavcodec",
-    "libavutil",
-    "libswscale",
-    "libswresample",
+/// Minimum versions per library required for FFmpeg 7.x.
+///
+/// Each libav* library has its own version number independent of the FFmpeg
+/// suite version. These values correspond to the library versions shipped
+/// with FFmpeg 7.0.
+///
+/// | Library        | FFmpeg 6.x | FFmpeg 7.x |
+/// |----------------|-----------|-----------|
+/// | libavformat    | 60.x      | 61.x      |
+/// | libavcodec     | 60.x      | 61.x      |
+/// | libavutil      | 58.x      | 59.x      |
+/// | libswscale     | 7.x       | 8.x       |
+/// | libswresample  | 4.x       | 5.x       |
+const PKGCONFIG_LIBS: &[(&str, &str)] = &[
+    ("libavformat",   "61.0"),
+    ("libavcodec",    "61.0"),
+    ("libavutil",     "59.0"),
+    ("libswscale",    "8.0"),
+    ("libswresample", "5.0"),
 ];
 
 /// Try to configure FFmpeg via pkg-config (Unix systems).
@@ -294,9 +301,9 @@ fn try_pkgconfig_unix() -> Option<Vec<String>> {
     let mut include_paths = Vec::new();
     let mut all_found = true;
 
-    for lib in PKGCONFIG_LIBS {
+    for (lib, min_version) in PKGCONFIG_LIBS {
         match pkg_config::Config::new()
-            .atleast_version(FFMPEG_MIN_VERSION)
+            .atleast_version(min_version)
             .probe(lib)
         {
             Ok(library) => {

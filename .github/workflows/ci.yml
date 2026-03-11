@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FFMPEG_VERSION: "7.1"
+  FFMPEG_PREFIX: /opt/ffmpeg7
 
 jobs:
   # --------------------------------------------------------------------------
@@ -33,15 +35,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install FFmpeg 7.x dev libraries
+      - name: Install build dependencies
+        run: sudo apt-get install -y nasm pkg-config libclang-dev
+      - name: Cache FFmpeg 7.x
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FFMPEG_PREFIX }}
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}
+      - name: Build FFmpeg 7.x from source
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
-          sudo add-apt-repository ppa:ubuntuhandbook1/ffmpeg7 -y
-          sudo apt-get update
-          sudo apt-get install -y \
-            libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev libswresample-dev \
-            libavfilter-dev libavdevice-dev \
-            pkg-config libclang-dev
+          wget -q https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
+          tar xf ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
+          cd ffmpeg-${{ env.FFMPEG_VERSION }}
+          ./configure \
+            --prefix=${{ env.FFMPEG_PREFIX }} \
+            --disable-programs \
+            --disable-doc \
+            --disable-everything \
+            --enable-avcodec \
+            --enable-avformat \
+            --enable-avutil \
+            --enable-swscale \
+            --enable-swresample \
+            --enable-avfilter \
+            --enable-shared \
+            --disable-static
+          make -j$(nproc)
+          sudo make install
+      - name: Set FFmpeg environment
+        run: |
+          echo "PKG_CONFIG_PATH=${{ env.FFMPEG_PREFIX }}/lib/pkgconfig" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=${{ env.FFMPEG_PREFIX }}/lib" >> $GITHUB_ENV
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.0"
@@ -62,18 +88,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install FFmpeg 7.x dev libraries (Linux)
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y nasm pkg-config libclang-dev
+
+      - name: Cache FFmpeg 7.x (Linux)
+        if: runner.os == 'Linux'
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FFMPEG_PREFIX }}
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}
+
+      - name: Build FFmpeg 7.x from source (Linux)
+        if: runner.os == 'Linux' && steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
+          tar xf ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
+          cd ffmpeg-${{ env.FFMPEG_VERSION }}
+          ./configure \
+            --prefix=${{ env.FFMPEG_PREFIX }} \
+            --disable-programs \
+            --disable-doc \
+            --disable-everything \
+            --enable-avcodec \
+            --enable-avformat \
+            --enable-avutil \
+            --enable-swscale \
+            --enable-swresample \
+            --enable-avfilter \
+            --enable-shared \
+            --disable-static
+          make -j$(nproc)
+          sudo make install
+
+      - name: Set FFmpeg environment (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo add-apt-repository ppa:ubuntuhandbook1/ffmpeg7 -y
-          sudo apt-get update
-          sudo apt-get install -y \
-            libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev libswresample-dev \
-            libavfilter-dev libavdevice-dev \
-            pkg-config libclang-dev
+          echo "PKG_CONFIG_PATH=${{ env.FFMPEG_PREFIX }}/lib/pkgconfig" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=${{ env.FFMPEG_PREFIX }}/lib" >> $GITHUB_ENV
 
-      - name: Install FFmpeg 7.x dev libraries (macOS)
+      - name: Install FFmpeg 7.x (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg pkg-config
 
@@ -81,7 +136,6 @@ jobs:
         with:
           toolchain: "1.93.0"
       - uses: Swatinem/rust-cache@v2
-
       - run: cargo test --all --all-features
 
   # --------------------------------------------------------------------------
@@ -92,15 +146,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install FFmpeg 7.x dev libraries
+      - name: Install build dependencies
+        run: sudo apt-get install -y nasm pkg-config libclang-dev
+      - name: Cache FFmpeg 7.x
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FFMPEG_PREFIX }}
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-${{ runner.arch }}
+      - name: Build FFmpeg 7.x from source
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
-          sudo add-apt-repository ppa:ubuntuhandbook1/ffmpeg7 -y
-          sudo apt-get update
-          sudo apt-get install -y \
-            libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev libswresample-dev \
-            libavfilter-dev libavdevice-dev \
-            pkg-config libclang-dev
+          wget -q https://ffmpeg.org/releases/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
+          tar xf ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
+          cd ffmpeg-${{ env.FFMPEG_VERSION }}
+          ./configure \
+            --prefix=${{ env.FFMPEG_PREFIX }} \
+            --disable-programs \
+            --disable-doc \
+            --disable-everything \
+            --enable-avcodec \
+            --enable-avformat \
+            --enable-avutil \
+            --enable-swscale \
+            --enable-swresample \
+            --enable-avfilter \
+            --enable-shared \
+            --disable-static
+          make -j$(nproc)
+          sudo make install
+      - name: Set FFmpeg environment
+        run: |
+          echo "PKG_CONFIG_PATH=${{ env.FFMPEG_PREFIX }}/lib/pkgconfig" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=${{ env.FFMPEG_PREFIX }}/lib" >> $GITHUB_ENV
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.0"
