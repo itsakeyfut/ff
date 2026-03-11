@@ -7,16 +7,16 @@
 //! # Design Principles
 //!
 //! All public APIs in this crate are **safe**. Users never need to write `unsafe` code.
-//! Unsafe FFmpeg internals are encapsulated within this crate, following the same
+//! Unsafe `FFmpeg` internals are encapsulated within this crate, following the same
 //! pattern as `ff_decode` and `ff_encode`.
 //!
 //! # Planned Features
 //!
-//! - Filter graph construction and execution via FFmpeg's `libavfilter`
+//! - Filter graph construction and execution via `FFmpeg`'s `libavfilter`
 //! - Built-in filters: trim, scale, crop, overlay, fade, and more
 //! - Audio filters: volume, equalizer, noise reduction, mixing
 //! - Custom filter chains with type-safe builder API
-//! - Hardware-accelerated filtering (CUDA, OpenCL, Vulkan)
-//! - Integration with [`ff_decode`] and [`ff_encode`] for seamless pipelines
+//! - Hardware-accelerated filtering (CUDA, `OpenCL`, Vulkan)
+//! - Integration with `ff_decode` and `ff_encode` for seamless pipelines
 
 // This crate is a placeholder. No public API is available yet.

@@ -9,7 +9,10 @@ fn main() {
     println!("=== Hardware Acceleration Checker ===\n");
 
     // Get test video path
-    let video_path = PathBuf::from("crates/ff/assets/videos/noma-brain-power.mp4");
+    let video_path = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../assets/video/gameplay.mp4"
+    ));
 
     if !video_path.exists() {
         eprintln!("Error: Test video not found at {:?}", video_path);

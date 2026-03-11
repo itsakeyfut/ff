@@ -24,7 +24,7 @@ fn assets_dir() -> PathBuf {
 
 /// Returns the path to the test video file.
 fn test_video_path() -> PathBuf {
-    assets_dir().join("videos/noma-brain-power.mp4")
+    assets_dir().join("video/gameplay.mp4")
 }
 
 /// Creates a test decoder with hardware acceleration disabled for consistency.

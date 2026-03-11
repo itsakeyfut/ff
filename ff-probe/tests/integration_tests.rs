@@ -23,12 +23,12 @@ fn assets_dir() -> PathBuf {
 
 /// Returns the path to the test video file.
 fn test_video_path() -> PathBuf {
-    assets_dir().join("videos/noma-brain-power.mp4")
+    assets_dir().join("video/gameplay.mp4")
 }
 
 /// Returns the path to the test audio file.
 fn test_audio_path() -> PathBuf {
-    assets_dir().join("audio/noma-brain-power.mp3")
+    assets_dir().join("audio/konekonoosanpo.mp3")
 }
 
 // ============================================================================
@@ -160,7 +160,7 @@ fn test_probe_video_file_path() {
     assert_eq!(info.path(), path);
 
     // File name should be correct
-    assert_eq!(info.file_name(), Some("noma-brain-power.mp4"));
+    assert_eq!(info.file_name(), Some("gameplay.mp4"));
 
     // Extension should be mp4
     assert_eq!(info.extension(), Some("mp4"));
@@ -309,7 +309,7 @@ fn test_probe_audio_file_path() {
     assert_eq!(info.path(), path);
 
     // File name should be correct
-    assert_eq!(info.file_name(), Some("noma-brain-power.mp3"));
+    assert_eq!(info.file_name(), Some("konekonoosanpo.mp3"));
 
     // Extension should be mp3
     assert_eq!(info.extension(), Some("mp3"));

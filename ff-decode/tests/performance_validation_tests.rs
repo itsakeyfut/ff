@@ -27,7 +27,7 @@ fn assets_dir() -> PathBuf {
 
 /// Returns the path to the test video file.
 fn test_video_path() -> PathBuf {
-    assets_dir().join("videos/noma-brain-power.mp4")
+    assets_dir().join("video/gameplay.mp4")
 }
 
 /// Creates a test decoder with hardware acceleration disabled for consistency.
@@ -54,6 +54,7 @@ where
 // ============================================================================
 
 #[test]
+#[ignore = "performance thresholds are environment-dependent; run explicitly with -- --include-ignored"]
 fn test_seek_performance_target() {
     let mut decoder = create_decoder();
 
@@ -87,6 +88,7 @@ fn test_seek_performance_target() {
 }
 
 #[test]
+#[ignore = "performance thresholds are environment-dependent; run explicitly with -- --include-ignored"]
 fn test_repeated_seek_performance() {
     let mut decoder = create_decoder();
 
@@ -193,6 +195,7 @@ fn test_sequential_decode_performance() {
 // ============================================================================
 
 #[test]
+#[ignore = "performance thresholds are environment-dependent; run explicitly with -- --include-ignored"]
 fn test_scrubbing_workflow_performance() {
     // Simulates video scrubbing: seek to position, decode a few frames, repeat
     let mut decoder = create_decoder();
@@ -263,6 +266,7 @@ fn test_thumbnail_generation_performance() {
 }
 
 #[test]
+#[ignore = "performance thresholds are environment-dependent; run explicitly with -- --include-ignored"]
 fn test_batch_thumbnail_performance() {
     let mut decoder = create_decoder();
 

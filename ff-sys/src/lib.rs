@@ -104,7 +104,14 @@ macro_rules! check_av_error {
 
 /// Common FFmpeg error codes for convenience.
 pub mod error_codes {
-    /// Resource temporarily unavailable (try again)
+    /// Resource temporarily unavailable (try again).
+    ///
+    /// `AVERROR(EAGAIN)` is platform-specific:
+    /// - Linux/Windows (MinGW): `EAGAIN = 11`, so `AVERROR(EAGAIN) = -11`
+    /// - macOS/BSD: `EAGAIN = 35`, so `AVERROR(EAGAIN) = -35`
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
+    pub const EAGAIN: i32 = -35;
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
     pub const EAGAIN: i32 = -11;
 
     /// End of file/stream

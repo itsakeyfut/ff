@@ -13,15 +13,14 @@ use crate::{AudioCodec, EncodeError, VideoCodec};
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
     AVChannelLayout, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
-    AVCodecID_AV_CODEC_ID_AV1,
-    AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264,
-    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG4,
-    AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PRORES,
-    AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP9, AVFormatContext, AVFrame,
-    AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc,
-    av_frame_free, av_interleaved_write_frame, av_packet_alloc, av_packet_free, av_packet_unref,
-    av_write_trailer, avcodec, avformat_alloc_output_context2, avformat_free_context,
-    avformat_new_stream, avformat_write_header, swresample, swscale,
+    AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_FLAC,
+    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP3,
+    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
+    AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP9,
+    AVFormatContext, AVFrame, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext,
+    SwsContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_packet_alloc,
+    av_packet_free, av_packet_unref, av_write_trailer, avcodec, avformat_alloc_output_context2,
+    avformat_free_context, avformat_new_stream, avformat_write_header, swresample, swscale,
 };
 use std::ffi::CString;
 use std::ptr;

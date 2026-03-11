@@ -1268,7 +1268,7 @@ mod tests {
     fn get_test_audio_path() -> std::path::PathBuf {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         std::path::PathBuf::from(format!(
-            "{}/../assets/audio/noma-brain-power.mp3",
+            "{}/../assets/audio/konekonoosanpo.mp3",
             manifest_dir
         ))
     }

@@ -36,7 +36,7 @@ impl VideoCodec {
     /// H.264 and H.265 return `false` because their software encoders (libx264/libx265) are GPL,
     /// but hardware encoders (NVENC, QSV, etc.) are LGPL-compatible.
     ///
-    /// Use [`Encoder::is_lgpl_compliant()`](crate::Encoder::is_lgpl_compliant) to check
+    /// Use [`VideoEncoder::is_lgpl_compliant()`](crate::VideoEncoder::is_lgpl_compliant) to check
     /// the actual encoder selected at runtime.
     ///
     /// # LGPL-Compatible Codecs
