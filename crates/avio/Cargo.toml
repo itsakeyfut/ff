@@ -19,6 +19,9 @@ filter   = ["dep:ff-filter"]
 pipeline = ["dep:ff-pipeline"]
 stream   = ["dep:ff-stream"]
 
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 ff-format = { workspace = true }
 ff-common = { workspace = true }

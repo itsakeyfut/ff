@@ -42,6 +42,16 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // docs.rs does not have FFmpeg installed.  Emit empty bindings so that the
+    // crate compiles; docsrs_stubs.rs (included by lib.rs) provides stub types.
+    if env::var("DOCS_RS").is_ok() {
+        let out_path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
+        std::fs::write(out_path.join("bindings.rs"), b"")
+            .expect("Couldn't write stub bindings for docs.rs");
+        println!("cargo:rustc-cfg=docsrs");
+        return;
+    }
+
     // Detect target platform
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
