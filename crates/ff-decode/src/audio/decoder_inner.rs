@@ -484,15 +484,35 @@ impl AudioDecoderInner {
     }
 
     /// Converts FFmpeg channel layout to our `ChannelLayout` enum.
-    fn convert_channel_layout(_layout: &ff_sys::AVChannelLayout, channels: u32) -> ChannelLayout {
-        // For now, use simple channel count mapping
-        // TODO: Implement proper channel layout detection using AVChannelLayout
-        match channels {
-            1 => ChannelLayout::Mono,
-            2 => ChannelLayout::Stereo,
-            6 => ChannelLayout::Surround5_1,
-            8 => ChannelLayout::Surround7_1,
-            _ => ChannelLayout::Other(channels),
+    fn convert_channel_layout(layout: &ff_sys::AVChannelLayout, channels: u32) -> ChannelLayout {
+        if layout.order == ff_sys::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE {
+            // SAFETY: When order is AV_CHANNEL_ORDER_NATIVE, the mask field is valid
+            let mask = unsafe { layout.u.mask };
+            match mask {
+                0x4 => ChannelLayout::Mono,
+                0x3 => ChannelLayout::Stereo,
+                0x103 => ChannelLayout::Stereo2_1,
+                0x7 => ChannelLayout::Surround3_0,
+                0x33 => ChannelLayout::Quad,
+                0x37 => ChannelLayout::Surround5_0,
+                0x3F => ChannelLayout::Surround5_1,
+                0x13F => ChannelLayout::Surround6_1,
+                0x63F => ChannelLayout::Surround7_1,
+                _ => {
+                    log::warn!(
+                        "channel_layout mask has no mapping, deriving from channel count \
+                         mask={mask} channels={channels}"
+                    );
+                    ChannelLayout::from_channels(channels)
+                }
+            }
+        } else {
+            log::warn!(
+                "channel_layout order is not NATIVE, deriving from channel count \
+                 order={order} channels={channels}",
+                order = layout.order
+            );
+            ChannelLayout::from_channels(channels)
         }
     }
 
@@ -1093,3 +1113,131 @@ impl Drop for AudioDecoderInner {
 // SAFETY: AudioDecoderInner manages FFmpeg contexts which are thread-safe when not shared.
 // We don't expose mutable access across threads, so Send is safe.
 unsafe impl Send for AudioDecoderInner {}
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod tests {
+    use ff_format::channel::ChannelLayout;
+
+    use super::AudioDecoderInner;
+
+    /// Constructs an `AVChannelLayout` with `AV_CHANNEL_ORDER_NATIVE` and the given mask.
+    fn native_layout(mask: u64, nb_channels: i32) -> ff_sys::AVChannelLayout {
+        ff_sys::AVChannelLayout {
+            order: ff_sys::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE,
+            nb_channels,
+            u: ff_sys::AVChannelLayout__bindgen_ty_1 { mask },
+            opaque: std::ptr::null_mut(),
+        }
+    }
+
+    /// Constructs an `AVChannelLayout` with `AV_CHANNEL_ORDER_UNSPEC`.
+    fn unspec_layout(nb_channels: i32) -> ff_sys::AVChannelLayout {
+        ff_sys::AVChannelLayout {
+            order: ff_sys::AVChannelOrder_AV_CHANNEL_ORDER_UNSPEC,
+            nb_channels,
+            u: ff_sys::AVChannelLayout__bindgen_ty_1 { mask: 0 },
+            opaque: std::ptr::null_mut(),
+        }
+    }
+
+    #[test]
+    fn native_mask_mono() {
+        let layout = native_layout(0x4, 1);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 1),
+            ChannelLayout::Mono
+        );
+    }
+
+    #[test]
+    fn native_mask_stereo() {
+        let layout = native_layout(0x3, 2);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 2),
+            ChannelLayout::Stereo
+        );
+    }
+
+    #[test]
+    fn native_mask_stereo2_1() {
+        let layout = native_layout(0x103, 3);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 3),
+            ChannelLayout::Stereo2_1
+        );
+    }
+
+    #[test]
+    fn native_mask_surround3_0() {
+        let layout = native_layout(0x7, 3);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 3),
+            ChannelLayout::Surround3_0
+        );
+    }
+
+    #[test]
+    fn native_mask_quad() {
+        let layout = native_layout(0x33, 4);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 4),
+            ChannelLayout::Quad
+        );
+    }
+
+    #[test]
+    fn native_mask_surround5_0() {
+        let layout = native_layout(0x37, 5);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 5),
+            ChannelLayout::Surround5_0
+        );
+    }
+
+    #[test]
+    fn native_mask_surround5_1() {
+        let layout = native_layout(0x3F, 6);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 6),
+            ChannelLayout::Surround5_1
+        );
+    }
+
+    #[test]
+    fn native_mask_surround6_1() {
+        let layout = native_layout(0x13F, 7);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 7),
+            ChannelLayout::Surround6_1
+        );
+    }
+
+    #[test]
+    fn native_mask_surround7_1() {
+        let layout = native_layout(0x63F, 8);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 8),
+            ChannelLayout::Surround7_1
+        );
+    }
+
+    #[test]
+    fn native_mask_unknown_falls_back_to_from_channels() {
+        // mask=0x1 is not a standard layout; should fall back to from_channels(2)
+        let layout = native_layout(0x1, 2);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 2),
+            ChannelLayout::from_channels(2)
+        );
+    }
+
+    #[test]
+    fn non_native_order_falls_back_to_from_channels() {
+        let layout = unspec_layout(6);
+        assert_eq!(
+            AudioDecoderInner::convert_channel_layout(&layout, 6),
+            ChannelLayout::from_channels(6)
+        );
+    }
+}
