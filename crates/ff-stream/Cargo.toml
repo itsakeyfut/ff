@@ -1,0 +1,19 @@
+[package]
+name = "ff-stream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "HLS and DASH adaptive streaming output for the ff-* crate family"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "ffmpeg", "hls", "dash", "streaming"]
+categories = ["multimedia::video", "multimedia::encoding"]
+
+[dependencies]
+ff-common = { workspace = true }
+ff-format = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
