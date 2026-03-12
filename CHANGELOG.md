@@ -11,6 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.2] - 2026-03-12
+
+### Added
+
+#### ff-format
+- New `ChapterInfo` and `ChapterInfoBuilder` types for representing chapter markers within a media container (MKV, MP4, M4A, etc.). Fields: `id`, `title`, `start`, `end`, `time_base`, `metadata` ([#12](https://github.com/itsakeyfut/avio/pull/123))
+- `MediaInfo` now exposes `chapters()`, `has_chapters()`, and `chapter_count()` accessors, plus corresponding builder methods `.chapter()` / `.chapters()` ([#13](https://github.com/itsakeyfut/avio/pull/123))
+
+#### ff-probe
+- Chapter extraction from `AVFormatContext`: iterates `nb_chapters`, converts each `AVChapter` (including `AVRational`-based timestamps) into `ChapterInfo` and populates `MediaInfo::chapters()` ([#14](https://github.com/itsakeyfut/avio/pull/123))
+- Re-exports `ChapterInfo` and `ChapterInfoBuilder` from the public API and prelude
+
+### Fixed
+
+#### ff-encode
+- `av_opt_set` return values for CRF and preset options are now checked; a `log::warn!` is emitted and the encode continues with the encoder default when an option is unsupported ([#10](https://github.com/itsakeyfut/avio/pull/122))
+
+#### ff-decode
+- Channel layout detection now reads `AVChannelLayout.u.mask` when `order == AV_CHANNEL_ORDER_NATIVE`, correctly distinguishing layouts that share a channel count (e.g. `Stereo2_1` vs `Surround3_0`). Falls back to channel-count heuristic with a `log::warn!` for unrecognised masks or non-native order ([#11](https://github.com/itsakeyfut/avio/pull/119))
+
+### Changed
+
+#### ff-decode, ff-encode, ff-probe, ff-format
+- Silent fallbacks that previously discarded unsupported values without notice now emit `log::warn!` with `key=value` diagnostics ([#5–#9](https://github.com/itsakeyfut/avio/pull/116))
+
+---
+
 ## [0.1.1] - 2026-03-11
 
 ### Fixed
