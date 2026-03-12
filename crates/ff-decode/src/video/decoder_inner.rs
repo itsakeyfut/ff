@@ -1800,3 +1800,457 @@ impl Drop for VideoDecoderInner {
 // SAFETY: VideoDecoderInner manages FFmpeg contexts which are thread-safe when not shared.
 // We don't expose mutable access across threads, so Send is safe.
 unsafe impl Send for VideoDecoderInner {}
+
+#[cfg(test)]
+mod tests {
+    use ff_format::PixelFormat;
+    use ff_format::codec::VideoCodec;
+    use ff_format::color::{ColorPrimaries, ColorRange, ColorSpace};
+
+    use crate::HardwareAccel;
+
+    use super::VideoDecoderInner;
+
+    // -------------------------------------------------------------------------
+    // convert_pixel_format
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn pixel_format_yuv420p() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P),
+            PixelFormat::Yuv420p
+        );
+    }
+
+    #[test]
+    fn pixel_format_yuv422p() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P),
+            PixelFormat::Yuv422p
+        );
+    }
+
+    #[test]
+    fn pixel_format_yuv444p() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P),
+            PixelFormat::Yuv444p
+        );
+    }
+
+    #[test]
+    fn pixel_format_rgb24() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_RGB24),
+            PixelFormat::Rgb24
+        );
+    }
+
+    #[test]
+    fn pixel_format_bgr24() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_BGR24),
+            PixelFormat::Bgr24
+        );
+    }
+
+    #[test]
+    fn pixel_format_rgba() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_RGBA),
+            PixelFormat::Rgba
+        );
+    }
+
+    #[test]
+    fn pixel_format_bgra() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_BGRA),
+            PixelFormat::Bgra
+        );
+    }
+
+    #[test]
+    fn pixel_format_gray8() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8),
+            PixelFormat::Gray8
+        );
+    }
+
+    #[test]
+    fn pixel_format_nv12() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_NV12),
+            PixelFormat::Nv12
+        );
+    }
+
+    #[test]
+    fn pixel_format_nv21() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_NV21),
+            PixelFormat::Nv21
+        );
+    }
+
+    #[test]
+    fn pixel_format_unknown_falls_back_to_yuv420p() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_NONE),
+            PixelFormat::Yuv420p
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // convert_color_space
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn color_space_bt709() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_space(ff_sys::AVColorSpace_AVCOL_SPC_BT709),
+            ColorSpace::Bt709
+        );
+    }
+
+    #[test]
+    fn color_space_bt470bg_yields_bt601() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_space(ff_sys::AVColorSpace_AVCOL_SPC_BT470BG),
+            ColorSpace::Bt601
+        );
+    }
+
+    #[test]
+    fn color_space_smpte170m_yields_bt601() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_space(ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M),
+            ColorSpace::Bt601
+        );
+    }
+
+    #[test]
+    fn color_space_bt2020_ncl() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_space(ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL),
+            ColorSpace::Bt2020
+        );
+    }
+
+    #[test]
+    fn color_space_unknown_falls_back_to_bt709() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_space(ff_sys::AVColorSpace_AVCOL_SPC_UNSPECIFIED),
+            ColorSpace::Bt709
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // convert_color_range
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn color_range_jpeg_yields_full() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_range(ff_sys::AVColorRange_AVCOL_RANGE_JPEG),
+            ColorRange::Full
+        );
+    }
+
+    #[test]
+    fn color_range_mpeg_yields_limited() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_range(ff_sys::AVColorRange_AVCOL_RANGE_MPEG),
+            ColorRange::Limited
+        );
+    }
+
+    #[test]
+    fn color_range_unknown_falls_back_to_limited() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_range(ff_sys::AVColorRange_AVCOL_RANGE_UNSPECIFIED),
+            ColorRange::Limited
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // convert_color_primaries
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn color_primaries_bt709() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_primaries(ff_sys::AVColorPrimaries_AVCOL_PRI_BT709),
+            ColorPrimaries::Bt709
+        );
+    }
+
+    #[test]
+    fn color_primaries_bt470bg_yields_bt601() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_primaries(ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG),
+            ColorPrimaries::Bt601
+        );
+    }
+
+    #[test]
+    fn color_primaries_smpte170m_yields_bt601() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_primaries(
+                ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M
+            ),
+            ColorPrimaries::Bt601
+        );
+    }
+
+    #[test]
+    fn color_primaries_bt2020() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_primaries(ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020),
+            ColorPrimaries::Bt2020
+        );
+    }
+
+    #[test]
+    fn color_primaries_unknown_falls_back_to_bt709() {
+        assert_eq!(
+            VideoDecoderInner::convert_color_primaries(
+                ff_sys::AVColorPrimaries_AVCOL_PRI_UNSPECIFIED
+            ),
+            ColorPrimaries::Bt709
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // convert_codec
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn codec_h264() {
+        assert_eq!(
+            VideoDecoderInner::convert_codec(ff_sys::AVCodecID_AV_CODEC_ID_H264),
+            VideoCodec::H264
+        );
+    }
+
+    #[test]
+    fn codec_hevc_yields_h265() {
+        assert_eq!(
+            VideoDecoderInner::convert_codec(ff_sys::AVCodecID_AV_CODEC_ID_HEVC),
+            VideoCodec::H265
+        );
+    }
+
+    #[test]
+    fn codec_vp8() {
+        assert_eq!(
+            VideoDecoderInner::convert_codec(ff_sys::AVCodecID_AV_CODEC_ID_VP8),
+            VideoCodec::Vp8
+        );
+    }
+
+    #[test]
+    fn codec_vp9() {
+        assert_eq!(
+            VideoDecoderInner::convert_codec(ff_sys::AVCodecID_AV_CODEC_ID_VP9),
+            VideoCodec::Vp9
+        );
+    }
+
+    #[test]
+    fn codec_av1() {
+        assert_eq!(
+            VideoDecoderInner::convert_codec(ff_sys::AVCodecID_AV_CODEC_ID_AV1),
+            VideoCodec::Av1
+        );
+    }
+
+    #[test]
+    fn codec_mpeg4() {
+        assert_eq!(
+            VideoDecoderInner::convert_codec(ff_sys::AVCodecID_AV_CODEC_ID_MPEG4),
+            VideoCodec::Mpeg4
+        );
+    }
+
+    #[test]
+    fn codec_prores() {
+        assert_eq!(
+            VideoDecoderInner::convert_codec(ff_sys::AVCodecID_AV_CODEC_ID_PRORES),
+            VideoCodec::ProRes
+        );
+    }
+
+    #[test]
+    fn codec_unknown_falls_back_to_h264() {
+        assert_eq!(
+            VideoDecoderInner::convert_codec(ff_sys::AVCodecID_AV_CODEC_ID_NONE),
+            VideoCodec::H264
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // hw_accel_to_device_type
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn hw_accel_auto_yields_none() {
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::Auto),
+            None
+        );
+    }
+
+    #[test]
+    fn hw_accel_none_yields_none() {
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::None),
+            None
+        );
+    }
+
+    #[test]
+    fn hw_accel_nvdec_yields_cuda() {
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::Nvdec),
+            Some(ff_sys::AVHWDeviceType_AV_HWDEVICE_TYPE_CUDA)
+        );
+    }
+
+    #[test]
+    fn hw_accel_qsv_yields_qsv() {
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::Qsv),
+            Some(ff_sys::AVHWDeviceType_AV_HWDEVICE_TYPE_QSV)
+        );
+    }
+
+    #[test]
+    fn hw_accel_amf_yields_d3d11va() {
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::Amf),
+            Some(ff_sys::AVHWDeviceType_AV_HWDEVICE_TYPE_D3D11VA)
+        );
+    }
+
+    #[test]
+    fn hw_accel_videotoolbox() {
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::VideoToolbox),
+            Some(ff_sys::AVHWDeviceType_AV_HWDEVICE_TYPE_VIDEOTOOLBOX)
+        );
+    }
+
+    #[test]
+    fn hw_accel_vaapi() {
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::Vaapi),
+            Some(ff_sys::AVHWDeviceType_AV_HWDEVICE_TYPE_VAAPI)
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // pixel_format_to_av — round-trip
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn pixel_format_to_av_round_trip_yuv420p() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Yuv420p);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Yuv420p
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_yuv422p() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Yuv422p);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Yuv422p
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_yuv444p() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Yuv444p);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Yuv444p
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_rgb24() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Rgb24);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Rgb24
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_bgr24() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Bgr24);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Bgr24
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_rgba() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Rgba);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Rgba
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_bgra() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Bgra);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Bgra
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_gray8() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Gray8);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Gray8
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_nv12() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Nv12);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Nv12
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_round_trip_nv21() {
+        let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Nv21);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Nv21
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_unknown_falls_back_to_yuv420p_av() {
+        // Yuv420p10le has no explicit mapping in pixel_format_to_av, so it hits the _ arm
+        assert_eq!(
+            VideoDecoderInner::pixel_format_to_av(PixelFormat::Yuv420p10le),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
+        );
+    }
+}
