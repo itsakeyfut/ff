@@ -1,6 +1,6 @@
-# ff
+# avio
 
-High-level, safe FFmpeg bindings for Rust.
+Safe, high-level audio/video/image processing for Rust — backend-agnostic multimedia toolkit.
 
 ![Coming Soon](https://img.shields.io/badge/status-coming%20soon-yellow)
 
@@ -9,7 +9,9 @@ High-level, safe FFmpeg bindings for Rust.
 
 ## Overview
 
-`ff` is the facade crate for the ff-* crate family. It re-exports the public APIs of all member crates behind feature flags, so you can depend on a single crate and opt into only the functionality you need.
+`avio` is the facade crate for the ff-* crate family. It re-exports the public APIs of all member crates behind feature flags, so you can depend on a single crate and opt into only the functionality you need.
+
+Currently backed by FFmpeg, with planned support for GStreamer and other backends.
 
 ## Feature Flags
 
@@ -27,19 +29,19 @@ High-level, safe FFmpeg bindings for Rust.
 ```toml
 [dependencies]
 # Default features: probe + decode + encode
-ff = "0.5"
+avio = "0.5"
 
 # With filter graph and pipeline support
-ff = { version = "0.5", features = ["filter", "pipeline"] }
+avio = { version = "0.5", features = ["filter", "pipeline"] }
 
 # Full feature set
-ff = { version = "0.5", features = ["filter", "pipeline", "stream"] }
+avio = { version = "0.5", features = ["filter", "pipeline", "stream"] }
 ```
 
 ```rust,ignore
-use ff::prelude::*;
+use avio::prelude::*;
 
-let info = ff::probe::open("input.mp4")?;
+let info = avio::probe::open("input.mp4")?;
 println!("duration: {:?}", info.duration());
 ```
 
@@ -60,7 +62,7 @@ Rust 1.93.0 or later (edition 2024).
 | `ff-filter`    | Filter graph (libavfilter)               |
 | `ff-pipeline`  | Unified decode-filter-encode pipeline    |
 | `ff-stream`    | HLS/DASH streaming output                |
-| `ff`           | Facade crate (this crate)                |
+| `avio`         | Facade crate (this crate)                |
 
 ## License
 
