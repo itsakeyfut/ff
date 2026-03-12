@@ -289,9 +289,7 @@ impl VideoEncoderInner {
         // Open codec
         avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
             .map_err(EncodeError::from_ffmpeg_error)?;
-        log::info!(
-            "codec opened codec={encoder_name} width={width} height={height} fps={fps}"
-        );
+        log::info!("codec opened codec={encoder_name} width={width} height={height} fps={fps}");
 
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
