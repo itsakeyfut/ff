@@ -1,2 +1,9 @@
 /target/
 /Cargo.lock
+
+# Internal design docs (not for public repo)
+/docs/crates/
+/docs/dev/
+
+# Claude session file
+/SESSION.md

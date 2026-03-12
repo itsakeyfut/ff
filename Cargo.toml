@@ -1,13 +1,5 @@
 [workspace]
-members = [
-  "ff-sys",
-  "ff-common",
-  "ff-format",
-  "ff-probe",
-  "ff-decode",
-  "ff-encode",
-  "ff-filter",
-]
+members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
@@ -20,10 +12,15 @@ authors = ["itsakeyfut"]
 
 [workspace.dependencies]
 # Internal ff-* dependencies
-ff-sys = { path = "ff-sys", version = "0.1.0" }
-ff-common = { path = "ff-common", version = "0.1.0" }
-ff-format = { path = "ff-format", version = "0.1.0" }
-ff-filter = { path = "ff-filter", version = "0.1.0" }
+ff-sys      = { path = "crates/ff-sys",      version = "0.1.0" }
+ff-common   = { path = "crates/ff-common",   version = "0.1.0" }
+ff-format   = { path = "crates/ff-format",   version = "0.1.0" }
+ff-probe    = { path = "crates/ff-probe",    version = "0.1.0" }
+ff-decode   = { path = "crates/ff-decode",   version = "0.1.0" }
+ff-encode   = { path = "crates/ff-encode",   version = "0.1.0" }
+ff-filter   = { path = "crates/ff-filter",   version = "0.1.0" }
+ff-pipeline = { path = "crates/ff-pipeline", version = "0.1.0" }
+ff-stream   = { path = "crates/ff-stream",   version = "0.1.0" }
 
 # Error handling
 thiserror = "2.0.17"

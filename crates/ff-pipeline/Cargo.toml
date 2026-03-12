@@ -1,0 +1,19 @@
+[package]
+name = "ff-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Unified decode-filter-encode pipeline for the ff-* crate family"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "pipeline", "transcode"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[dependencies]
+ff-common = { workspace = true }
+ff-format = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
