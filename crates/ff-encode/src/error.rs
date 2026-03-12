@@ -83,3 +83,35 @@ impl EncodeError {
         EncodeError::Ffmpeg(format!("{} (code: {})", error_msg, errnum))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::EncodeError;
+
+    #[test]
+    fn from_ffmpeg_error_returns_ffmpeg_variant() {
+        let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::EINVAL);
+        assert!(matches!(err, EncodeError::Ffmpeg(_)));
+    }
+
+    #[test]
+    fn from_ffmpeg_error_message_contains_code() {
+        let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::EINVAL);
+        let msg = err.to_string();
+        assert!(msg.contains("code: -22"), "expected 'code: -22' in '{msg}'");
+    }
+
+    #[test]
+    fn from_ffmpeg_error_message_nonempty() {
+        let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::ENOMEM);
+        let msg = err.to_string();
+        assert!(!msg.is_empty());
+    }
+
+    #[test]
+    fn from_ffmpeg_error_eof() {
+        let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::EOF);
+        assert!(matches!(err, EncodeError::Ffmpeg(_)));
+        assert!(!err.to_string().is_empty());
+    }
+}

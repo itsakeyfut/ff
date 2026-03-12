@@ -566,3 +566,119 @@ fn sample_format_to_av(format: ff_format::SampleFormat) -> ff_sys::AVSampleForma
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ff_format::SampleFormat;
+    use ff_sys::swresample::sample_format;
+    use ff_sys::{
+        AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_MP3,
+        AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_VORBIS,
+    };
+
+    use crate::AudioCodec;
+
+    use super::{codec_to_id, sample_format_to_av};
+
+    // -------------------------------------------------------------------------
+    // codec_to_id
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn codec_to_id_aac() {
+        assert_eq!(codec_to_id(AudioCodec::Aac), AVCodecID_AV_CODEC_ID_AAC);
+    }
+
+    #[test]
+    fn codec_to_id_opus() {
+        assert_eq!(codec_to_id(AudioCodec::Opus), AVCodecID_AV_CODEC_ID_OPUS);
+    }
+
+    #[test]
+    fn codec_to_id_mp3() {
+        assert_eq!(codec_to_id(AudioCodec::Mp3), AVCodecID_AV_CODEC_ID_MP3);
+    }
+
+    #[test]
+    fn codec_to_id_flac() {
+        assert_eq!(codec_to_id(AudioCodec::Flac), AVCodecID_AV_CODEC_ID_FLAC);
+    }
+
+    #[test]
+    fn codec_to_id_pcm() {
+        assert_eq!(
+            codec_to_id(AudioCodec::Pcm),
+            AVCodecID_AV_CODEC_ID_PCM_S16LE
+        );
+    }
+
+    #[test]
+    fn codec_to_id_vorbis() {
+        assert_eq!(
+            codec_to_id(AudioCodec::Vorbis),
+            AVCodecID_AV_CODEC_ID_VORBIS
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // sample_format_to_av
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn sample_format_u8() {
+        assert_eq!(sample_format_to_av(SampleFormat::U8), sample_format::U8);
+    }
+
+    #[test]
+    fn sample_format_i16() {
+        assert_eq!(sample_format_to_av(SampleFormat::I16), sample_format::S16);
+    }
+
+    #[test]
+    fn sample_format_i32() {
+        assert_eq!(sample_format_to_av(SampleFormat::I32), sample_format::S32);
+    }
+
+    #[test]
+    fn sample_format_f32() {
+        assert_eq!(sample_format_to_av(SampleFormat::F32), sample_format::FLT);
+    }
+
+    #[test]
+    fn sample_format_f64() {
+        assert_eq!(sample_format_to_av(SampleFormat::F64), sample_format::DBL);
+    }
+
+    #[test]
+    fn sample_format_u8p() {
+        assert_eq!(sample_format_to_av(SampleFormat::U8p), sample_format::U8P);
+    }
+
+    #[test]
+    fn sample_format_i16p() {
+        assert_eq!(sample_format_to_av(SampleFormat::I16p), sample_format::S16P);
+    }
+
+    #[test]
+    fn sample_format_i32p() {
+        assert_eq!(sample_format_to_av(SampleFormat::I32p), sample_format::S32P);
+    }
+
+    #[test]
+    fn sample_format_f32p() {
+        assert_eq!(sample_format_to_av(SampleFormat::F32p), sample_format::FLTP);
+    }
+
+    #[test]
+    fn sample_format_f64p() {
+        assert_eq!(sample_format_to_av(SampleFormat::F64p), sample_format::DBLP);
+    }
+
+    #[test]
+    fn sample_format_unknown_falls_back_to_fltp() {
+        assert_eq!(
+            sample_format_to_av(SampleFormat::Other(99)),
+            sample_format::FLTP
+        );
+    }
+}
