@@ -585,7 +585,17 @@ unsafe fn extract_frame_rate(stream: *mut ff_sys::AVStream) -> Rational {
         }
 
         // Default to 30 fps
-        Rational::new(30, 1)
+        {
+            log::warn!(
+                "frame_rate unavailable, falling back to 30fps \
+                 r_frame_rate={}/{} avg_frame_rate={}/{} fallback=30/1",
+                r_frame_rate.num,
+                r_frame_rate.den,
+                avg_frame_rate.num,
+                avg_frame_rate.den
+            );
+            Rational::new(30, 1)
+        }
     }
 }
 
@@ -680,7 +690,13 @@ fn map_video_codec(codec_id: ff_sys::AVCodecID) -> VideoCodec {
         ff_sys::AVCodecID_AV_CODEC_ID_MPEG4 => VideoCodec::Mpeg4,
         ff_sys::AVCodecID_AV_CODEC_ID_MPEG2VIDEO => VideoCodec::Mpeg2,
         ff_sys::AVCodecID_AV_CODEC_ID_MJPEG => VideoCodec::Mjpeg,
-        _ => VideoCodec::Unknown,
+        _ => {
+            log::warn!(
+                "video_codec has no mapping, using Unknown \
+                 codec_id={codec_id}"
+            );
+            VideoCodec::Unknown
+        }
     }
 }
 
@@ -702,7 +718,13 @@ fn map_pixel_format(format: i32) -> PixelFormat {
         x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE as u32 => PixelFormat::Yuv420p10le,
         x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE as u32 => PixelFormat::P010le,
         x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8 as u32 => PixelFormat::Gray8,
-        _ => PixelFormat::Other(format_u32),
+        _ => {
+            log::warn!(
+                "pixel_format has no mapping, using Other \
+                 format={format_u32}"
+            );
+            PixelFormat::Other(format_u32)
+        }
     }
 }
 
@@ -717,7 +739,13 @@ fn map_color_space(color_space: ff_sys::AVColorSpace) -> ColorSpace {
             ColorSpace::Bt2020
         }
         ff_sys::AVColorSpace_AVCOL_SPC_RGB => ColorSpace::Srgb,
-        _ => ColorSpace::Unknown,
+        _ => {
+            log::warn!(
+                "color_space has no mapping, using Unknown \
+                 color_space={color_space}"
+            );
+            ColorSpace::Unknown
+        }
     }
 }
 
@@ -726,7 +754,13 @@ fn map_color_range(color_range: ff_sys::AVColorRange) -> ColorRange {
     match color_range {
         ff_sys::AVColorRange_AVCOL_RANGE_MPEG => ColorRange::Limited,
         ff_sys::AVColorRange_AVCOL_RANGE_JPEG => ColorRange::Full,
-        _ => ColorRange::Unknown,
+        _ => {
+            log::warn!(
+                "color_range has no mapping, using Unknown \
+                 color_range={color_range}"
+            );
+            ColorRange::Unknown
+        }
     }
 }
 
@@ -737,7 +771,13 @@ fn map_color_primaries(color_primaries: ff_sys::AVColorPrimaries) -> ColorPrimar
         ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG
         | ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M => ColorPrimaries::Bt601,
         ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020 => ColorPrimaries::Bt2020,
-        _ => ColorPrimaries::Unknown,
+        _ => {
+            log::warn!(
+                "color_primaries has no mapping, using Unknown \
+                 color_primaries={color_primaries}"
+            );
+            ColorPrimaries::Unknown
+        }
     }
 }
 
@@ -873,7 +913,15 @@ unsafe fn extract_channel_count(codecpar: *mut ff_sys::AVCodecParameters) -> u32
     let channels = unsafe { (*codecpar).ch_layout.nb_channels as u32 };
 
     // If channel count is 0 (uninitialized/unknown), use 1 (mono) as safe minimum
-    if channels > 0 { channels } else { 1 }
+    if channels > 0 {
+        channels
+    } else {
+        log::warn!(
+            "channel_count is 0 (uninitialized), falling back to mono \
+             fallback=1"
+        );
+        1
+    }
 }
 
 /// Extracts the channel layout from `AVCodecParameters`.
@@ -895,7 +943,8 @@ unsafe fn extract_channel_layout(
         // Map common FFmpeg channel masks to our ChannelLayout
         // These are AVChannelLayout masks for standard configurations
         // SAFETY: When order is AV_CHANNEL_ORDER_NATIVE, the mask field is valid
-        match unsafe { ch_layout.u.mask } {
+        let mask = unsafe { ch_layout.u.mask };
+        match mask {
             // AV_CH_LAYOUT_MONO = 0x4 (front center)
             0x4 => ChannelLayout::Mono,
             // AV_CH_LAYOUT_STEREO = 0x3 (front left + front right)
@@ -914,10 +963,20 @@ unsafe fn extract_channel_layout(
             0x13F => ChannelLayout::Surround6_1,
             // AV_CH_LAYOUT_7POINT1 = 0x63F (FL + FR + FC + LFE + BL + BR + SL + SR)
             0x63F => ChannelLayout::Surround7_1,
-            _ => ChannelLayout::from_channels(channels),
+            _ => {
+                log::warn!(
+                    "channel_layout mask has no mapping, deriving from channel count \
+                     mask={mask} channels={channels}"
+                );
+                ChannelLayout::from_channels(channels)
+            }
         }
     } else {
-        // Fallback to deriving layout from channel count
+        log::warn!(
+            "channel_layout order is not NATIVE, deriving from channel count \
+             order={order} channels={channels}",
+            order = ch_layout.order
+        );
         ChannelLayout::from_channels(channels)
     }
 }
@@ -980,7 +1039,13 @@ fn map_audio_codec(codec_id: ff_sys::AVCodecID) -> AudioCodec {
         | ff_sys::AVCodecID_AV_CODEC_ID_PCM_F64LE
         | ff_sys::AVCodecID_AV_CODEC_ID_PCM_F64BE
         | ff_sys::AVCodecID_AV_CODEC_ID_PCM_U8 => AudioCodec::Pcm,
-        _ => AudioCodec::Unknown,
+        _ => {
+            log::warn!(
+                "audio_codec has no mapping, using Unknown \
+                 codec_id={codec_id}"
+            );
+            AudioCodec::Unknown
+        }
     }
 }
 
@@ -1003,7 +1068,13 @@ fn map_sample_format(format: i32) -> SampleFormat {
         x if x == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLTP as u32 => SampleFormat::F32p,
         x if x == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_DBLP as u32 => SampleFormat::F64p,
         // Unknown format
-        _ => SampleFormat::Other(format_u32),
+        _ => {
+            log::warn!(
+                "sample_format has no mapping, using Other \
+                 format={format_u32}"
+            );
+            SampleFormat::Other(format_u32)
+        }
     }
 }
 

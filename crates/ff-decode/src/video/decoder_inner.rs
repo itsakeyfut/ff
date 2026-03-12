@@ -678,8 +678,10 @@ impl VideoDecoderInner {
         let frame_rate = if fps_rational.den != 0 {
             Rational::new(fps_rational.num as i32, fps_rational.den as i32)
         } else {
-            // WARNING: Using default 30fps fallback - actual frame rate is unknown
-            // This may cause timing issues if the video has a different frame rate
+            log::warn!(
+                "invalid frame rate, falling back to 30fps num={} den=0 fallback=30/1",
+                fps_rational.num
+            );
             Rational::new(30, 1)
         };
 
@@ -744,8 +746,9 @@ impl VideoDecoderInner {
         } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_NV21 {
             PixelFormat::Nv21
         } else {
-            // WARNING: Unknown pixel format, using Yuv420p as fallback
-            // This may cause incorrect color representation
+            log::warn!(
+                "pixel_format unsupported, falling back to Yuv420p requested={fmt} fallback=Yuv420p"
+            );
             PixelFormat::Yuv420p
         }
     }
@@ -761,8 +764,9 @@ impl VideoDecoderInner {
         } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL {
             ColorSpace::Bt2020
         } else {
-            // WARNING: Unknown color space, using Bt709 as fallback
-            // This may cause incorrect color conversion
+            log::warn!(
+                "color_space unsupported, falling back to Bt709 requested={space} fallback=Bt709"
+            );
             ColorSpace::Bt709
         }
     }
@@ -774,8 +778,9 @@ impl VideoDecoderInner {
         } else if range == ff_sys::AVColorRange_AVCOL_RANGE_MPEG {
             ColorRange::Limited
         } else {
-            // WARNING: Unknown color range, using Limited as fallback
-            // This may cause incorrect brightness/contrast
+            log::warn!(
+                "color_range unsupported, falling back to Limited requested={range} fallback=Limited"
+            );
             ColorRange::Limited
         }
     }
@@ -791,8 +796,9 @@ impl VideoDecoderInner {
         } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020 {
             ColorPrimaries::Bt2020
         } else {
-            // WARNING: Unknown color primaries, using Bt709 as fallback
-            // This may cause incorrect color gamut representation
+            log::warn!(
+                "color_primaries unsupported, falling back to Bt709 requested={primaries} fallback=Bt709"
+            );
             ColorPrimaries::Bt709
         }
     }
@@ -814,8 +820,9 @@ impl VideoDecoderInner {
         } else if codec_id == ff_sys::AVCodecID_AV_CODEC_ID_PRORES {
             VideoCodec::ProRes
         } else {
-            // WARNING: Unknown codec, using H264 as fallback
-            // This is a placeholder and may not represent the actual codec
+            log::warn!(
+                "video codec unsupported, falling back to H264 codec_id={codec_id} fallback=H264"
+            );
             VideoCodec::H264
         }
     }
@@ -1263,9 +1270,12 @@ impl VideoDecoderInner {
             PixelFormat::Gray8 => ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8,
             PixelFormat::Nv12 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV12,
             PixelFormat::Nv21 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV21,
-            // WARNING: Unknown pixel format, using YUV420P as fallback
-            // This may cause conversion issues
-            _ => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P,
+            _ => {
+                log::warn!(
+                    "pixel_format has no AV mapping, falling back to Yuv420p format={format:?} fallback=AV_PIX_FMT_YUV420P"
+                );
+                ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
+            }
         }
     }
 

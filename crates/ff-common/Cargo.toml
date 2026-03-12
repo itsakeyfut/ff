@@ -11,7 +11,7 @@ keywords = ["video", "audio", "ffmpeg", "media", "common"]
 categories = ["multimedia::video", "multimedia::audio"]
 
 [dependencies]
-# No external dependencies - this is a pure Rust foundation crate
+log = { workspace = true }
 
 [lints]
 workspace = true

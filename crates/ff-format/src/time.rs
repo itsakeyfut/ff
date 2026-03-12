@@ -690,6 +690,10 @@ impl Timestamp {
     pub fn as_duration(&self) -> Duration {
         let secs = self.as_secs_f64();
         if secs < 0.0 {
+            log::warn!(
+                "timestamp is negative, clamping to zero \
+                 secs={secs} fallback=Duration::ZERO"
+            );
             Duration::ZERO
         } else {
             Duration::from_secs_f64(secs)
@@ -764,6 +768,10 @@ impl Timestamp {
     pub fn as_frame_number(&self, fps: f64) -> u64 {
         let secs = self.as_secs_f64();
         if secs < 0.0 {
+            log::warn!(
+                "timestamp is negative, returning frame 0 \
+                 secs={secs} fps={fps} fallback=0"
+            );
             0
         } else {
             (secs * fps).round() as u64
@@ -884,7 +892,15 @@ impl Ord for Timestamp {
     fn cmp(&self, other: &Self) -> Ordering {
         self.as_secs_f64()
             .partial_cmp(&other.as_secs_f64())
-            .unwrap_or(Ordering::Equal)
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "NaN timestamp comparison, treating as equal \
+                     self_pts={} other_pts={} fallback=Ordering::Equal",
+                    self.pts,
+                    other.pts
+                );
+                Ordering::Equal
+            })
     }
 }
 

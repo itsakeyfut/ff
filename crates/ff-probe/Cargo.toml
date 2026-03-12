@@ -14,6 +14,7 @@ categories = ["multimedia::video", "multimedia::audio"]
 ff-format = { workspace = true }
 ff-sys = { workspace = true }
 thiserror = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

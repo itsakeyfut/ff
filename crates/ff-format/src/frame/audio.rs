@@ -341,6 +341,11 @@ impl AudioFrame {
     #[allow(clippy::cast_precision_loss)] // Audio frame sample counts are well within f64's precision
     pub fn duration(&self) -> Duration {
         if self.sample_rate == 0 {
+            log::warn!(
+                "duration unavailable, sample_rate is 0, returning zero \
+                 samples={} fallback=Duration::ZERO",
+                self.samples
+            );
             return Duration::ZERO;
         }
         let secs = self.samples as f64 / f64::from(self.sample_rate);

@@ -227,6 +227,11 @@ impl VideoStreamInfo {
     #[inline]
     pub fn aspect_ratio(&self) -> f64 {
         if self.height == 0 {
+            log::warn!(
+                "aspect_ratio unavailable, height is 0, returning 0.0 \
+                 width={} height=0 fallback=0.0",
+                self.width
+            );
             0.0
         } else {
             f64::from(self.width) / f64::from(self.height)
@@ -717,9 +722,14 @@ impl AudioStreamInfoBuilder {
     /// Builds the `AudioStreamInfo`.
     #[must_use]
     pub fn build(self) -> AudioStreamInfo {
-        let channel_layout = self
-            .channel_layout
-            .unwrap_or_else(|| ChannelLayout::from_channels(self.channels));
+        let channel_layout = self.channel_layout.unwrap_or_else(|| {
+            log::warn!(
+                "channel_layout not set, deriving from channel count \
+                 channels={} fallback=from_channels",
+                self.channels
+            );
+            ChannelLayout::from_channels(self.channels)
+        });
 
         AudioStreamInfo {
             index: self.index,

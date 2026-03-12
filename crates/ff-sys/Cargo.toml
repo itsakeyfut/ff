@@ -15,6 +15,9 @@ categories = ["external-ffi-bindings", "multimedia::video", "multimedia::audio"]
 # that includes invalid Rust code examples (mathematical formulas)
 doctest = false
 
+[dependencies]
+log = { workspace = true }
+
 [build-dependencies]
 bindgen = { workspace = true }
 pkg-config = { workspace = true }
