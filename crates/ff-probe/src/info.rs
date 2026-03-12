@@ -589,8 +589,10 @@ unsafe fn extract_frame_rate(stream: *mut ff_sys::AVStream) -> Rational {
             log::warn!(
                 "frame_rate unavailable, falling back to 30fps \
                  r_frame_rate={}/{} avg_frame_rate={}/{} fallback=30/1",
-                r_frame_rate.num, r_frame_rate.den,
-                avg_frame_rate.num, avg_frame_rate.den
+                r_frame_rate.num,
+                r_frame_rate.den,
+                avg_frame_rate.num,
+                avg_frame_rate.den
             );
             Rational::new(30, 1)
         }

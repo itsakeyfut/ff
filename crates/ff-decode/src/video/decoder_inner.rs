@@ -746,7 +746,9 @@ impl VideoDecoderInner {
         } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_NV21 {
             PixelFormat::Nv21
         } else {
-            log::warn!("pixel_format unsupported, falling back to Yuv420p requested={fmt} fallback=Yuv420p");
+            log::warn!(
+                "pixel_format unsupported, falling back to Yuv420p requested={fmt} fallback=Yuv420p"
+            );
             PixelFormat::Yuv420p
         }
     }
@@ -762,7 +764,9 @@ impl VideoDecoderInner {
         } else if space == ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL {
             ColorSpace::Bt2020
         } else {
-            log::warn!("color_space unsupported, falling back to Bt709 requested={space} fallback=Bt709");
+            log::warn!(
+                "color_space unsupported, falling back to Bt709 requested={space} fallback=Bt709"
+            );
             ColorSpace::Bt709
         }
     }
@@ -774,7 +778,9 @@ impl VideoDecoderInner {
         } else if range == ff_sys::AVColorRange_AVCOL_RANGE_MPEG {
             ColorRange::Limited
         } else {
-            log::warn!("color_range unsupported, falling back to Limited requested={range} fallback=Limited");
+            log::warn!(
+                "color_range unsupported, falling back to Limited requested={range} fallback=Limited"
+            );
             ColorRange::Limited
         }
     }
@@ -790,7 +796,9 @@ impl VideoDecoderInner {
         } else if primaries == ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020 {
             ColorPrimaries::Bt2020
         } else {
-            log::warn!("color_primaries unsupported, falling back to Bt709 requested={primaries} fallback=Bt709");
+            log::warn!(
+                "color_primaries unsupported, falling back to Bt709 requested={primaries} fallback=Bt709"
+            );
             ColorPrimaries::Bt709
         }
     }
@@ -812,7 +820,9 @@ impl VideoDecoderInner {
         } else if codec_id == ff_sys::AVCodecID_AV_CODEC_ID_PRORES {
             VideoCodec::ProRes
         } else {
-            log::warn!("video codec unsupported, falling back to H264 codec_id={codec_id} fallback=H264");
+            log::warn!(
+                "video codec unsupported, falling back to H264 codec_id={codec_id} fallback=H264"
+            );
             VideoCodec::H264
         }
     }
@@ -1261,7 +1271,9 @@ impl VideoDecoderInner {
             PixelFormat::Nv12 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV12,
             PixelFormat::Nv21 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV21,
             _ => {
-                log::warn!("pixel_format has no AV mapping, falling back to Yuv420p format={format:?} fallback=AV_PIX_FMT_YUV420P");
+                log::warn!(
+                    "pixel_format has no AV mapping, falling back to Yuv420p format={format:?} fallback=AV_PIX_FMT_YUV420P"
+                );
                 ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
             }
         }
