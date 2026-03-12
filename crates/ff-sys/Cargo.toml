@@ -15,6 +15,9 @@ categories = ["external-ffi-bindings", "multimedia::video", "multimedia::audio"]
 # that includes invalid Rust code examples (mathematical formulas)
 doctest = false
 
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 log = { workspace = true }
 

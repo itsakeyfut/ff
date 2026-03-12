@@ -27,13 +27,23 @@
 #![allow(clippy::unnecessary_cast)]
 #![allow(clippy::transmute_int_to_bool)]
 
-// Include bindgen-generated bindings
+// On docs.rs (DOCS_RS=1) the build script emits an empty bindings.rs and sets
+// cfg(docsrs).  We include the hand-written stubs instead so that all dependent
+// crates compile without any changes of their own.
+#[cfg(not(docsrs))]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-// Wrapper modules
+#[cfg(docsrs)]
+include!("docsrs_stubs.rs");
+
+// Wrapper modules — only compiled when the real bindings are present.
+#[cfg(not(docsrs))]
 pub mod avcodec;
+#[cfg(not(docsrs))]
 pub mod avformat;
+#[cfg(not(docsrs))]
 pub mod swresample;
+#[cfg(not(docsrs))]
 pub mod swscale;
 
 use std::ffi::CStr;

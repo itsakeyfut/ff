@@ -1,0 +1,676 @@
+// Shape-compatible stubs used by docs.rs builds (DOCS_RS=1).
+//
+// These definitions mirror the real bindgen-generated FFmpeg bindings in type
+// and name, but contain no actual FFmpeg code.  All functions are no-op stubs
+// that never run; they exist only to make the dependent crates compile so that
+// rustdoc can render their public APIs.
+//
+// Maintenance note: add entries here whenever a new ff_sys symbol is referenced
+// in ff-probe, ff-decode, or ff-encode.  The values of integer constants are
+// taken from the FFmpeg 7.x headers for reference accuracy, but correctness at
+// runtime is irrelevant — docs.rs never executes this code.
+
+use std::os::raw::{c_char, c_int, c_uint, c_void};
+
+// ── Type aliases ──────────────────────────────────────────────────────────────
+
+pub type AVCodecID = c_uint;
+pub type AVPixelFormat = c_int;
+pub type AVSampleFormat = c_int;
+pub type AVMediaType = c_int;
+pub type AVColorPrimaries = c_uint;
+pub type AVColorRange = c_uint;
+pub type AVColorSpace = c_uint;
+pub type AVHWDeviceType = c_int;
+pub type AVChannelOrder = c_uint;
+pub type AVPictureType = c_int;
+
+// ── Opaque types (only ever used behind raw pointers) ─────────────────────────
+
+pub struct AVDictionary(());
+pub struct AVCodec(());
+pub struct SwsContext(());
+pub struct SwrContext(());
+pub struct AVBufferRef(());
+pub struct AVIOContext(());
+pub struct AVOutputFormat(());
+
+pub struct AVInputFormat {
+    pub name: *const c_char,
+    pub long_name: *const c_char,
+}
+
+// ── Structs with field-level access ───────────────────────────────────────────
+
+#[repr(C)]
+pub union AVChannelLayout__bindgen_ty_1 {
+    pub mask: u64,
+}
+
+pub struct AVChannelLayout {
+    pub order: AVChannelOrder,
+    pub nb_channels: c_int,
+    pub u: AVChannelLayout__bindgen_ty_1,
+}
+
+pub struct AVRational {
+    pub num: c_int,
+    pub den: c_int,
+}
+
+pub struct AVDictionaryEntry {
+    pub key: *mut c_char,
+    pub value: *mut c_char,
+}
+
+pub struct AVChapter {
+    pub id: i64,
+    pub time_base: AVRational,
+    pub start: i64,
+    pub end: i64,
+    pub metadata: *mut AVDictionary,
+}
+
+pub struct AVCodecParameters {
+    pub codec_type: AVMediaType,
+    pub codec_id: AVCodecID,
+    pub codec_tag: c_uint,
+    pub format: c_int,
+    pub bit_rate: i64,
+    pub width: c_int,
+    pub height: c_int,
+    pub sample_rate: c_int,
+    pub ch_layout: AVChannelLayout,
+    pub sample_fmt: AVSampleFormat,
+    pub color_space: AVColorSpace,
+    pub color_range: AVColorRange,
+    pub color_primaries: AVColorPrimaries,
+}
+
+pub struct AVStream {
+    pub codecpar: *mut AVCodecParameters,
+    pub nb_frames: i64,
+    pub duration: i64,
+    pub time_base: AVRational,
+    pub avg_frame_rate: AVRational,
+    pub r_frame_rate: AVRational,
+    pub start_time: i64,
+}
+
+pub struct AVFormatContext {
+    pub nb_streams: c_uint,
+    pub streams: *mut *mut AVStream,
+    pub duration: i64,
+    pub metadata: *mut AVDictionary,
+    pub nb_chapters: c_uint,
+    pub chapters: *mut *mut AVChapter,
+    pub iformat: *mut AVInputFormat,
+    pub bit_rate: i64,
+    pub pb: *mut AVIOContext,
+}
+
+pub struct AVFrame {
+    pub data: [*mut u8; 8],
+    pub linesize: [c_int; 8],
+    pub width: c_int,
+    pub height: c_int,
+    pub nb_samples: c_int,
+    pub format: c_int,
+    pub key_frame: c_int,
+    pub pict_type: AVPictureType,
+    pub pts: i64,
+    pub pkt_dts: i64,
+    pub sample_rate: c_int,
+    pub ch_layout: AVChannelLayout,
+    pub duration: i64,
+    pub time_base: AVRational,
+    pub hw_frames_ctx: *mut AVBufferRef,
+}
+
+pub struct AVPacket {
+    pub pts: i64,
+    pub dts: i64,
+    pub data: *mut u8,
+    pub size: c_int,
+    pub stream_index: c_int,
+    pub flags: c_int,
+    pub duration: i64,
+}
+
+pub struct AVCodecContext {
+    pub codec_id: AVCodecID,
+    pub bit_rate: i64,
+    pub width: c_int,
+    pub height: c_int,
+    pub pix_fmt: AVPixelFormat,
+    pub sample_rate: c_int,
+    pub ch_layout: AVChannelLayout,
+    pub sample_fmt: AVSampleFormat,
+    pub time_base: AVRational,
+    pub framerate: AVRational,
+    pub gop_size: c_int,
+    pub max_b_frames: c_int,
+    pub qmin: c_int,
+    pub qmax: c_int,
+    pub thread_count: c_int,
+    pub hw_device_ctx: *mut AVBufferRef,
+    pub hw_frames_ctx: *mut AVBufferRef,
+    pub priv_data: *mut c_void,
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+pub const AV_DICT_IGNORE_SUFFIX: u32 = 2;
+pub const AV_NUM_DATA_POINTERS: usize = 8;
+
+pub const AVMediaType_AVMEDIA_TYPE_VIDEO: AVMediaType = 0;
+pub const AVMediaType_AVMEDIA_TYPE_AUDIO: AVMediaType = 1;
+
+pub const AVChannelOrder_AV_CHANNEL_ORDER_UNSPEC: AVChannelOrder = 0;
+pub const AVChannelOrder_AV_CHANNEL_ORDER_NATIVE: AVChannelOrder = 1;
+
+// AVCodecID — video
+pub const AVCodecID_AV_CODEC_ID_NONE: AVCodecID = 0;
+pub const AVCodecID_AV_CODEC_ID_MPEG2VIDEO: AVCodecID = 2;
+pub const AVCodecID_AV_CODEC_ID_MJPEG: AVCodecID = 7;
+pub const AVCodecID_AV_CODEC_ID_MPEG4: AVCodecID = 13;
+pub const AVCodecID_AV_CODEC_ID_H264: AVCodecID = 27;
+pub const AVCodecID_AV_CODEC_ID_THEORA: AVCodecID = 30;
+pub const AVCodecID_AV_CODEC_ID_VP8: AVCodecID = 139;
+pub const AVCodecID_AV_CODEC_ID_PRORES: AVCodecID = 147;
+pub const AVCodecID_AV_CODEC_ID_VP9: AVCodecID = 167;
+pub const AVCodecID_AV_CODEC_ID_HEVC: AVCodecID = 173;
+pub const AVCodecID_AV_CODEC_ID_AV1: AVCodecID = 226;
+pub const AVCodecID_AV_CODEC_ID_DNXHD: AVCodecID = 99;
+
+// AVCodecID — audio
+pub const AVCodecID_AV_CODEC_ID_PCM_S16LE: AVCodecID = 65536;
+pub const AVCodecID_AV_CODEC_ID_PCM_S16BE: AVCodecID = 65537;
+pub const AVCodecID_AV_CODEC_ID_PCM_U8: AVCodecID = 65542;
+pub const AVCodecID_AV_CODEC_ID_PCM_S24LE: AVCodecID = 65544;
+pub const AVCodecID_AV_CODEC_ID_PCM_S24BE: AVCodecID = 65545;
+pub const AVCodecID_AV_CODEC_ID_PCM_S32LE: AVCodecID = 65556;
+pub const AVCodecID_AV_CODEC_ID_PCM_S32BE: AVCodecID = 65557;
+pub const AVCodecID_AV_CODEC_ID_PCM_F32LE: AVCodecID = 65558;
+pub const AVCodecID_AV_CODEC_ID_PCM_F32BE: AVCodecID = 65559;
+pub const AVCodecID_AV_CODEC_ID_PCM_F64LE: AVCodecID = 65560;
+pub const AVCodecID_AV_CODEC_ID_PCM_F64BE: AVCodecID = 65561;
+pub const AVCodecID_AV_CODEC_ID_MP3: AVCodecID = 86017;
+pub const AVCodecID_AV_CODEC_ID_AAC: AVCodecID = 86018;
+pub const AVCodecID_AV_CODEC_ID_AC3: AVCodecID = 86019;
+pub const AVCodecID_AV_CODEC_ID_DTS: AVCodecID = 86020;
+pub const AVCodecID_AV_CODEC_ID_VORBIS: AVCodecID = 86021;
+pub const AVCodecID_AV_CODEC_ID_FLAC: AVCodecID = 86028;
+pub const AVCodecID_AV_CODEC_ID_ALAC: AVCodecID = 86032;
+pub const AVCodecID_AV_CODEC_ID_WMAV2: AVCodecID = 86047;
+pub const AVCodecID_AV_CODEC_ID_EAC3: AVCodecID = 86056;
+pub const AVCodecID_AV_CODEC_ID_OPUS: AVCodecID = 86076;
+
+// AVPixelFormat
+pub const AVPixelFormat_AV_PIX_FMT_NONE: AVPixelFormat = -1;
+pub const AVPixelFormat_AV_PIX_FMT_YUV420P: AVPixelFormat = 0;
+pub const AVPixelFormat_AV_PIX_FMT_RGB24: AVPixelFormat = 2;
+pub const AVPixelFormat_AV_PIX_FMT_BGR24: AVPixelFormat = 3;
+pub const AVPixelFormat_AV_PIX_FMT_YUV422P: AVPixelFormat = 4;
+pub const AVPixelFormat_AV_PIX_FMT_YUV444P: AVPixelFormat = 5;
+pub const AVPixelFormat_AV_PIX_FMT_GRAY8: AVPixelFormat = 8;
+pub const AVPixelFormat_AV_PIX_FMT_PAL8: AVPixelFormat = 77;
+pub const AVPixelFormat_AV_PIX_FMT_NV12: AVPixelFormat = 23;
+pub const AVPixelFormat_AV_PIX_FMT_NV21: AVPixelFormat = 24;
+pub const AVPixelFormat_AV_PIX_FMT_RGBA: AVPixelFormat = 26;
+pub const AVPixelFormat_AV_PIX_FMT_BGRA: AVPixelFormat = 28;
+pub const AVPixelFormat_AV_PIX_FMT_VAAPI: AVPixelFormat = 51;
+pub const AVPixelFormat_AV_PIX_FMT_DXVA2_VLD: AVPixelFormat = 53;
+pub const AVPixelFormat_AV_PIX_FMT_YUV420P10LE: AVPixelFormat = 66;
+pub const AVPixelFormat_AV_PIX_FMT_VDPAU: AVPixelFormat = 101;
+pub const AVPixelFormat_AV_PIX_FMT_CUDA: AVPixelFormat = 119;
+pub const AVPixelFormat_AV_PIX_FMT_QSV: AVPixelFormat = 123;
+pub const AVPixelFormat_AV_PIX_FMT_VIDEOTOOLBOX: AVPixelFormat = 135;
+pub const AVPixelFormat_AV_PIX_FMT_MEDIACODEC: AVPixelFormat = 165;
+pub const AVPixelFormat_AV_PIX_FMT_P010LE: AVPixelFormat = 161;
+pub const AVPixelFormat_AV_PIX_FMT_D3D11: AVPixelFormat = 174;
+pub const AVPixelFormat_AV_PIX_FMT_OPENCL: AVPixelFormat = 180;
+pub const AVPixelFormat_AV_PIX_FMT_VULKAN: AVPixelFormat = 193;
+
+// AVSampleFormat
+pub const AVSampleFormat_AV_SAMPLE_FMT_U8: AVSampleFormat = 0;
+pub const AVSampleFormat_AV_SAMPLE_FMT_S16: AVSampleFormat = 1;
+pub const AVSampleFormat_AV_SAMPLE_FMT_S32: AVSampleFormat = 2;
+pub const AVSampleFormat_AV_SAMPLE_FMT_FLT: AVSampleFormat = 3;
+pub const AVSampleFormat_AV_SAMPLE_FMT_DBL: AVSampleFormat = 4;
+pub const AVSampleFormat_AV_SAMPLE_FMT_U8P: AVSampleFormat = 5;
+pub const AVSampleFormat_AV_SAMPLE_FMT_S16P: AVSampleFormat = 6;
+pub const AVSampleFormat_AV_SAMPLE_FMT_S32P: AVSampleFormat = 7;
+pub const AVSampleFormat_AV_SAMPLE_FMT_FLTP: AVSampleFormat = 8;
+pub const AVSampleFormat_AV_SAMPLE_FMT_DBLP: AVSampleFormat = 9;
+
+// AVColorPrimaries
+pub const AVColorPrimaries_AVCOL_PRI_BT709: AVColorPrimaries = 1;
+pub const AVColorPrimaries_AVCOL_PRI_UNSPECIFIED: AVColorPrimaries = 2;
+pub const AVColorPrimaries_AVCOL_PRI_BT470BG: AVColorPrimaries = 5;
+pub const AVColorPrimaries_AVCOL_PRI_SMPTE170M: AVColorPrimaries = 6;
+pub const AVColorPrimaries_AVCOL_PRI_BT2020: AVColorPrimaries = 9;
+
+// AVColorRange
+pub const AVColorRange_AVCOL_RANGE_UNSPECIFIED: AVColorRange = 0;
+pub const AVColorRange_AVCOL_RANGE_MPEG: AVColorRange = 1;
+pub const AVColorRange_AVCOL_RANGE_JPEG: AVColorRange = 2;
+
+// AVColorSpace
+pub const AVColorSpace_AVCOL_SPC_RGB: AVColorSpace = 0;
+pub const AVColorSpace_AVCOL_SPC_BT709: AVColorSpace = 1;
+pub const AVColorSpace_AVCOL_SPC_UNSPECIFIED: AVColorSpace = 2;
+pub const AVColorSpace_AVCOL_SPC_BT470BG: AVColorSpace = 5;
+pub const AVColorSpace_AVCOL_SPC_SMPTE170M: AVColorSpace = 6;
+pub const AVColorSpace_AVCOL_SPC_BT2020_NCL: AVColorSpace = 9;
+pub const AVColorSpace_AVCOL_SPC_BT2020_CL: AVColorSpace = 10;
+
+// AVHWDeviceType
+pub const AVHWDeviceType_AV_HWDEVICE_TYPE_CUDA: AVHWDeviceType = 2;
+pub const AVHWDeviceType_AV_HWDEVICE_TYPE_VAAPI: AVHWDeviceType = 4;
+pub const AVHWDeviceType_AV_HWDEVICE_TYPE_QSV: AVHWDeviceType = 5;
+pub const AVHWDeviceType_AV_HWDEVICE_TYPE_VIDEOTOOLBOX: AVHWDeviceType = 7;
+pub const AVHWDeviceType_AV_HWDEVICE_TYPE_D3D11VA: AVHWDeviceType = 8;
+
+// ── Raw FFmpeg functions (bindgen-generated counterparts) ─────────────────────
+//
+// These mirror what bindgen would emit from the real FFmpeg headers.
+// All bodies are stubs; the code is compiled but never executed on docs.rs.
+
+// SAFETY: docs.rs stubs — never called at runtime.
+pub unsafe fn av_strerror(_errnum: c_int, _errbuf: *mut c_char, _errbuf_size: usize) -> c_int {
+    0
+}
+
+pub unsafe fn av_dict_get(
+    _m: *const AVDictionary,
+    _key: *const c_char,
+    _prev: *const AVDictionaryEntry,
+    _flags: c_int,
+) -> *mut AVDictionaryEntry {
+    std::ptr::null_mut()
+}
+
+pub unsafe fn avcodec_get_name(_id: AVCodecID) -> *const c_char {
+    std::ptr::null()
+}
+
+pub unsafe fn av_frame_alloc() -> *mut AVFrame {
+    std::ptr::null_mut()
+}
+
+pub unsafe fn av_frame_free(_frame: *mut *mut AVFrame) {}
+
+pub unsafe fn av_frame_get_buffer(_frame: *mut AVFrame, _align: c_int) -> c_int {
+    0
+}
+
+pub unsafe fn av_frame_move_ref(_dst: *mut AVFrame, _src: *mut AVFrame) {}
+
+pub unsafe fn av_frame_unref(_frame: *mut AVFrame) {}
+
+pub unsafe fn av_packet_alloc() -> *mut AVPacket {
+    std::ptr::null_mut()
+}
+
+pub unsafe fn av_packet_free(_pkt: *mut *mut AVPacket) {}
+
+pub unsafe fn av_packet_unref(_pkt: *mut AVPacket) {}
+
+pub unsafe fn av_buffer_ref(_buf: *mut AVBufferRef) -> *mut AVBufferRef {
+    std::ptr::null_mut()
+}
+
+pub unsafe fn av_buffer_unref(_buf: *mut *mut AVBufferRef) {}
+
+pub unsafe fn av_hwdevice_ctx_create(
+    _device_ctx: *mut *mut AVBufferRef,
+    _type_: AVHWDeviceType,
+    _device: *const c_char,
+    _opts: *mut AVDictionary,
+    _flags: c_int,
+) -> c_int {
+    -1
+}
+
+pub unsafe fn av_hwframe_transfer_data(
+    _dst: *mut AVFrame,
+    _src: *const AVFrame,
+    _flags: c_int,
+) -> c_int {
+    -1
+}
+
+pub unsafe fn av_opt_set(
+    _obj: *mut c_void,
+    _name: *const c_char,
+    _val: *const c_char,
+    _search_flags: c_int,
+) -> c_int {
+    0
+}
+
+pub unsafe fn av_read_frame(_s: *mut AVFormatContext, _pkt: *mut AVPacket) -> c_int {
+    -1
+}
+
+pub unsafe fn av_write_trailer(_s: *mut AVFormatContext) -> c_int {
+    0
+}
+
+pub unsafe fn av_interleaved_write_frame(
+    _s: *mut AVFormatContext,
+    _pkt: *mut AVPacket,
+) -> c_int {
+    0
+}
+
+pub unsafe fn avcodec_receive_frame(_avctx: *mut AVCodecContext, _frame: *mut AVFrame) -> c_int {
+    -1
+}
+
+pub unsafe fn avcodec_send_packet(
+    _avctx: *mut AVCodecContext,
+    _avpkt: *const AVPacket,
+) -> c_int {
+    -1
+}
+
+pub unsafe fn avformat_alloc_output_context2(
+    _ctx: *mut *mut AVFormatContext,
+    _oformat: *mut AVOutputFormat,
+    _format_name: *const c_char,
+    _filename: *const c_char,
+) -> c_int {
+    -1
+}
+
+pub unsafe fn avformat_free_context(_s: *mut AVFormatContext) {}
+
+pub unsafe fn avformat_new_stream(
+    _s: *mut AVFormatContext,
+    _c: *const AVCodec,
+) -> *mut AVStream {
+    std::ptr::null_mut()
+}
+
+pub unsafe fn avformat_write_header(
+    _s: *mut AVFormatContext,
+    _options: *mut *mut AVDictionary,
+) -> c_int {
+    -1
+}
+
+pub unsafe fn swr_alloc_set_opts2(
+    _ps: *mut *mut SwrContext,
+    _out_ch_layout: *const AVChannelLayout,
+    _out_sample_fmt: AVSampleFormat,
+    _out_sample_rate: c_int,
+    _in_ch_layout: *const AVChannelLayout,
+    _in_sample_fmt: AVSampleFormat,
+    _in_sample_rate: c_int,
+    _log_offset: c_int,
+    _log_ctx: *mut c_void,
+) -> c_int {
+    -1
+}
+
+pub unsafe fn swr_convert(
+    _s: *mut SwrContext,
+    _out: *mut *mut u8,
+    _out_count: c_int,
+    _in_: *const *const u8,
+    _in_count: c_int,
+) -> c_int {
+    -1
+}
+
+pub unsafe fn swr_free(_s: *mut *mut SwrContext) {}
+
+pub unsafe fn swr_get_out_samples(_s: *mut SwrContext, _in_samples: c_int) -> c_int {
+    0
+}
+
+pub unsafe fn swr_init(_s: *mut SwrContext) -> c_int {
+    -1
+}
+
+pub unsafe fn av_channel_layout_default(_ch_layout: *mut AVChannelLayout, _nb_channels: c_int) {}
+
+pub unsafe fn av_channel_layout_uninit(_ch_layout: *mut AVChannelLayout) {}
+
+// ── Wrapper module stubs ──────────────────────────────────────────────────────
+//
+// These mirror the safe wrapper modules in avformat.rs, avcodec.rs,
+// swresample.rs, and swscale.rs.  Signatures must exactly match those files.
+
+/// Stub `avformat` wrapper module.
+pub mod avformat {
+    use std::os::raw::c_int;
+    use std::path::Path;
+
+    use super::{AVFormatContext, AVIOContext, AVPacket};
+
+    pub unsafe fn open_input(_path: &Path) -> Result<*mut AVFormatContext, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn close_input(_ctx: *mut *mut AVFormatContext) {}
+
+    pub unsafe fn find_stream_info(_ctx: *mut AVFormatContext) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn seek_frame(
+        _ctx: *mut AVFormatContext,
+        _stream_index: c_int,
+        _timestamp: i64,
+        _flags: c_int,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn seek_file(
+        _ctx: *mut AVFormatContext,
+        _stream_index: c_int,
+        _min_ts: i64,
+        _ts: i64,
+        _max_ts: i64,
+        _flags: c_int,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn read_frame(
+        _ctx: *mut AVFormatContext,
+        _pkt: *mut AVPacket,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn write_frame(
+        _ctx: *mut AVFormatContext,
+        _pkt: *mut AVPacket,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn open_output(_path: &Path, _flags: c_int) -> Result<*mut AVIOContext, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn close_output(_pb: *mut *mut AVIOContext) {}
+}
+
+/// Stub `avcodec` wrapper module.
+pub mod avcodec {
+    use std::os::raw::c_int;
+
+    use super::{AVCodec, AVCodecContext, AVCodecID, AVCodecParameters, AVDictionary, AVFrame, AVPacket};
+
+    pub unsafe fn find_decoder(_codec_id: AVCodecID) -> Option<*const AVCodec> {
+        None
+    }
+
+    pub unsafe fn find_decoder_by_name(_name: *const i8) -> Option<*const AVCodec> {
+        None
+    }
+
+    pub unsafe fn find_encoder(_codec_id: AVCodecID) -> Option<*const AVCodec> {
+        None
+    }
+
+    pub unsafe fn find_encoder_by_name(_name: *const i8) -> Option<*const AVCodec> {
+        None
+    }
+
+    pub unsafe fn alloc_context3(_codec: *const AVCodec) -> Result<*mut AVCodecContext, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn free_context(_ctx: *mut *mut AVCodecContext) {}
+
+    pub unsafe fn parameters_to_context(
+        _codec_ctx: *mut AVCodecContext,
+        _par: *const AVCodecParameters,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn open2(
+        _avctx: *mut AVCodecContext,
+        _codec: *const AVCodec,
+        _options: *mut *mut AVDictionary,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn send_packet(
+        _ctx: *mut AVCodecContext,
+        _pkt: *const AVPacket,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn receive_frame(
+        _ctx: *mut AVCodecContext,
+        _frame: *mut AVFrame,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn send_frame(
+        _ctx: *mut AVCodecContext,
+        _frame: *const AVFrame,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn receive_packet(
+        _ctx: *mut AVCodecContext,
+        _pkt: *mut AVPacket,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn flush_buffers(_ctx: *mut AVCodecContext) {}
+}
+
+/// Stub `swresample` wrapper module.
+pub mod swresample {
+    use std::os::raw::c_int;
+
+    use super::{AVChannelLayout, AVSampleFormat, SwrContext};
+
+    pub unsafe fn alloc() -> Result<*mut SwrContext, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn alloc_set_opts2(
+        _out_ch_layout: *const AVChannelLayout,
+        _out_sample_fmt: AVSampleFormat,
+        _out_sample_rate: c_int,
+        _in_ch_layout: *const AVChannelLayout,
+        _in_sample_fmt: AVSampleFormat,
+        _in_sample_rate: c_int,
+    ) -> Result<*mut SwrContext, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn init(_ctx: *mut SwrContext) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn is_initialized(_ctx: *const SwrContext) -> bool {
+        false
+    }
+
+    pub unsafe fn free(_ctx: *mut *mut SwrContext) {}
+
+    pub unsafe fn convert(
+        _s: *mut SwrContext,
+        _out: *mut *mut u8,
+        _out_count: c_int,
+        _in_: *const *const u8,
+        _in_count: c_int,
+    ) -> Result<c_int, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn get_delay(_ctx: *mut SwrContext, _base: i64) -> i64 {
+        0
+    }
+
+    pub fn estimate_output_samples(
+        _out_sample_rate: i32,
+        _in_sample_rate: i32,
+        _in_samples: i32,
+    ) -> i32 {
+        0
+    }
+}
+
+/// Stub `swscale` wrapper module.
+pub mod swscale {
+    use std::os::raw::c_int;
+
+    use super::{AVPixelFormat, SwsContext};
+
+    pub unsafe fn get_context(
+        _src_w: c_int,
+        _src_h: c_int,
+        _src_fmt: AVPixelFormat,
+        _dst_w: c_int,
+        _dst_h: c_int,
+        _dst_fmt: AVPixelFormat,
+        _flags: c_int,
+    ) -> Result<*mut SwsContext, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn free_context(_ctx: *mut SwsContext) {}
+
+    pub unsafe fn scale(
+        _ctx: *mut SwsContext,
+        _src: *const *const u8,
+        _src_stride: *const c_int,
+        _src_slice_y: c_int,
+        _src_slice_h: c_int,
+        _dst: *const *mut u8,
+        _dst_stride: *const c_int,
+    ) -> Result<c_int, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn is_supported_input(_pix_fmt: AVPixelFormat) -> bool {
+        false
+    }
+
+    pub unsafe fn is_supported_output(_pix_fmt: AVPixelFormat) -> bool {
+        false
+    }
+
+    pub unsafe fn is_supported_endianness_conversion(_pix_fmt: AVPixelFormat) -> bool {
+        false
+    }
+}

@@ -10,6 +10,9 @@ repository.workspace = true
 keywords = ["video", "audio", "ffmpeg", "media", "probe"]
 categories = ["multimedia::video", "multimedia::audio"]
 
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 ff-format = { workspace = true }
 ff-sys = { workspace = true }
