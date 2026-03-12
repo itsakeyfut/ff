@@ -1990,9 +1990,7 @@ mod tests {
     #[test]
     fn color_primaries_bt470bg_yields_bt601() {
         assert_eq!(
-            VideoDecoderInner::convert_color_primaries(
-                ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG
-            ),
+            VideoDecoderInner::convert_color_primaries(ff_sys::AVColorPrimaries_AVCOL_PRI_BT470BG),
             ColorPrimaries::Bt601
         );
     }
@@ -2099,12 +2097,18 @@ mod tests {
 
     #[test]
     fn hw_accel_auto_yields_none() {
-        assert_eq!(VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::Auto), None);
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::Auto),
+            None
+        );
     }
 
     #[test]
     fn hw_accel_none_yields_none() {
-        assert_eq!(VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::None), None);
+        assert_eq!(
+            VideoDecoderInner::hw_accel_to_device_type(HardwareAccel::None),
+            None
+        );
     }
 
     #[test]
@@ -2154,61 +2158,91 @@ mod tests {
     #[test]
     fn pixel_format_to_av_round_trip_yuv420p() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Yuv420p);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Yuv420p);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Yuv420p
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_yuv422p() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Yuv422p);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Yuv422p);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Yuv422p
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_yuv444p() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Yuv444p);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Yuv444p);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Yuv444p
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_rgb24() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Rgb24);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Rgb24);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Rgb24
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_bgr24() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Bgr24);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Bgr24);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Bgr24
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_rgba() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Rgba);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Rgba);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Rgba
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_bgra() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Bgra);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Bgra);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Bgra
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_gray8() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Gray8);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Gray8);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Gray8
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_nv12() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Nv12);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Nv12);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Nv12
+        );
     }
 
     #[test]
     fn pixel_format_to_av_round_trip_nv21() {
         let av = VideoDecoderInner::pixel_format_to_av(PixelFormat::Nv21);
-        assert_eq!(VideoDecoderInner::convert_pixel_format(av), PixelFormat::Nv21);
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(av),
+            PixelFormat::Nv21
+        );
     }
 
     #[test]
