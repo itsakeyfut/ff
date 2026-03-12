@@ -16,6 +16,7 @@
 //! - `color` - Color space definitions ([`ColorSpace`], [`ColorRange`], [`ColorPrimaries`])
 //! - `codec` - Codec definitions ([`VideoCodec`], [`AudioCodec`])
 //! - `channel` - Channel layout definitions ([`ChannelLayout`])
+//! - `chapter` - Chapter information ([`ChapterInfo`])
 //! - `error` - Error types ([`FormatError`])
 //!
 //! ## Usage
@@ -50,6 +51,7 @@
 
 // Module declarations
 pub mod channel;
+pub mod chapter;
 pub mod codec;
 pub mod color;
 pub mod error;
@@ -61,6 +63,7 @@ pub mod stream;
 pub mod time;
 
 pub use channel::ChannelLayout;
+pub use chapter::{ChapterInfo, ChapterInfoBuilder};
 pub use codec::{AudioCodec, VideoCodec};
 pub use color::{ColorPrimaries, ColorRange, ColorSpace};
 pub use error::{FormatError, FrameError};
@@ -83,9 +86,9 @@ pub use time::{Rational, Timestamp};
 /// ```
 pub mod prelude {
     pub use crate::{
-        AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ColorPrimaries, ColorRange,
-        ColorSpace, FormatError, FrameError, MediaInfo, PixelFormat, PooledBuffer, Rational,
-        SampleFormat, Timestamp, VideoCodec, VideoFrame, VideoStreamInfo,
+        AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo, ColorPrimaries,
+        ColorRange, ColorSpace, FormatError, FrameError, MediaInfo, PixelFormat, PooledBuffer,
+        Rational, SampleFormat, Timestamp, VideoCodec, VideoFrame, VideoStreamInfo,
     };
 }
 
