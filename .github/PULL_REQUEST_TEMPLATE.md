@@ -1,30 +1,18 @@
 ## Summary
 
-<!-- Describe what this PR does in 1-3 sentences. -->
+<!-- What this PR does and why, in 1–4 sentences. -->
 
 ## Changes
 
-<!-- Check all that apply. -->
-
-- [ ] Bug fix (non-breaking)
-- [ ] New feature (non-breaking)
-- [ ] Breaking change (API or behavior change)
-- [ ] Documentation only
-- [ ] Refactor / internal cleanup
-- [ ] CI / tooling
+<!-- List of notable changes. For bug fixes, include root cause and fix.
+     For new features, include what was added. For tests, list what was covered. -->
 
 ## Related Issues
 
-<!-- Link any related issues: "Fixes #N" or "Refs #N" -->
+<!-- Fixes #N -->
 
 ## Test Plan
-
-<!-- How was this tested? What should reviewers verify? -->
 
 - [ ] `cargo test --all --all-features` passes
 - [ ] `cargo clippy --all --all-features -- -D warnings` passes
 - [ ] `cargo fmt --all -- --check` passes
-
-## Notes for Reviewers
-
-<!-- Anything that needs special attention during review, or context that isn't obvious from the code. -->
