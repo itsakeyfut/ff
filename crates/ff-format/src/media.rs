@@ -55,6 +55,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::chapter::ChapterInfo;
 use crate::stream::{AudioStreamInfo, VideoStreamInfo};
 
 /// Information about a media file.
@@ -95,6 +96,8 @@ pub struct MediaInfo {
     video_streams: Vec<VideoStreamInfo>,
     /// Audio streams in the file
     audio_streams: Vec<AudioStreamInfo>,
+    /// Chapter markers in the file
+    chapters: Vec<ChapterInfo>,
     /// File metadata (title, artist, etc.)
     metadata: HashMap<String, String>,
 }
@@ -174,6 +177,27 @@ impl MediaInfo {
     #[inline]
     pub fn audio_streams(&self) -> &[AudioStreamInfo] {
         &self.audio_streams
+    }
+
+    /// Returns all chapters in the file.
+    #[must_use]
+    #[inline]
+    pub fn chapters(&self) -> &[ChapterInfo] {
+        &self.chapters
+    }
+
+    /// Returns `true` if the file contains at least one chapter marker.
+    #[must_use]
+    #[inline]
+    pub fn has_chapters(&self) -> bool {
+        !self.chapters.is_empty()
+    }
+
+    /// Returns the number of chapters.
+    #[must_use]
+    #[inline]
+    pub fn chapter_count(&self) -> usize {
+        self.chapters.len()
     }
 
     /// Returns the file metadata.
@@ -410,6 +434,7 @@ impl Default for MediaInfo {
             bitrate: None,
             video_streams: Vec::new(),
             audio_streams: Vec::new(),
+            chapters: Vec::new(),
             metadata: HashMap::new(),
         }
     }
@@ -443,6 +468,7 @@ pub struct MediaInfoBuilder {
     bitrate: Option<u64>,
     video_streams: Vec<VideoStreamInfo>,
     audio_streams: Vec<AudioStreamInfo>,
+    chapters: Vec<ChapterInfo>,
     metadata: HashMap<String, String>,
 }
 
@@ -517,6 +543,20 @@ impl MediaInfoBuilder {
         self
     }
 
+    /// Adds a chapter.
+    #[must_use]
+    pub fn chapter(mut self, chapter: ChapterInfo) -> Self {
+        self.chapters.push(chapter);
+        self
+    }
+
+    /// Sets all chapters at once, replacing any existing chapters.
+    #[must_use]
+    pub fn chapters(mut self, chapters: Vec<ChapterInfo>) -> Self {
+        self.chapters = chapters;
+        self
+    }
+
     /// Adds a metadata key-value pair.
     #[must_use]
     pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -543,6 +583,7 @@ impl MediaInfoBuilder {
             bitrate: self.bitrate,
             video_streams: self.video_streams,
             audio_streams: self.audio_streams,
+            chapters: self.chapters,
             metadata: self.metadata,
         }
     }
