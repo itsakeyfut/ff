@@ -1,9 +1,9 @@
 [package]
-name = "ff"
+name = "avio"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "High-level, safe FFmpeg bindings for Rust — the ff-* crate family facade"
+description = "Safe, high-level audio/video/image processing for Rust — backend-agnostic multimedia toolkit"
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
