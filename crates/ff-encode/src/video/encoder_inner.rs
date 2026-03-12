@@ -1281,7 +1281,13 @@ fn sample_format_to_av(format: ff_format::SampleFormat) -> ff_sys::AVSampleForma
         SampleFormat::I32p => sample_format::S32P,
         SampleFormat::F32p => sample_format::FLTP,
         SampleFormat::F64p => sample_format::DBLP,
-        _ => sample_format::FLTP, // Default to FLTP for unknown formats
+        _ => {
+            log::warn!(
+                "sample_format has no AV mapping, falling back to FLTP \
+                 format={format:?} fallback=FLTP"
+            );
+            sample_format::FLTP
+        }
     }
 }
 
@@ -1302,10 +1308,13 @@ fn pixel_format_to_av(format: ff_format::PixelFormat) -> AVPixelFormat {
         PixelFormat::Nv21 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV21,
         PixelFormat::Yuv420p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE,
         PixelFormat::P010le => ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE,
-        // Fallback for unknown or future formats - use YUV420P as safe default
-        // TODO: Add logging when a logging framework is available
-        //       Example: warn!("Unknown pixel format {:?}, falling back to YUV420P", format);
-        PixelFormat::Other(_) | _ => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P,
+        _ => {
+            log::warn!(
+                "pixel_format has no AV mapping, falling back to Yuv420p \
+                 format={format:?} fallback=AV_PIX_FMT_YUV420P"
+            );
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
+        }
     }
 }
 

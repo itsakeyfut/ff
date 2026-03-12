@@ -758,6 +758,11 @@ impl VideoFrame {
     #[inline]
     pub fn aspect_ratio(&self) -> f64 {
         if self.height == 0 {
+            log::warn!(
+                "aspect_ratio unavailable, height is 0, returning 0.0 \
+                 width={} height=0 fallback=0.0",
+                self.width
+            );
             0.0
         } else {
             f64::from(self.width) / f64::from(self.height)

@@ -557,6 +557,12 @@ fn sample_format_to_av(format: ff_format::SampleFormat) -> ff_sys::AVSampleForma
         SampleFormat::I32p => sample_format::S32P,
         SampleFormat::F32p => sample_format::FLTP,
         SampleFormat::F64p => sample_format::DBLP,
-        _ => sample_format::FLTP, // Default to FLTP for unknown formats
+        _ => {
+            log::warn!(
+                "sample_format has no AV mapping, falling back to FLTP \
+                 format={format:?} fallback=FLTP"
+            );
+            sample_format::FLTP
+        }
     }
 }

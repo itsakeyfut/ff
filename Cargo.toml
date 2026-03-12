@@ -26,6 +26,9 @@ avio        = { path = "crates/avio",        version = "0.1.0" }
 # Error handling
 thiserror = "2.0.17"
 
+# Logging
+log = "0.4.29"
+
 # Image processing
 image = { version = "0.25.9", default-features = false }
 

@@ -476,7 +476,7 @@ impl AudioDecoderInner {
         } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_DBLP {
             SampleFormat::F64p
         } else {
-            // WARNING: Unknown sample format, using F32 as fallback
+            log::warn!("sample_format unsupported, falling back to F32 requested={fmt} fallback=F32");
             SampleFormat::F32
         }
     }
@@ -524,7 +524,7 @@ impl AudioDecoderInner {
         } else if codec_id == ff_sys::AVCodecID_AV_CODEC_ID_PCM_S16LE {
             AudioCodec::Pcm
         } else {
-            // WARNING: Unknown codec, using AAC as fallback
+            log::warn!("audio codec unsupported, falling back to Aac codec_id={codec_id} fallback=Aac");
             AudioCodec::Aac
         }
     }
@@ -910,8 +910,10 @@ impl AudioDecoderInner {
             SampleFormat::I32p => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S32P,
             SampleFormat::F32p => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLTP,
             SampleFormat::F64p => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_DBLP,
-            // WARNING: Unknown sample format, using F32 as fallback
-            _ => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLT,
+            _ => {
+                log::warn!("sample_format has no AV mapping, falling back to F32 format={format:?} fallback=AV_SAMPLE_FMT_FLT");
+                ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLT
+            }
         }
     }
 
