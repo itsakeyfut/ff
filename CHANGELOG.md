@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] - 2026-03-13
+
+### Fixed
+
+#### ff-sys
+- docs.rs builds now succeed for all crates. `build.rs` detects the `DOCS_RS`
+  environment variable and writes empty bindings, emitting `cfg(docsrs)`.
+  A new `docsrs_stubs.rs` file provides shape-compatible stub types, constants,
+  functions, and wrapper modules so that `ff-probe`, `ff-decode`, and `ff-encode`
+  compile on docs.rs without any changes to those crates ([#125](https://github.com/itsakeyfut/avio/pull/125))
+- All crates now carry `[package.metadata.docs.rs]` with
+  `rustdoc-args = ["--cfg", "docsrs"]` ([#125](https://github.com/itsakeyfut/avio/pull/125))
+
+---
+
 ## [0.1.2] - 2026-03-12
 
 ### Added
