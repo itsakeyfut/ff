@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### ff-sys
 - Raise minimum required FFmpeg version from 6.0 to 7.0. FFmpeg 7.x converted
   scaling flags from `#define` macros to `enum SwsFlags`, making 6.x
-  incompatible with the bindgen-generated `SwsFlags_SWS_*` constants ([#1](https://github.com/itsakeyfut/ff/pull/1))
+  incompatible with the bindgen-generated `SwsFlags_SWS_*` constants ([#1](https://github.com/itsakeyfut/avio/pull/1))
 
 ---
 

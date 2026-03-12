@@ -1,6 +1,6 @@
-# ff
+# avio
 
-Safe, high-level FFmpeg wrapper for Rust — decode, encode, probe, and filter without `unsafe` code.
+Safe, high-level audio/video/image processing for Rust — decode, encode, probe, and filter without `unsafe` code.
 
 [![Crates.io](https://img.shields.io/crates/v/ff-decode.svg)](https://crates.io/crates/ff-decode)
 [![Docs.rs](https://docs.rs/ff-decode/badge.svg)](https://docs.rs/ff-decode)
@@ -8,7 +8,9 @@ Safe, high-level FFmpeg wrapper for Rust — decode, encode, probe, and filter w
 
 ## Overview
 
-`ff` is a family of Rust crates that provide safe, ergonomic access to FFmpeg. All public APIs are **safe** — unsafe FFmpeg internals are fully encapsulated so you never need to write `unsafe` code in your application.
+`avio` is a family of Rust crates that provide safe, ergonomic multimedia processing. All public APIs are **safe** — unsafe internals are fully encapsulated so you never need to write `unsafe` code in your application.
+
+Currently backed by FFmpeg, with planned support for GStreamer and other backends.
 
 ```rust
 use ff_probe::open;
@@ -41,13 +43,16 @@ encoder.finish()?;
 
 | Crate | Description | crates.io |
 |-------|-------------|-----------|
-| [`ff-probe`](./ff-probe) | Media metadata extraction | [![](https://img.shields.io/crates/v/ff-probe.svg)](https://crates.io/crates/ff-probe) |
-| [`ff-decode`](./ff-decode) | Video and audio decoding | [![](https://img.shields.io/crates/v/ff-decode.svg)](https://crates.io/crates/ff-decode) |
-| [`ff-encode`](./ff-encode) | Video and audio encoding | [![](https://img.shields.io/crates/v/ff-encode.svg)](https://crates.io/crates/ff-encode) |
-| [`ff-filter`](./ff-filter) | Filter graph operations *(planned)* | — |
-| [`ff-format`](./ff-format) | Shared type definitions | [![](https://img.shields.io/crates/v/ff-format.svg)](https://crates.io/crates/ff-format) |
-| [`ff-common`](./ff-common) | Common traits and buffer pooling | [![](https://img.shields.io/crates/v/ff-common.svg)](https://crates.io/crates/ff-common) |
-| [`ff-sys`](./ff-sys) | Low-level FFmpeg FFI bindings | [![](https://img.shields.io/crates/v/ff-sys.svg)](https://crates.io/crates/ff-sys) |
+| [`ff-probe`](./crates/ff-probe) | Media metadata extraction | [![](https://img.shields.io/crates/v/ff-probe.svg)](https://crates.io/crates/ff-probe) |
+| [`ff-decode`](./crates/ff-decode) | Video and audio decoding | [![](https://img.shields.io/crates/v/ff-decode.svg)](https://crates.io/crates/ff-decode) |
+| [`ff-encode`](./crates/ff-encode) | Video and audio encoding | [![](https://img.shields.io/crates/v/ff-encode.svg)](https://crates.io/crates/ff-encode) |
+| [`ff-filter`](./crates/ff-filter) | Filter graph operations *(planned)* | — |
+| [`ff-pipeline`](./crates/ff-pipeline) | Decode-filter-encode pipeline *(planned)* | [![](https://img.shields.io/crates/v/ff-pipeline.svg)](https://crates.io/crates/ff-pipeline) |
+| [`ff-stream`](./crates/ff-stream) | HLS/DASH streaming output *(planned)* | [![](https://img.shields.io/crates/v/ff-stream.svg)](https://crates.io/crates/ff-stream) |
+| [`ff-format`](./crates/ff-format) | Shared type definitions | [![](https://img.shields.io/crates/v/ff-format.svg)](https://crates.io/crates/ff-format) |
+| [`ff-common`](./crates/ff-common) | Common traits and buffer pooling | [![](https://img.shields.io/crates/v/ff-common.svg)](https://crates.io/crates/ff-common) |
+| [`ff-sys`](./crates/ff-sys) | Low-level FFmpeg FFI bindings | [![](https://img.shields.io/crates/v/ff-sys.svg)](https://crates.io/crates/ff-sys) |
+| [`avio`](./crates/avio) | Facade crate — re-exports all member crates | [![](https://img.shields.io/crates/v/avio.svg)](https://crates.io/crates/avio) |
 
 ## Features
 
@@ -57,6 +62,7 @@ encoder.finish()?;
 - **Encode** — Video/audio encoding with hardware acceleration and LGPL-compliant defaults
 - **Hardware Acceleration** — NVENC/NVDEC, Intel QSV, AMD AMF, Apple VideoToolbox, VA-API
 - **Filter Graph** *(planned)* — Trim, scale, crop, overlay, and more via `libavfilter`
+- **Streaming** *(planned)* — HLS/DASH adaptive bitrate output
 - **Cross-platform** — Windows, macOS, Linux
 
 ## Installation
@@ -68,6 +74,9 @@ Add the crates you need to your `Cargo.toml`:
 ff-probe  = "0.1"
 ff-decode = "0.1"
 ff-encode = "0.1"
+
+# Or use the facade crate for everything
+avio = "0.1"
 ```
 
 ### Prerequisites
@@ -205,7 +214,7 @@ at your option.
 
 ### FFmpeg License
 
-This project links against FFmpeg, which is licensed under [LGPL 2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html) by default. The `gpl` feature of `ff-encode` enables GPL-licensed codecs (libx264, libx265) — see [`ff-encode`](./ff-encode/README.md) for details.
+This project links against FFmpeg, which is licensed under [LGPL 2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html) by default. The `gpl` feature of `ff-encode` enables GPL-licensed codecs (libx264, libx265) — see [`ff-encode`](./crates/ff-encode/README.md) for details.
 
 ## Test Assets
 

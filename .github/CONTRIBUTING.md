@@ -1,4 +1,4 @@
-# Contributing to ff
+# Contributing to avio
 
 Thank you for your interest in contributing! No contribution is too small — bug reports,
 documentation improvements, and typo fixes are all equally welcome.
@@ -66,7 +66,7 @@ Verify: `ffmpeg -version` (must show `7.x`)
 - **Platform testing** — Verifying builds and tests on macOS, Windows, or with hardware encoders (NVENC, VideoToolbox, VAAPI, AMF)
 - **Performance** — Profiling and reducing unnecessary copies or allocations
 
-Looking for a starting point? Check issues labeled [`good first issue`](https://github.com/itsakeyfut/ff/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/itsakeyfut/ff/issues?q=is%3Aopen+label%3A%22help+wanted%22).
+Looking for a starting point? Check issues labeled [`good first issue`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/itsakeyfut/avio/issues?q=is%3Aopen+label%3A%22help+wanted%22).
 
 ---
 
