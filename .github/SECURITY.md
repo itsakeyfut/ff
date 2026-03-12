@@ -11,7 +11,7 @@
 **Please do not report security vulnerabilities through public GitHub issues.**
 
 If you discover a security vulnerability, report it privately via
-[GitHub Security Advisories](https://github.com/itsakeyfut/ff/security/advisories/new).
+[GitHub Security Advisories](https://github.com/itsakeyfut/avio/security/advisories/new).
 
 Please include:
 
