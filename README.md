@@ -46,7 +46,7 @@ encoder.finish()?;
 | [`ff-probe`](./crates/ff-probe) | Media metadata extraction | [![](https://img.shields.io/crates/v/ff-probe.svg)](https://crates.io/crates/ff-probe) |
 | [`ff-decode`](./crates/ff-decode) | Video and audio decoding | [![](https://img.shields.io/crates/v/ff-decode.svg)](https://crates.io/crates/ff-decode) |
 | [`ff-encode`](./crates/ff-encode) | Video and audio encoding | [![](https://img.shields.io/crates/v/ff-encode.svg)](https://crates.io/crates/ff-encode) |
-| [`ff-filter`](./crates/ff-filter) | Filter graph operations *(planned)* | — |
+| [`ff-filter`](./crates/ff-filter) | Filter graph operations *(planned)* | [![](https://img.shields.io/crates/v/ff-filter.svg)](https://crates.io/crates/ff-filter) |
 | [`ff-pipeline`](./crates/ff-pipeline) | Decode-filter-encode pipeline *(planned)* | [![](https://img.shields.io/crates/v/ff-pipeline.svg)](https://crates.io/crates/ff-pipeline) |
 | [`ff-stream`](./crates/ff-stream) | HLS/DASH streaming output *(planned)* | [![](https://img.shields.io/crates/v/ff-stream.svg)](https://crates.io/crates/ff-stream) |
 | [`ff-format`](./crates/ff-format) | Shared type definitions | [![](https://img.shields.io/crates/v/ff-format.svg)](https://crates.io/crates/ff-format) |
