@@ -266,6 +266,70 @@ fn test_builder_with_quality() {
     assert_valid_output_file(&output_path);
 }
 
+#[test]
+fn crf_h264_should_produce_valid_output() {
+    let output_path = test_output_path("crf_h264.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .expect("Failed to create encoder builder")
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .video_quality(23) // CRF 23 — default quality for H.264
+        .preset(Preset::Ultrafast)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping crf_h264 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+}
+
+#[test]
+fn crf_h265_should_produce_valid_output() {
+    let output_path = test_output_path("crf_h265.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .expect("Failed to create encoder builder")
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H265)
+        .video_quality(28) // CRF 28 — default quality for H.265
+        .preset(Preset::Ultrafast)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping crf_h265 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+}
+
 // ============================================================================
 // Preset Tests
 // ============================================================================

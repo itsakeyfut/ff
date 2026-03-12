@@ -248,12 +248,20 @@ impl VideoEncoderInner {
         } else if let Some(q) = quality {
             let crf_str = CString::new(q.to_string())
                 .map_err(|_| EncodeError::Ffmpeg("Invalid CRF value".to_string()))?;
-            ff_sys::av_opt_set(
+            // SAFETY: priv_data, option name, and value are all valid pointers
+            let ret = ff_sys::av_opt_set(
                 (*codec_ctx).priv_data,
                 b"crf\0".as_ptr() as *const i8,
                 crf_str.as_ptr(),
                 0,
             );
+            if ret < 0 {
+                log::warn!(
+                    "crf option not supported by encoder, falling back to default bitrate \
+                     encoder={encoder_name} crf={q}"
+                );
+                (*codec_ctx).bit_rate = 2_000_000;
+            }
         } else {
             // Default bitrate
             (*codec_ctx).bit_rate = 2_000_000;
@@ -263,17 +271,27 @@ impl VideoEncoderInner {
         if encoder_name.contains("264") || encoder_name.contains("265") {
             let preset_cstr = CString::new(preset)
                 .map_err(|_| EncodeError::Ffmpeg("Invalid preset value".to_string()))?;
-            ff_sys::av_opt_set(
+            // SAFETY: priv_data, option name, and value are all valid pointers
+            let ret = ff_sys::av_opt_set(
                 (*codec_ctx).priv_data,
                 b"preset\0".as_ptr() as *const i8,
                 preset_cstr.as_ptr(),
                 0,
             );
+            if ret < 0 {
+                log::warn!(
+                    "preset option not supported by encoder, ignoring \
+                     encoder={encoder_name} preset={preset}"
+                );
+            }
         }
 
         // Open codec
         avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
             .map_err(EncodeError::from_ffmpeg_error)?;
+        log::info!(
+            "codec opened codec={encoder_name} width={width} height={height} fps={fps}"
+        );
 
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
