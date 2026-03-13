@@ -91,6 +91,7 @@ impl FilterGraphInner {
 
         let pix_fmt = pixel_format_to_av(frame.format());
         let args = video_buffersrc_args(frame.width(), frame.height(), pix_fmt);
+        let num_inputs = self.video_input_count();
 
         // SAFETY: all raw pointers are checked for null after allocation; the
         // graph pointer is stored in `self.graph` and kept alive for the
@@ -103,13 +104,20 @@ impl FilterGraphInner {
             // SAFETY: checked non-null above.
             let graph_nn = NonNull::new_unchecked(graph_ptr);
 
-            match Self::build_video_graph(graph_nn, &args, &self.steps, self.hw.as_ref()) {
+            match Self::build_video_graph(
+                graph_nn,
+                &args,
+                num_inputs,
+                &self.steps,
+                self.hw.as_ref(),
+            ) {
                 Ok((src_ctxs, vsink_ctx)) => {
                     self.graph = Some(graph_nn);
                     self.src_ctxs = src_ctxs;
                     self.vsink_ctx = Some(vsink_ctx);
                     log::info!(
-                        "filter graph configured inputs=1 filters={}",
+                        "filter graph configured inputs={} filters={}",
+                        num_inputs,
                         self.steps.len()
                     );
                     Ok(())
@@ -125,20 +133,21 @@ impl FilterGraphInner {
 
     /// Build the `AVFilterGraph` for video, returning `(src_ctxs, vsink_ctx)`.
     ///
+    /// `num_inputs` buffersrc contexts are created (`in0`..`inN-1`).  For
+    /// multi-input filters like `overlay`, the extra sources are linked to the
+    /// appropriate input pads after the main chain link is established.
+    ///
     /// # Safety
     ///
     /// `graph_nn` must be a valid, freshly-allocated `AVFilterGraph`.
     unsafe fn build_video_graph(
         graph_nn: NonNull<ff_sys::AVFilterGraph>,
         buffersrc_args: &str,
+        num_inputs: usize,
         steps: &[FilterStep],
         _hw: Option<&HwAccel>,
     ) -> BuildResult {
         let graph = graph_nn.as_ptr();
-
-        // 1. Create buffersrc ("buffer").
-        let src_args =
-            std::ffi::CString::new(buffersrc_args).map_err(|_| FilterError::BuildFailed)?;
 
         // SAFETY: `avfilter_get_by_name` returns a borrowed pointer valid for
         // the process lifetime; we never free it.
@@ -147,9 +156,15 @@ impl FilterGraphInner {
             return Err(FilterError::BuildFailed);
         }
 
-        let mut src_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let src_args =
+            std::ffi::CString::new(buffersrc_args).map_err(|_| FilterError::BuildFailed)?;
+        let mut src_ctxs: Vec<Option<NonNull<ff_sys::AVFilterContext>>> =
+            Vec::with_capacity(num_inputs);
+
+        // 1. Create in0 (always present).
+        let mut raw_ctx0: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
         let ret = ff_sys::avfilter_graph_create_filter(
-            &raw mut src_ctx,
+            &raw mut raw_ctx0,
             buffersrc,
             c"in0".as_ptr(),
             src_args.as_ptr(),
@@ -160,6 +175,29 @@ impl FilterGraphInner {
             return Err(FilterError::BuildFailed);
         }
         log::debug!("filter added name=buffersrc slot=0");
+        // SAFETY: ret >= 0 guarantees non-null.
+        src_ctxs.push(Some(NonNull::new_unchecked(raw_ctx0)));
+
+        // Create in1..inN-1 (for overlay etc.)
+        for slot in 1..num_inputs {
+            let ctx_name = std::ffi::CString::new(format!("in{slot}"))
+                .map_err(|_| FilterError::BuildFailed)?;
+            let mut raw_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut raw_ctx,
+                buffersrc,
+                ctx_name.as_ptr(),
+                src_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                return Err(FilterError::BuildFailed);
+            }
+            log::debug!("filter added name=buffersrc slot={slot}");
+            // SAFETY: ret >= 0 guarantees non-null.
+            src_ctxs.push(Some(NonNull::new_unchecked(raw_ctx)));
+        }
 
         // 2. Create buffersink ("buffersink").
         let buffersink = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
@@ -180,10 +218,22 @@ impl FilterGraphInner {
             return Err(FilterError::BuildFailed);
         }
 
-        // 3-5. Add each `FilterStep` and link the chain.
-        let mut prev_ctx: *mut ff_sys::AVFilterContext = src_ctx;
+        // 3-5. Add each `FilterStep`, link the main chain (in0 → step[0] → …),
+        // and wire extra input pads for multi-input filters.
+        let mut prev_ctx: *mut ff_sys::AVFilterContext = raw_ctx0;
         for (i, step) in steps.iter().enumerate() {
             prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "step")?;
+
+            // Overlay consumes a second input on pad 1.
+            if matches!(step, FilterStep::Overlay { .. })
+                && let Some(Some(extra_src)) = src_ctxs.get(1)
+            {
+                let ret = ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, 1);
+                if ret < 0 {
+                    return Err(FilterError::BuildFailed);
+                }
+                log::debug!("filter linked extra_input=in1 to overlay pad=1");
+            }
         }
 
         // Link last filter to sink.
@@ -200,9 +250,8 @@ impl FilterGraphInner {
 
         // SAFETY: `avfilter_graph_create_filter` with ret >= 0 guarantees
         // non-null pointers.
-        let src_nn = NonNull::new_unchecked(src_ctx);
         let sink_nn = NonNull::new_unchecked(sink_ctx);
-        Ok((vec![Some(src_nn)], sink_nn))
+        Ok((src_ctxs, sink_nn))
     }
 
     /// Push a video frame into the filter graph.
@@ -296,6 +345,19 @@ impl FilterGraphInner {
     }
 
     // ── Audio ─────────────────────────────────────────────────────────────────
+
+    /// Returns the number of video input slots required by the configured steps.
+    ///
+    /// Returns 2 when [`FilterStep::Overlay`] is present (needs a main stream
+    /// on slot 0 and a secondary stream on slot 1), 1 otherwise.
+    fn video_input_count(&self) -> usize {
+        for step in &self.steps {
+            if matches!(step, FilterStep::Overlay { .. }) {
+                return 2;
+            }
+        }
+        1
+    }
 
     /// Returns the number of audio input slots required by the configured steps.
     fn audio_input_count(&self) -> usize {
@@ -1002,6 +1064,47 @@ mod tests {
             args.contains("time_base=1/48000"),
             "time_base denominator must equal sample_rate: {args}"
         );
+    }
+
+    // ── video_input_count ──────────────────────────────────────────────────────
+
+    /// Single-input steps (no overlay) require exactly one buffersrc.
+    #[test]
+    fn video_input_count_should_return_1_for_single_input_steps() {
+        let inner = FilterGraphInner::new(
+            vec![FilterStep::Scale {
+                width: 1280,
+                height: 720,
+            }],
+            None,
+        );
+        assert_eq!(inner.video_input_count(), 1);
+    }
+
+    /// Overlay requires two buffersrc contexts (main + secondary).
+    #[test]
+    fn video_input_count_should_return_2_for_overlay() {
+        let inner = FilterGraphInner::new(vec![FilterStep::Overlay { x: 10, y: 10 }], None);
+        assert_eq!(inner.video_input_count(), 2);
+    }
+
+    /// A chain without overlay must still report 1, even with multiple steps.
+    #[test]
+    fn video_input_count_should_return_1_with_no_overlay_in_chain() {
+        let inner = FilterGraphInner::new(
+            vec![
+                FilterStep::Trim {
+                    start: 0.0,
+                    end: 5.0,
+                },
+                FilterStep::Scale {
+                    width: 640,
+                    height: 360,
+                },
+            ],
+            None,
+        );
+        assert_eq!(inner.video_input_count(), 1);
     }
 }
 
