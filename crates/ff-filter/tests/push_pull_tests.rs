@@ -185,3 +185,36 @@ fn push_video_through_crop_should_return_cropped_frame() {
     assert_eq!(out.width(), 32, "width should be cropped to 32");
     assert_eq!(out.height(), 32, "height should be cropped to 32");
 }
+
+#[test]
+fn push_video_through_overlay_should_return_composited_frame() {
+    let mut graph = match FilterGraph::builder().overlay(0, 0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let base = make_yuv420p_frame(64, 64);
+    let overlay = make_yuv420p_frame(64, 64);
+    // Push base video to slot 0 first; this also initialises the graph.
+    match graph.push_video(0, &base) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    // Push overlay video to slot 1.
+    match graph.push_video(1, &overlay) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after overlay push");
+    assert_eq!(out.width(), 64, "output width should match base video");
+    assert_eq!(out.height(), 64, "output height should match base video");
+}
