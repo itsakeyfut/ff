@@ -240,6 +240,7 @@ fn test_scrubbing_workflow_performance() {
 }
 
 #[test]
+#[ignore = "performance thresholds are environment-dependent; run explicitly with -- --include-ignored"]
 fn test_thumbnail_generation_performance() {
     let mut decoder = create_decoder();
 
