@@ -42,6 +42,16 @@ const AUDIO_TIME_BASE_NUM: i32 = 1;
 type FilterCtxVec = Vec<Option<NonNull<ff_sys::AVFilterContext>>>;
 type BuildResult = Result<(FilterCtxVec, NonNull<ff_sys::AVFilterContext>), FilterError>;
 
+// ── FFmpeg error helper ───────────────────────────────────────────────────────
+
+/// Convert a negative `FFmpeg` return code into a [`FilterError::Ffmpeg`].
+fn ffmpeg_err(code: i32) -> FilterError {
+    FilterError::Ffmpeg {
+        code,
+        message: ff_sys::av_error_string(code),
+    }
+}
+
 // ── FilterGraphInner ──────────────────────────────────────────────────────────
 
 /// Low-level filter graph wrapper.
@@ -245,7 +255,8 @@ impl FilterGraphInner {
         // 6. Configure the graph.
         let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
         if ret < 0 {
-            return Err(FilterError::BuildFailed);
+            log::warn!("avfilter_graph_config failed code={ret}");
+            return Err(ffmpeg_err(ret));
         }
 
         // SAFETY: `avfilter_graph_create_filter` with ret >= 0 guarantees
@@ -527,7 +538,8 @@ impl FilterGraphInner {
         // 6. Configure the graph.
         let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
         if ret < 0 {
-            return Err(FilterError::BuildFailed);
+            log::warn!("avfilter_graph_config failed code={ret}");
+            return Err(ffmpeg_err(ret));
         }
 
         // SAFETY: sink_ctx is non-null (ret >= 0 above).
@@ -1105,6 +1117,32 @@ mod tests {
             None,
         );
         assert_eq!(inner.video_input_count(), 1);
+    }
+
+    // ── ffmpeg_err helper ──────────────────────────────────────────────────────
+
+    /// `ffmpeg_err` must return the `Ffmpeg` variant carrying the original code.
+    #[test]
+    fn ffmpeg_err_should_return_ffmpeg_variant_with_code() {
+        let err = ffmpeg_err(-22);
+        assert!(
+            matches!(err, FilterError::Ffmpeg { code: -22, .. }),
+            "expected Ffmpeg variant with code -22, got {err:?}"
+        );
+    }
+
+    /// `ffmpeg_err` must populate a non-empty message string for a known error code.
+    #[test]
+    fn ffmpeg_err_should_populate_non_empty_message() {
+        let err = ffmpeg_err(-22);
+        if let FilterError::Ffmpeg { message, .. } = err {
+            assert!(
+                !message.is_empty(),
+                "message must not be empty for a known error code"
+            );
+        } else {
+            panic!("expected Ffmpeg variant");
+        }
     }
 }
 
