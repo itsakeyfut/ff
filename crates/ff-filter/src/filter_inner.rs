@@ -90,14 +90,7 @@ impl FilterGraphInner {
         }
 
         let pix_fmt = pixel_format_to_av(frame.format());
-        let args = format!(
-            "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect=1/1",
-            frame.width(),
-            frame.height(),
-            pix_fmt,
-            VIDEO_TIME_BASE_NUM,
-            VIDEO_TIME_BASE_DEN,
-        );
+        let args = video_buffersrc_args(frame.width(), frame.height(), pix_fmt);
 
         // SAFETY: all raw pointers are checked for null after allocation; the
         // graph pointer is stored in `self.graph` and kept alive for the
@@ -325,10 +318,7 @@ impl FilterGraphInner {
         let sample_rate = frame.sample_rate();
         let channels = frame.channels();
 
-        let args = format!(
-            "sample_rate={}:sample_fmt={}:channels={}:time_base={}/{}",
-            sample_rate, sample_fmt, channels, AUDIO_TIME_BASE_NUM, sample_rate,
-        );
+        let args = audio_buffersrc_args(sample_rate, sample_fmt, channels);
 
         // SAFETY: same contract as `ensure_video_graph` — pointers checked for
         // null, stored in `self`, freed in `Drop`.
@@ -651,6 +641,32 @@ unsafe fn add_and_link_step(
     Ok(step_ctx)
 }
 
+// ── buffersrc / buffersink arg-string helpers ──────────────────────────────────
+
+/// Build the `args` string passed to `avfilter_graph_create_filter` when
+/// creating a video `buffer` (buffersrc) context.
+///
+/// The format follows libavfilter's `buffer` filter parameter syntax:
+/// `video_size=WxH:pix_fmt=N:time_base=NUM/DEN:pixel_aspect=1/1`.
+fn video_buffersrc_args(width: u32, height: u32, pix_fmt: c_int) -> String {
+    format!(
+        "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect=1/1",
+        width, height, pix_fmt, VIDEO_TIME_BASE_NUM, VIDEO_TIME_BASE_DEN,
+    )
+}
+
+/// Build the `args` string passed to `avfilter_graph_create_filter` when
+/// creating an audio `abuffer` (buffersrc) context.
+///
+/// The format follows libavfilter's `abuffer` filter parameter syntax:
+/// `sample_rate=R:sample_fmt=FMT:channels=C:time_base=1/R`.
+fn audio_buffersrc_args(sample_rate: u32, sample_fmt_name: &str, channels: u32) -> String {
+    format!(
+        "sample_rate={}:sample_fmt={}:channels={}:time_base={}/{}",
+        sample_rate, sample_fmt_name, channels, AUDIO_TIME_BASE_NUM, sample_rate,
+    )
+}
+
 // ── Format conversion helpers ─────────────────────────────────────────────────
 
 /// Convert a [`PixelFormat`] to the corresponding `AVPixelFormat` integer.
@@ -930,6 +946,62 @@ mod tests {
     fn filter_graph_inner_should_impl_send() {
         fn assert_send<T: Send>() {}
         assert_send::<FilterGraphInner>();
+    }
+
+    // ── buffersrc / buffersink arg-string helpers ──────────────────────────────
+
+    /// The video buffersrc args string must contain all fields required by the
+    /// libavfilter `buffer` filter: `video_size`, `pix_fmt`, `time_base`, and
+    /// `pixel_aspect`.
+    #[test]
+    fn video_buffersrc_args_should_contain_size_pix_fmt_and_time_base() {
+        // pix_fmt 0 = AV_PIX_FMT_YUV420P
+        let args = video_buffersrc_args(1920, 1080, 0);
+        assert!(
+            args.contains("video_size=1920x1080"),
+            "missing video_size: {args}"
+        );
+        assert!(args.contains("pix_fmt=0"), "missing pix_fmt: {args}");
+        assert!(
+            args.contains("time_base=1/90000"),
+            "missing time_base: {args}"
+        );
+        assert!(
+            args.contains("pixel_aspect=1/1"),
+            "missing pixel_aspect: {args}"
+        );
+    }
+
+    /// The audio buffersrc args string must contain all fields required by the
+    /// libavfilter `abuffer` filter: `sample_rate`, `sample_fmt`, `channels`,
+    /// and `time_base` (which uses `1/sample_rate`).
+    #[test]
+    fn audio_buffersrc_args_should_contain_sample_rate_format_and_channels() {
+        let args = audio_buffersrc_args(44100, "fltp", 2);
+        assert!(
+            args.contains("sample_rate=44100"),
+            "missing sample_rate: {args}"
+        );
+        assert!(
+            args.contains("sample_fmt=fltp"),
+            "missing sample_fmt: {args}"
+        );
+        assert!(args.contains("channels=2"), "missing channels: {args}");
+        assert!(
+            args.contains("time_base=1/44100"),
+            "missing time_base: {args}"
+        );
+    }
+
+    /// Changing the sample rate must update the `time_base` denominator too,
+    /// since audio time base is `1/sample_rate`.
+    #[test]
+    fn audio_buffersrc_args_time_base_should_match_sample_rate() {
+        let args = audio_buffersrc_args(48000, "s16", 1);
+        assert!(
+            args.contains("time_base=1/48000"),
+            "time_base denominator must equal sample_rate: {args}"
+        );
     }
 }
 
