@@ -874,6 +874,65 @@ unsafe fn copy_audio_planes_to_av(src: &AudioFrame, dst: *mut AVFrame) {
     }
 }
 
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::FilterStep;
+
+    /// `FilterGraphInner::new` must not call `avfilter_graph_alloc`.
+    /// The graph field starts as `None`; allocation is deferred to the first push.
+    #[test]
+    fn new_should_start_with_no_graph_allocated() {
+        let inner = FilterGraphInner::new(
+            vec![FilterStep::Scale {
+                width: 1280,
+                height: 720,
+            }],
+            None,
+        );
+        assert!(
+            inner.graph.is_none(),
+            "avfilter_graph_alloc must not be called at construction time"
+        );
+        assert!(
+            inner.src_ctxs.is_empty(),
+            "src_ctxs should be empty before first push"
+        );
+        assert!(
+            inner.vsink_ctx.is_none(),
+            "vsink_ctx should be None before first push"
+        );
+        assert!(
+            inner.asink_ctx.is_none(),
+            "asink_ctx should be None before first push"
+        );
+    }
+
+    /// Dropping an uninitialised `FilterGraphInner` (graph == None) must be a
+    /// no-op — no `avfilter_graph_free` call and no panic.
+    #[test]
+    fn drop_uninitialised_should_be_a_no_op() {
+        let inner = FilterGraphInner::new(
+            vec![FilterStep::Scale {
+                width: 640,
+                height: 360,
+            }],
+            None,
+        );
+        drop(inner); // must not panic or double-free
+    }
+
+    /// `FilterGraphInner` must implement `Send` so the filter graph can be
+    /// moved across threads (e.g. into a worker thread for processing).
+    #[test]
+    fn filter_graph_inner_should_impl_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<FilterGraphInner>();
+    }
+}
+
 /// Build an [`AudioFrame`] by copying data out of an `AVFrame`.
 ///
 /// # Safety
