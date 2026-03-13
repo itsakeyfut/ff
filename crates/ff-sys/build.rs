@@ -363,6 +363,15 @@ fn try_pkgconfig_unix() -> Option<Vec<String>> {
 /// | 8.x         | 9.x        | C enum `SwsFlags` → `SwsFlags_SWS_FAST_BILINEAR` etc. |
 ///
 /// Emits `ffmpeg_sws_flags_enum` when libswscale major version ≥ 9.
+///
+/// # `AV_BUFFERSRC_FLAG_KEEP_REF` type
+///
+/// bindgen generates `AV_BUFFERSRC_FLAG_KEEP_REF` as `u32` on Linux/macOS
+/// (pkg-config / Homebrew FFmpeg) but as `i32` on Windows (VCPKG FFmpeg).
+///
+/// Emits `ffmpeg_buffersrc_flag_u32` on platforms where the type is `u32`,
+/// so callers can use the normalized `BUFFERSRC_FLAG_KEEP_REF_I32` constant
+/// instead of casting at every call site.
 fn emit_api_cfg_flags(include_paths: &[String]) {
     let swscale_major = read_version_major(include_paths, "libswscale");
 
@@ -376,6 +385,13 @@ fn emit_api_cfg_flags(include_paths: &[String]) {
             "cargo:warning=Could not detect libswscale version; \
              assuming FFmpeg 7.x (#define SWS_* constants)"
         );
+    }
+
+    // On Linux and macOS, bindgen generates AV_BUFFERSRC_FLAG_KEEP_REF as u32.
+    // On Windows (VCPKG), it is generated as i32.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if matches!(target_os.as_str(), "linux" | "macos") {
+        println!("cargo:rustc-cfg=ffmpeg_buffersrc_flag_u32");
     }
 }
 

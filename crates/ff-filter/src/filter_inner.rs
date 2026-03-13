@@ -256,7 +256,7 @@ impl FilterGraphInner {
             let ret = ff_sys::av_buffersrc_add_frame_flags(
                 src_ctx.as_ptr(),
                 raw_frame,
-                ff_sys::AV_BUFFERSRC_FLAG_KEEP_REF,
+                ff_sys::BUFFERSRC_FLAG_KEEP_REF,
             );
             let mut ptr = raw_frame;
             ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
@@ -530,7 +530,7 @@ impl FilterGraphInner {
             let ret = ff_sys::av_buffersrc_add_frame_flags(
                 src_ctx.as_ptr(),
                 raw_frame,
-                ff_sys::AV_BUFFERSRC_FLAG_KEEP_REF,
+                ff_sys::BUFFERSRC_FLAG_KEEP_REF,
             );
             let mut ptr = raw_frame;
             ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
