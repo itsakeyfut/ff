@@ -52,6 +52,35 @@ fn ffmpeg_err(code: i32) -> FilterError {
     }
 }
 
+// ── Build-time validation ─────────────────────────────────────────────────────
+
+/// Verify that every [`FilterStep`]'s libavfilter name is known to `FFmpeg`.
+///
+/// Called by [`crate::graph::FilterGraphBuilder::build`] so that
+/// unknown-filter errors are reported at build time rather than on the first
+/// push call.
+///
+/// # Errors
+///
+/// Returns [`FilterError::BuildFailed`] if any step's filter name is not
+/// recognised by the linked `FFmpeg` build.
+pub(crate) fn validate_filter_steps(steps: &[FilterStep]) -> Result<(), FilterError> {
+    for step in steps {
+        let name =
+            std::ffi::CString::new(step.filter_name()).map_err(|_| FilterError::BuildFailed)?;
+        // SAFETY: `avfilter_get_by_name` reads a valid, null-terminated C
+        // string and returns a borrowed pointer valid for the process lifetime
+        // (or null if the filter is not registered).  No ownership is
+        // transferred and the pointer is never dereferenced here.
+        let filter = unsafe { ff_sys::avfilter_get_by_name(name.as_ptr()) };
+        if filter.is_null() {
+            log::warn!("filter not found name={}", step.filter_name());
+            return Err(FilterError::BuildFailed);
+        }
+    }
+    Ok(())
+}
+
 // ── FilterGraphInner ──────────────────────────────────────────────────────────
 
 /// Low-level filter graph wrapper.
@@ -1143,6 +1172,22 @@ mod tests {
         } else {
             panic!("expected Ffmpeg variant");
         }
+    }
+
+    // ── validate_filter_steps ─────────────────────────────────────────────────
+
+    /// All `FilterStep` variants use hardcoded filter names that must be
+    /// present in any standard `FFmpeg` build.
+    #[test]
+    fn validate_filter_steps_should_succeed_for_known_filters() {
+        let steps = vec![FilterStep::Scale {
+            width: 640,
+            height: 360,
+        }];
+        assert!(
+            validate_filter_steps(&steps).is_ok(),
+            "scale is a standard FFmpeg filter and must always be found"
+        );
     }
 }
 
