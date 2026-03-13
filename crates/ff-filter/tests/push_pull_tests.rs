@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+use std::time::Duration;
+
 use ff_filter::{FilterError, FilterGraph};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
@@ -217,4 +219,60 @@ fn push_video_through_overlay_should_return_composited_frame() {
     let out = result.expect("expected Some(frame) after overlay push");
     assert_eq!(out.width(), 64, "output width should match base video");
     assert_eq!(out.height(), 64, "output height should match base video");
+}
+
+#[test]
+fn push_video_through_fade_in_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder()
+        .fade_in(Duration::from_secs(1))
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after fade_in push");
+    assert_eq!(out.width(), 64, "width should be unchanged after fade_in");
+    assert_eq!(out.height(), 64, "height should be unchanged after fade_in");
+}
+
+#[test]
+fn push_video_through_fade_out_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder()
+        .fade_out(Duration::from_secs(1))
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after fade_out push");
+    assert_eq!(out.width(), 64, "width should be unchanged after fade_out");
+    assert_eq!(
+        out.height(),
+        64,
+        "height should be unchanged after fade_out"
+    );
 }
