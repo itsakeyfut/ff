@@ -69,8 +69,8 @@ fn ffmpeg_err(code: i32) -> FilterError {
 /// `add_and_link_step` at graph-construction time.
 pub(crate) fn validate_filter_steps(steps: &[FilterStep]) -> Result<(), FilterError> {
     for step in steps {
-        let name = std::ffi::CString::new(step.filter_name())
-            .map_err(|_| FilterError::BuildFailed)?;
+        let name =
+            std::ffi::CString::new(step.filter_name()).map_err(|_| FilterError::BuildFailed)?;
         // SAFETY: `avfilter_get_by_name` reads a valid, null-terminated C
         // string and returns a borrowed pointer valid for the process lifetime
         // (or null if the filter is not registered / registry not yet ready).
