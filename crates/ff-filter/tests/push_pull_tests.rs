@@ -162,3 +162,26 @@ fn push_video_through_trim_should_return_frame_within_range() {
     assert_eq!(out.width(), 64, "width should be unchanged after trim");
     assert_eq!(out.height(), 64, "height should be unchanged after trim");
 }
+
+#[test]
+fn push_video_through_crop_should_return_cropped_frame() {
+    let mut graph = match FilterGraph::builder().crop(0, 0, 32, 32).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after crop push");
+    assert_eq!(out.width(), 32, "width should be cropped to 32");
+    assert_eq!(out.height(), 32, "height should be cropped to 32");
+}
