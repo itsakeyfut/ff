@@ -1,22 +1,39 @@
-//! Video and audio filter graph operations for the ff-* crate family.
+//! Video and audio filter graph operations — the Rust way.
 //!
-//! # Status
+//! This crate provides a safe, ergonomic API for constructing and running
+//! `FFmpeg` libavfilter filter graphs.  All `unsafe` `FFmpeg` internals are
+//! encapsulated in the `filter_inner` module; users never need to write `unsafe` code.
 //!
-//! **This crate is not yet implemented.** It is a placeholder for future development.
+//! ## Quick start
 //!
-//! # Design Principles
+//! ```ignore
+//! use ff_filter::{FilterGraph, ToneMap};
+//! use std::time::Duration;
 //!
-//! All public APIs in this crate are **safe**. Users never need to write `unsafe` code.
-//! Unsafe `FFmpeg` internals are encapsulated within this crate, following the same
-//! pattern as `ff_decode` and `ff_encode`.
+//! // Build a filter graph: scale to 1280×720, then apply tone mapping.
+//! let mut graph = FilterGraph::builder()
+//!     .scale(1280, 720)
+//!     .tone_map(ToneMap::Hable)
+//!     .build()?;
 //!
-//! # Planned Features
+//! // Push decoded VideoFrames in …
+//! graph.push_video(0, &decoded_frame)?;
 //!
-//! - Filter graph construction and execution via `FFmpeg`'s `libavfilter`
-//! - Built-in filters: trim, scale, crop, overlay, fade, and more
-//! - Audio filters: volume, equalizer, noise reduction, mixing
-//! - Custom filter chains with type-safe builder API
-//! - Hardware-accelerated filtering (CUDA, `OpenCL`, Vulkan)
-//! - Integration with `ff_decode` and `ff_encode` for seamless pipelines
+//! // … and pull filtered frames out.
+//! while let Some(frame) = graph.pull_video()? {
+//!     // encode or display `frame`
+//! }
+//! ```
+//!
+//! ## Module structure
+//!
+//! - [`graph`] — public types: [`FilterGraph`], [`FilterGraphBuilder`], [`ToneMap`], [`HwAccel`]
+//! - [`error`] — [`FilterError`]
+//! - `filter_inner` — `pub(crate)` unsafe `FFmpeg` calls (not part of the public API)
 
-// This crate is a placeholder. No public API is available yet.
+pub mod error;
+mod filter_inner;
+pub mod graph;
+
+pub use error::FilterError;
+pub use graph::{FilterGraph, FilterGraphBuilder, HwAccel, ToneMap};

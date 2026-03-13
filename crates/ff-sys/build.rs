@@ -71,7 +71,14 @@ fn main() {
 }
 
 /// FFmpeg libraries required for linking
-const FFMPEG_LIBS: &[&str] = &["avformat", "avcodec", "avutil", "swscale", "swresample"];
+const FFMPEG_LIBS: &[&str] = &[
+    "avformat",
+    "avcodec",
+    "avutil",
+    "swscale",
+    "swresample",
+    "avfilter",
+];
 
 /// Configure `FFmpeg` linking for Windows via VCPKG.
 ///
@@ -305,6 +312,7 @@ const PKGCONFIG_LIBS: &[(&str, &str)] = &[
     ("libavutil", "59.0"),
     ("libswscale", "8.0"),
     ("libswresample", "5.0"),
+    ("libavfilter", "10.0"),
 ];
 
 /// Try to configure FFmpeg via pkg-config (Unix systems).
@@ -355,6 +363,15 @@ fn try_pkgconfig_unix() -> Option<Vec<String>> {
 /// | 8.x         | 9.x        | C enum `SwsFlags` → `SwsFlags_SWS_FAST_BILINEAR` etc. |
 ///
 /// Emits `ffmpeg_sws_flags_enum` when libswscale major version ≥ 9.
+///
+/// # `AV_BUFFERSRC_FLAG_KEEP_REF` type
+///
+/// bindgen generates `AV_BUFFERSRC_FLAG_KEEP_REF` as `u32` on Linux/macOS
+/// (pkg-config / Homebrew FFmpeg) but as `i32` on Windows (VCPKG FFmpeg).
+///
+/// Emits `ffmpeg_buffersrc_flag_u32` on platforms where the type is `u32`,
+/// so callers can use the normalized `BUFFERSRC_FLAG_KEEP_REF_I32` constant
+/// instead of casting at every call site.
 fn emit_api_cfg_flags(include_paths: &[String]) {
     let swscale_major = read_version_major(include_paths, "libswscale");
 
@@ -368,6 +385,13 @@ fn emit_api_cfg_flags(include_paths: &[String]) {
             "cargo:warning=Could not detect libswscale version; \
              assuming FFmpeg 7.x (#define SWS_* constants)"
         );
+    }
+
+    // On Linux and macOS, bindgen generates AV_BUFFERSRC_FLAG_KEEP_REF as u32.
+    // On Windows (VCPKG), it is generated as i32.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if matches!(target_os.as_str(), "linux" | "macos") {
+        println!("cargo:rustc-cfg=ffmpeg_buffersrc_flag_u32");
     }
 }
 
@@ -436,6 +460,13 @@ fn generate_bindings(include_paths: &[String]) {
         .allowlist_var("AVIO_.*")
         .allowlist_var("SWS_.*")
         .allowlist_var("SWR_.*")
+        // Allowlist libavfilter functions and types
+        .allowlist_function("avfilter_.*")
+        .allowlist_function("av_buffersrc_.*")
+        .allowlist_function("av_buffersink_.*")
+        .allowlist_type("AVFilter.*")
+        .allowlist_var("AV_BUFFERSRC_.*")
+        .allowlist_var("AV_BUFFERSINK_.*")
         // Derive traits for safety and convenience
         .derive_debug(true)
         .derive_default(true)

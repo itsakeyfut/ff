@@ -139,6 +139,19 @@ pub mod error_codes {
 /// This constant indicates that a frame or packet does not have a valid presentation timestamp.
 pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 
+/// `AV_BUFFERSRC_FLAG_KEEP_REF` normalized to `i32` for cross-platform use.
+///
+/// bindgen generates `AV_BUFFERSRC_FLAG_KEEP_REF` as `u32` on Linux/macOS
+/// (pkg-config / Homebrew) but as `i32` on Windows (VCPKG). Use this constant
+/// instead of the raw bindgen symbol when calling `av_buffersrc_add_frame_flags`.
+///
+/// The cfg flag `ffmpeg_buffersrc_flag_u32` is emitted by the build script on
+/// platforms where the bindgen type is `u32` (Linux, macOS).
+#[cfg(ffmpeg_buffersrc_flag_u32)]
+pub const BUFFERSRC_FLAG_KEEP_REF: i32 = AV_BUFFERSRC_FLAG_KEEP_REF as i32;
+#[cfg(not(ffmpeg_buffersrc_flag_u32))]
+pub const BUFFERSRC_FLAG_KEEP_REF: i32 = AV_BUFFERSRC_FLAG_KEEP_REF;
+
 #[cfg(test)]
 mod tests {
     use super::*;

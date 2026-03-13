@@ -11,6 +11,7 @@
 // runtime is irrelevant — docs.rs never executes this code.
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::ptr;
 
 // ── Type aliases ──────────────────────────────────────────────────────────────
 
@@ -443,6 +444,76 @@ pub unsafe fn av_channel_layout_uninit(_ch_layout: *mut AVChannelLayout) {}
 //
 // These mirror the safe wrapper modules in avformat.rs, avcodec.rs,
 // swresample.rs, and swscale.rs.  Signatures must exactly match those files.
+
+// ── libavfilter opaque types ──────────────────────────────────────────────────
+
+pub struct AVFilterGraph(());
+pub struct AVFilterContext(());
+pub struct AVFilter(());
+
+// ── libavfilter constants ─────────────────────────────────────────────────────
+
+/// Flag for `av_buffersrc_add_frame_flags`: keep a reference to the frame.
+pub const AV_BUFFERSRC_FLAG_KEEP_REF: c_int = 8;
+
+// ── libavfilter functions ─────────────────────────────────────────────────────
+
+// SAFETY: docs.rs stubs — never called at runtime.
+
+pub unsafe fn avfilter_graph_alloc() -> *mut AVFilterGraph {
+    ptr::null_mut()
+}
+
+pub unsafe fn avfilter_graph_free(_graph: *mut *mut AVFilterGraph) {}
+
+pub unsafe fn avfilter_get_by_name(_name: *const c_char) -> *const AVFilter {
+    ptr::null()
+}
+
+pub unsafe fn avfilter_graph_create_filter(
+    _filt_ctx: *mut *mut AVFilterContext,
+    _filt: *const AVFilter,
+    _name: *const c_char,
+    _args: *const c_char,
+    _opaque: *mut c_void,
+    _graph_ctx: *mut AVFilterGraph,
+) -> c_int {
+    0
+}
+
+pub unsafe fn avfilter_link(
+    _src: *mut AVFilterContext,
+    _srcpad: c_uint,
+    _dst: *mut AVFilterContext,
+    _dstpad: c_uint,
+) -> c_int {
+    0
+}
+
+pub unsafe fn avfilter_graph_config(
+    _graphctx: *mut AVFilterGraph,
+    _log_ctx: *mut c_void,
+) -> c_int {
+    0
+}
+
+pub unsafe fn avfilter_graph_set_auto_convert(_graph: *mut AVFilterGraph, _flags: c_uint) {}
+
+pub unsafe fn av_buffersrc_add_frame_flags(
+    _ctx: *mut AVFilterContext,
+    _frame: *mut AVFrame,
+    _flags: c_int,
+) -> c_int {
+    0
+}
+
+pub unsafe fn av_buffersink_get_frame(
+    _ctx: *mut AVFilterContext,
+    _frame: *mut AVFrame,
+) -> c_int {
+    // Return EAGAIN to signal no frame available
+    -11
+}
 
 /// Stub `avformat` wrapper module.
 pub mod avformat {
