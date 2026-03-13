@@ -273,6 +273,12 @@ impl FilterGraphInner {
         for (i, step) in steps.iter().enumerate() {
             prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "step")?;
 
+            // After trim, insert setpts=PTS-STARTPTS so the output timestamps
+            // are reset to start at zero.
+            if matches!(step, FilterStep::Trim { .. }) {
+                prev_ctx = add_setpts_after_trim(graph, prev_ctx, i)?;
+            }
+
             // Overlay consumes a second input on pad 1.
             if matches!(step, FilterStep::Overlay { .. })
                 && let Some(Some(extra_src)) = src_ctxs.get(1)
@@ -758,6 +764,49 @@ unsafe fn add_and_link_step(
         return Err(FilterError::BuildFailed);
     }
     Ok(step_ctx)
+}
+
+/// Insert a `setpts=PTS-STARTPTS` filter immediately after a `trim` step so
+/// that the output stream's timestamps start at zero.
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+unsafe fn add_setpts_after_trim(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    trim_index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let setpts = ff_sys::avfilter_get_by_name(c"setpts".as_ptr());
+    if setpts.is_null() {
+        log::warn!("filter not found name=setpts");
+        return Err(FilterError::BuildFailed);
+    }
+
+    let name = std::ffi::CString::new(format!("setpts{trim_index}"))
+        .map_err(|_| FilterError::BuildFailed)?;
+
+    let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut ctx,
+        setpts,
+        name.as_ptr(),
+        c"PTS-STARTPTS".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=setpts args=PTS-STARTPTS");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=setpts args=PTS-STARTPTS");
+
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    Ok(ctx)
 }
 
 // ── buffersrc / buffersink arg-string helpers ──────────────────────────────────

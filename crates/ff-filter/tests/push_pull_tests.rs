@@ -139,3 +139,26 @@ fn push_audio_and_pull_through_volume_should_return_frame() {
     assert_eq!(out.channels(), 2);
     assert_eq!(out.samples(), 1024);
 }
+
+#[test]
+fn push_video_through_trim_should_return_frame_within_range() {
+    let mut graph = match FilterGraph::builder().trim(0.0, 5.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after trim push within range");
+    assert_eq!(out.width(), 64, "width should be unchanged after trim");
+    assert_eq!(out.height(), 64, "height should be unchanged after trim");
+}
