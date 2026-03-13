@@ -32,3 +32,57 @@ pub enum FilterError {
         message: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FilterError;
+    use std::error::Error;
+
+    #[test]
+    fn build_failed_should_display_correct_message() {
+        let err = FilterError::BuildFailed;
+        assert_eq!(err.to_string(), "failed to build filter graph");
+    }
+
+    #[test]
+    fn process_failed_should_display_correct_message() {
+        let err = FilterError::ProcessFailed;
+        assert_eq!(err.to_string(), "failed to process frame");
+    }
+
+    #[test]
+    fn invalid_input_should_display_slot_and_reason() {
+        let err = FilterError::InvalidInput {
+            slot: 2,
+            reason: "slot out of range".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid input: slot=2 reason=slot out of range"
+        );
+    }
+
+    #[test]
+    fn ffmpeg_should_display_code_and_message() {
+        let err = FilterError::Ffmpeg {
+            code: -22,
+            message: "Invalid argument".to_string(),
+        };
+        assert_eq!(err.to_string(), "ffmpeg error: Invalid argument (code=-22)");
+    }
+
+    #[test]
+    fn filter_error_should_implement_std_error() {
+        fn assert_error<E: Error>(_: &E) {}
+        assert_error(&FilterError::BuildFailed);
+        assert_error(&FilterError::ProcessFailed);
+        assert_error(&FilterError::InvalidInput {
+            slot: 0,
+            reason: String::new(),
+        });
+        assert_error(&FilterError::Ffmpeg {
+            code: 0,
+            message: String::new(),
+        });
+    }
+}
