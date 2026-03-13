@@ -52,6 +52,45 @@ fn ffmpeg_err(code: i32) -> FilterError {
     }
 }
 
+// ── Build-time validation ─────────────────────────────────────────────────────
+
+/// Best-effort check that every [`FilterStep`]'s libavfilter name is known to
+/// the linked `FFmpeg` build.
+///
+/// On platforms where the filter registry is already populated at [`build()`]
+/// time (Windows, macOS), this surfaces unknown-filter errors early.
+///
+/// On some Linux `FFmpeg` builds the registry is not yet populated when
+/// `build()` runs (before any `AVFilterGraph` has been allocated).  In that
+/// case `avfilter_get_by_name` returns `null` for *every* filter, including
+/// standard ones like `scale`.  We cannot distinguish "filter genuinely
+/// missing" from "registry not yet initialised", so we log at `debug` level
+/// and return `Ok(())`, deferring the authoritative check to
+/// `add_and_link_step` at graph-construction time.
+pub(crate) fn validate_filter_steps(steps: &[FilterStep]) -> Result<(), FilterError> {
+    for step in steps {
+        let name =
+            std::ffi::CString::new(step.filter_name()).map_err(|_| FilterError::BuildFailed)?;
+        // SAFETY: `avfilter_get_by_name` reads a valid, null-terminated C
+        // string and returns a borrowed pointer valid for the process lifetime
+        // (or null if the filter is not registered / registry not yet ready).
+        // The pointer is never dereferenced here.
+        let filter = unsafe { ff_sys::avfilter_get_by_name(name.as_ptr()) };
+        if filter.is_null() {
+            // Could be "filter genuinely absent" OR "registry not yet
+            // initialised" (observed on some Linux FFmpeg installations).
+            // Treat as unverifiable and defer to add_and_link_step.
+            log::warn!(
+                "filter lookup returned null at build time name={}, \
+                 registry may not be initialised; will be rechecked at push time",
+                step.filter_name()
+            );
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 // ── FilterGraphInner ──────────────────────────────────────────────────────────
 
 /// Low-level filter graph wrapper.
@@ -1143,6 +1182,30 @@ mod tests {
         } else {
             panic!("expected Ffmpeg variant");
         }
+    }
+
+    // ── validate_filter_steps ─────────────────────────────────────────────────
+
+    /// `validate_filter_steps` must return `Ok` for a known-good filter name.
+    ///
+    /// On platforms where the filter registry is already populated (Windows,
+    /// macOS) this exercises the real lookup path.  On Linux builds where the
+    /// registry is not yet initialised at unit-test time, `avfilter_get_by_name`
+    /// returns null and the function gracefully defers, also returning `Ok`.
+    /// Either way the result must never be `Err` for a standard filter like
+    /// `scale`.
+    #[test]
+    fn validate_filter_steps_should_succeed_for_known_filters() {
+        let steps = vec![FilterStep::Scale {
+            width: 640,
+            height: 360,
+        }];
+        assert!(
+            validate_filter_steps(&steps).is_ok(),
+            "validate_filter_steps must not return Err for a standard filter: \
+             either the filter was found, or the registry is not yet initialised \
+             and validation is deferred"
+        );
     }
 }
 

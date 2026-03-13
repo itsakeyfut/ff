@@ -274,6 +274,7 @@ impl FilterGraphBuilder {
         if self.steps.is_empty() {
             return Err(FilterError::BuildFailed);
         }
+        crate::filter_inner::validate_filter_steps(&self.steps)?;
         Ok(FilterGraph {
             inner: FilterGraphInner::new(self.steps, self.hw),
         })
@@ -429,5 +430,84 @@ mod tests {
         let step = FilterStep::Overlay { x: 10, y: 20 };
         assert_eq!(step.filter_name(), "overlay");
         assert_eq!(step.args(), "x=10:y=20");
+    }
+
+    #[test]
+    fn filter_step_crop_should_produce_correct_args() {
+        let step = FilterStep::Crop {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 360,
+        };
+        assert_eq!(step.filter_name(), "crop");
+        assert_eq!(step.args(), "x=0:y=0:w=640:h=360");
+    }
+
+    #[test]
+    fn filter_step_fade_in_should_produce_correct_args() {
+        let step = FilterStep::FadeIn(Duration::from_secs(1));
+        assert_eq!(step.filter_name(), "fade");
+        assert_eq!(step.args(), "type=in:duration=1");
+    }
+
+    #[test]
+    fn filter_step_fade_out_should_produce_correct_args() {
+        let step = FilterStep::FadeOut(Duration::from_secs(2));
+        assert_eq!(step.filter_name(), "fade");
+        assert_eq!(step.args(), "type=out:duration=2");
+    }
+
+    #[test]
+    fn filter_step_rotate_should_produce_correct_args() {
+        let step = FilterStep::Rotate(90.0);
+        assert_eq!(step.filter_name(), "rotate");
+        assert_eq!(step.args(), format!("angle={}", 90_f64.to_radians()));
+    }
+
+    #[test]
+    fn filter_step_tone_map_should_produce_correct_args() {
+        let step = FilterStep::ToneMap(ToneMap::Hable);
+        assert_eq!(step.filter_name(), "tonemap");
+        assert_eq!(step.args(), "tonemap=hable");
+    }
+
+    #[test]
+    fn filter_step_amix_should_produce_correct_args() {
+        let step = FilterStep::Amix(3);
+        assert_eq!(step.filter_name(), "amix");
+        assert_eq!(step.args(), "inputs=3");
+    }
+
+    #[test]
+    fn filter_step_equalizer_should_produce_correct_args() {
+        let step = FilterStep::Equalizer {
+            band_hz: 1000.0,
+            gain_db: 3.0,
+        };
+        assert_eq!(step.filter_name(), "equalizer");
+        assert_eq!(step.args(), "f=1000:width_type=o:width=2:g=3");
+    }
+
+    #[test]
+    fn builder_steps_should_accumulate_in_order() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .scale(1280, 720)
+            .volume(-3.0)
+            .build();
+        assert!(
+            result.is_ok(),
+            "builder with multiple valid steps must succeed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_with_valid_steps_should_succeed() {
+        let result = FilterGraph::builder().scale(1280, 720).build();
+        assert!(
+            result.is_ok(),
+            "builder with a known filter step must succeed, got {result:?}"
+        );
     }
 }
