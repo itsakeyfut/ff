@@ -28,6 +28,11 @@
 // Resampling
 #include <libswresample/swresample.h>
 
+// Filter graphs
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
+
 // Version headers (for FFmpeg 7.x compatibility checks)
 #include <libavformat/version.h>
 #include <libavcodec/version.h>

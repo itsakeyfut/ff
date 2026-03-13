@@ -71,7 +71,14 @@ fn main() {
 }
 
 /// FFmpeg libraries required for linking
-const FFMPEG_LIBS: &[&str] = &["avformat", "avcodec", "avutil", "swscale", "swresample"];
+const FFMPEG_LIBS: &[&str] = &[
+    "avformat",
+    "avcodec",
+    "avutil",
+    "swscale",
+    "swresample",
+    "avfilter",
+];
 
 /// Configure `FFmpeg` linking for Windows via VCPKG.
 ///
@@ -305,6 +312,7 @@ const PKGCONFIG_LIBS: &[(&str, &str)] = &[
     ("libavutil", "59.0"),
     ("libswscale", "8.0"),
     ("libswresample", "5.0"),
+    ("libavfilter", "10.0"),
 ];
 
 /// Try to configure FFmpeg via pkg-config (Unix systems).
@@ -436,6 +444,13 @@ fn generate_bindings(include_paths: &[String]) {
         .allowlist_var("AVIO_.*")
         .allowlist_var("SWS_.*")
         .allowlist_var("SWR_.*")
+        // Allowlist libavfilter functions and types
+        .allowlist_function("avfilter_.*")
+        .allowlist_function("av_buffersrc_.*")
+        .allowlist_function("av_buffersink_.*")
+        .allowlist_type("AVFilter.*")
+        .allowlist_var("AV_BUFFERSRC_.*")
+        .allowlist_var("AV_BUFFERSINK_.*")
         // Derive traits for safety and convenience
         .derive_debug(true)
         .derive_default(true)

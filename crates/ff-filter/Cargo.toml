@@ -17,6 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 ff-common = { workspace = true }
 ff-format = { workspace = true }
 ff-sys = { workspace = true }
+log = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]
