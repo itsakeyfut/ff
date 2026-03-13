@@ -423,4 +423,11 @@ mod tests {
             "expected BuildFailed, got {result:?}"
         );
     }
+
+    #[test]
+    fn filter_step_overlay_should_produce_correct_args() {
+        let step = FilterStep::Overlay { x: 10, y: 20 };
+        assert_eq!(step.filter_name(), "overlay");
+        assert_eq!(step.args(), "x=10:y=20");
+    }
 }
