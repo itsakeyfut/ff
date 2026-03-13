@@ -9,7 +9,10 @@
 
 ## Related Issues
 
-<!-- Fixes #N -->
+<!-- Use the keyword that fits:
+     Closes #N  — feature implementation or task completion
+     Fixes #N   — bug fix
+     Resolves #N — general resolution (discussion, refactor, etc.) -->
 
 ## Test Plan
 
