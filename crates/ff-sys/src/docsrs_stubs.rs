@@ -43,17 +43,36 @@ pub struct AVInputFormat {
 
 // ── Structs with field-level access ───────────────────────────────────────────
 
+#[derive(Copy, Clone)]
 #[repr(C)]
 pub union AVChannelLayout__bindgen_ty_1 {
     pub mask: u64,
 }
 
+impl Default for AVChannelLayout__bindgen_ty_1 {
+    fn default() -> Self {
+        Self { mask: 0 }
+    }
+}
+
+#[derive(Copy, Clone)]
 pub struct AVChannelLayout {
     pub order: AVChannelOrder,
     pub nb_channels: c_int,
     pub u: AVChannelLayout__bindgen_ty_1,
 }
 
+impl Default for AVChannelLayout {
+    fn default() -> Self {
+        Self {
+            order: 0,
+            nb_channels: 0,
+            u: AVChannelLayout__bindgen_ty_1::default(),
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
 pub struct AVRational {
     pub num: c_int,
     pub den: c_int,
@@ -96,6 +115,7 @@ pub struct AVStream {
     pub avg_frame_rate: AVRational,
     pub r_frame_rate: AVRational,
     pub start_time: i64,
+    pub metadata: *mut AVDictionary,
 }
 
 pub struct AVFormatContext {
@@ -234,6 +254,7 @@ pub const AVPixelFormat_AV_PIX_FMT_OPENCL: AVPixelFormat = 180;
 pub const AVPixelFormat_AV_PIX_FMT_VULKAN: AVPixelFormat = 193;
 
 // AVSampleFormat
+pub const AVSampleFormat_AV_SAMPLE_FMT_NONE: AVSampleFormat = -1;
 pub const AVSampleFormat_AV_SAMPLE_FMT_U8: AVSampleFormat = 0;
 pub const AVSampleFormat_AV_SAMPLE_FMT_S16: AVSampleFormat = 1;
 pub const AVSampleFormat_AV_SAMPLE_FMT_S32: AVSampleFormat = 2;
@@ -244,6 +265,8 @@ pub const AVSampleFormat_AV_SAMPLE_FMT_S16P: AVSampleFormat = 6;
 pub const AVSampleFormat_AV_SAMPLE_FMT_S32P: AVSampleFormat = 7;
 pub const AVSampleFormat_AV_SAMPLE_FMT_FLTP: AVSampleFormat = 8;
 pub const AVSampleFormat_AV_SAMPLE_FMT_DBLP: AVSampleFormat = 9;
+pub const AVSampleFormat_AV_SAMPLE_FMT_S64: AVSampleFormat = 10;
+pub const AVSampleFormat_AV_SAMPLE_FMT_S64P: AVSampleFormat = 11;
 
 // AVColorPrimaries
 pub const AVColorPrimaries_AVCOL_PRI_BT709: AVColorPrimaries = 1;
@@ -571,6 +594,20 @@ pub mod avformat {
     }
 
     pub unsafe fn close_output(_pb: *mut *mut AVIOContext) {}
+
+    pub mod avio_flags {
+        use std::os::raw::c_int;
+        pub const READ: c_int = 1;
+        pub const WRITE: c_int = 2;
+        pub const READ_WRITE: c_int = 3;
+    }
+
+    pub mod seek_flags {
+        pub const BACKWARD: i32 = 1;
+        pub const BYTE: i32 = 2;
+        pub const ANY: i32 = 4;
+        pub const FRAME: i32 = 8;
+    }
 }
 
 /// Stub `avcodec` wrapper module.
@@ -699,6 +736,76 @@ pub mod swresample {
     ) -> i32 {
         0
     }
+
+    pub mod channel_layout {
+        use super::super::AVChannelLayout;
+
+        pub unsafe fn set_default(_ch_layout: *mut AVChannelLayout, _nb_channels: i32) {}
+        pub unsafe fn uninit(_ch_layout: *mut AVChannelLayout) {}
+        pub unsafe fn copy(
+            _dst: *mut AVChannelLayout,
+            _src: *const AVChannelLayout,
+        ) -> Result<(), i32> {
+            Err(-1)
+        }
+        pub unsafe fn is_equal(
+            _chl: *const AVChannelLayout,
+            _chl1: *const AVChannelLayout,
+        ) -> bool {
+            false
+        }
+        pub fn mono() -> AVChannelLayout {
+            AVChannelLayout::default()
+        }
+        pub fn stereo() -> AVChannelLayout {
+            AVChannelLayout::default()
+        }
+        pub fn with_channels(_nb_channels: i32) -> AVChannelLayout {
+            AVChannelLayout::default()
+        }
+        pub fn is_valid(ch_layout: &AVChannelLayout) -> bool {
+            ch_layout.nb_channels > 0
+        }
+        pub fn nb_channels(ch_layout: &AVChannelLayout) -> i32 {
+            ch_layout.nb_channels
+        }
+        pub fn is_native_order(_ch_layout: &AVChannelLayout) -> bool {
+            false
+        }
+    }
+
+    pub mod sample_format {
+        use super::super::{
+            AVSampleFormat, AVSampleFormat_AV_SAMPLE_FMT_NONE, AVSampleFormat_AV_SAMPLE_FMT_U8,
+            AVSampleFormat_AV_SAMPLE_FMT_S16, AVSampleFormat_AV_SAMPLE_FMT_S32,
+            AVSampleFormat_AV_SAMPLE_FMT_FLT, AVSampleFormat_AV_SAMPLE_FMT_DBL,
+            AVSampleFormat_AV_SAMPLE_FMT_U8P, AVSampleFormat_AV_SAMPLE_FMT_S16P,
+            AVSampleFormat_AV_SAMPLE_FMT_S32P, AVSampleFormat_AV_SAMPLE_FMT_FLTP,
+            AVSampleFormat_AV_SAMPLE_FMT_DBLP, AVSampleFormat_AV_SAMPLE_FMT_S64,
+            AVSampleFormat_AV_SAMPLE_FMT_S64P,
+        };
+
+        pub const NONE: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_NONE;
+        pub const U8: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_U8;
+        pub const S16: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_S16;
+        pub const S32: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_S32;
+        pub const FLT: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_FLT;
+        pub const DBL: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_DBL;
+        pub const U8P: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_U8P;
+        pub const S16P: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_S16P;
+        pub const S32P: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_S32P;
+        pub const FLTP: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_FLTP;
+        pub const DBLP: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_DBLP;
+        pub const S64: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_S64;
+        pub const S64P: AVSampleFormat = AVSampleFormat_AV_SAMPLE_FMT_S64P;
+
+        pub fn bytes_per_sample(_sample_fmt: AVSampleFormat) -> i32 {
+            0
+        }
+        pub fn is_planar(_sample_fmt: AVSampleFormat) -> bool {
+            false
+        }
+    }
 }
 
 /// Stub `swscale` wrapper module.
@@ -743,5 +850,19 @@ pub mod swscale {
 
     pub unsafe fn is_supported_endianness_conversion(_pix_fmt: AVPixelFormat) -> bool {
         false
+    }
+
+    pub mod scale_flags {
+        pub const FAST_BILINEAR: i32 = 1;
+        pub const BILINEAR: i32 = 2;
+        pub const BICUBIC: i32 = 4;
+        pub const X: i32 = 8;
+        pub const POINT: i32 = 16;
+        pub const AREA: i32 = 32;
+        pub const BICUBLIN: i32 = 64;
+        pub const GAUSS: i32 = 128;
+        pub const SINC: i32 = 256;
+        pub const LANCZOS: i32 = 512;
+        pub const SPLINE: i32 = 1024;
     }
 }
