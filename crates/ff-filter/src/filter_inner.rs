@@ -333,8 +333,11 @@ impl FilterGraphInner {
             (*raw_frame).width = frame.width() as c_int;
             (*raw_frame).height = frame.height() as c_int;
             (*raw_frame).format = pixel_format_to_av(frame.format());
-            (*raw_frame).pts =
-                (frame.timestamp().as_secs_f64() * f64::from(VIDEO_TIME_BASE_DEN)) as i64;
+            let pts = video_pts_ticks(frame.timestamp());
+            if pts == ff_sys::AV_NOPTS_VALUE {
+                log::warn!("pts invalid, passing AV_NOPTS_VALUE to filter graph slot={slot}");
+            }
+            (*raw_frame).pts = pts;
 
             let ret = ff_sys::av_frame_get_buffer(raw_frame, 0);
             if ret < 0 {
@@ -617,8 +620,11 @@ impl FilterGraphInner {
             (*raw_frame).nb_samples = frame.samples() as c_int;
             (*raw_frame).sample_rate = frame.sample_rate() as c_int;
             (*raw_frame).format = sample_format_to_av(frame.format());
-            (*raw_frame).pts =
-                (frame.timestamp().as_secs_f64() * f64::from(frame.sample_rate())) as i64;
+            let pts = audio_pts_ticks(frame.timestamp(), frame.sample_rate());
+            if pts == ff_sys::AV_NOPTS_VALUE {
+                log::warn!("pts invalid, passing AV_NOPTS_VALUE to filter graph slot={slot}");
+            }
+            (*raw_frame).pts = pts;
             (*raw_frame).ch_layout.nb_channels = frame.channels() as c_int;
 
             let ret = ff_sys::av_frame_get_buffer(raw_frame, 0);
@@ -778,6 +784,71 @@ fn audio_buffersrc_args(sample_rate: u32, sample_fmt_name: &str, channels: u32) 
         "sample_rate={}:sample_fmt={}:channels={}:time_base={}/{}",
         sample_rate, sample_fmt_name, channels, AUDIO_TIME_BASE_NUM, sample_rate,
     )
+}
+
+// ── Timestamp PTS helpers ──────────────────────────────────────────────────────
+
+/// Compute the `AVFrame.pts` ticks for pushing a video frame.
+///
+/// Scales the timestamp's seconds to the internal video time base (1/90000).
+/// Returns [`ff_sys::AV_NOPTS_VALUE`] when the timestamp carries no valid PTS.
+fn video_pts_ticks(ts: Timestamp) -> i64 {
+    if ts.pts() == ff_sys::AV_NOPTS_VALUE {
+        ff_sys::AV_NOPTS_VALUE
+    } else {
+        (ts.as_secs_f64() * f64::from(VIDEO_TIME_BASE_DEN)) as i64
+    }
+}
+
+/// Convert raw `AVFrame.pts` ticks (1/90000 time base) to a [`Timestamp`].
+///
+/// Returns [`Timestamp::default`] (0 at 1/90000) when `pts_raw` is
+/// [`ff_sys::AV_NOPTS_VALUE`].
+fn video_ticks_to_timestamp(pts_raw: i64) -> Timestamp {
+    if pts_raw == ff_sys::AV_NOPTS_VALUE {
+        Timestamp::default()
+    } else {
+        let secs = pts_raw as f64 / f64::from(VIDEO_TIME_BASE_DEN);
+        Timestamp::from_secs_f64(
+            secs,
+            Rational::new(VIDEO_TIME_BASE_NUM, VIDEO_TIME_BASE_DEN),
+        )
+    }
+}
+
+/// Compute the `AVFrame.pts` ticks for pushing an audio frame.
+///
+/// Scales the timestamp's seconds to the audio time base (1/`sample_rate`).
+/// Returns [`ff_sys::AV_NOPTS_VALUE`] when the timestamp carries no valid PTS.
+fn audio_pts_ticks(ts: Timestamp, sample_rate: u32) -> i64 {
+    if ts.pts() == ff_sys::AV_NOPTS_VALUE {
+        ff_sys::AV_NOPTS_VALUE
+    } else {
+        (ts.as_secs_f64() * f64::from(sample_rate)) as i64
+    }
+}
+
+/// Convert raw `AVFrame.pts` ticks (1/`sample_rate` time base) to a [`Timestamp`].
+///
+/// Returns [`Timestamp::zero`] at `1/sample_rate` when `pts_raw` is
+/// [`ff_sys::AV_NOPTS_VALUE`].  Falls back to denominator 1 if `sample_rate` is 0.
+fn audio_ticks_to_timestamp(pts_raw: i64, sample_rate: u32) -> Timestamp {
+    let den = if sample_rate > 0 {
+        sample_rate as i32
+    } else {
+        1
+    };
+    let time_base = Rational::new(1, den);
+    if pts_raw == ff_sys::AV_NOPTS_VALUE {
+        Timestamp::zero(time_base)
+    } else {
+        let secs = if sample_rate > 0 {
+            pts_raw as f64 / f64::from(sample_rate)
+        } else {
+            0.0
+        };
+        Timestamp::from_secs_f64(secs, time_base)
+    }
 }
 
 // ── Format conversion helpers ─────────────────────────────────────────────────
@@ -950,11 +1021,10 @@ unsafe fn av_frame_to_video_frame(raw_frame: *const AVFrame) -> Result<VideoFram
     let height = (*raw_frame).height as u32;
     let format = av_to_pixel_format((*raw_frame).format);
     let pts_raw = (*raw_frame).pts;
-    let secs = pts_raw as f64 / f64::from(VIDEO_TIME_BASE_DEN);
-    let timestamp = Timestamp::from_secs_f64(
-        secs,
-        Rational::new(VIDEO_TIME_BASE_NUM, VIDEO_TIME_BASE_DEN),
-    );
+    if pts_raw == ff_sys::AV_NOPTS_VALUE {
+        log::warn!("pts invalid in output video frame from filter graph");
+    }
+    let timestamp = video_ticks_to_timestamp(pts_raw);
     // AV_PICTURE_TYPE_I = 1: I-frame (key frame).  `key_frame` was removed
     // from AVFrame in FFmpeg 6; use `pict_type` instead.
     let key_frame = (*raw_frame).pict_type == 1;
@@ -1207,6 +1277,77 @@ mod tests {
              and validation is deferred"
         );
     }
+
+    // ── PTS helpers ───────────────────────────────────────────────────────────
+
+    /// A valid 1-second video timestamp must scale to exactly 90 000 ticks
+    /// in the 1/90000 time base used by the video buffersrc.
+    #[test]
+    fn video_pts_ticks_should_scale_timestamp_to_90000_time_base() {
+        let ts = Timestamp::new(90000, Rational::new(1, 90000));
+        assert_eq!(video_pts_ticks(ts), 90000);
+    }
+
+    /// A timestamp whose raw PTS equals `AV_NOPTS_VALUE` must pass through
+    /// unchanged so FFmpeg knows the frame has no valid presentation time.
+    #[test]
+    fn video_pts_ticks_with_nopts_value_should_return_av_nopts_value() {
+        let ts = Timestamp::new(ff_sys::AV_NOPTS_VALUE, Rational::new(1, 90000));
+        assert_eq!(video_pts_ticks(ts), ff_sys::AV_NOPTS_VALUE);
+    }
+
+    /// 90 000 ticks at 1/90000 must convert back to ~1.0 second.
+    #[test]
+    fn video_ticks_to_timestamp_should_convert_ticks_to_secs() {
+        let ts = video_ticks_to_timestamp(90000);
+        assert!(
+            (ts.as_secs_f64() - 1.0).abs() < 1e-6,
+            "expected ~1.0 s, got {}",
+            ts.as_secs_f64()
+        );
+    }
+
+    /// `AV_NOPTS_VALUE` ticks must yield `Timestamp::default()` (0 at 1/90000).
+    #[test]
+    fn video_ticks_to_timestamp_with_nopts_should_return_default_timestamp() {
+        let ts = video_ticks_to_timestamp(ff_sys::AV_NOPTS_VALUE);
+        assert_eq!(ts, Timestamp::default());
+    }
+
+    /// A valid 1-second audio timestamp at 48 kHz must scale to exactly 48 000 ticks.
+    #[test]
+    fn audio_pts_ticks_should_scale_timestamp_to_sample_rate_time_base() {
+        let ts = Timestamp::new(48000, Rational::new(1, 48000));
+        assert_eq!(audio_pts_ticks(ts, 48000), 48000);
+    }
+
+    /// A timestamp whose raw PTS equals `AV_NOPTS_VALUE` must pass through
+    /// unchanged on the audio push path.
+    #[test]
+    fn audio_pts_ticks_with_nopts_value_should_return_av_nopts_value() {
+        let ts = Timestamp::new(ff_sys::AV_NOPTS_VALUE, Rational::new(1, 48000));
+        assert_eq!(audio_pts_ticks(ts, 48000), ff_sys::AV_NOPTS_VALUE);
+    }
+
+    /// 48 000 ticks at 48 kHz must convert back to ~1.0 second.
+    #[test]
+    fn audio_ticks_to_timestamp_should_convert_ticks_to_secs() {
+        let ts = audio_ticks_to_timestamp(48000, 48000);
+        assert!(
+            (ts.as_secs_f64() - 1.0).abs() < 1e-6,
+            "expected ~1.0 s, got {}",
+            ts.as_secs_f64()
+        );
+    }
+
+    /// `AV_NOPTS_VALUE` ticks must yield a zero timestamp with the correct
+    /// audio time base (1/sample_rate).
+    #[test]
+    fn audio_ticks_to_timestamp_with_nopts_should_return_zero_timestamp() {
+        let ts = audio_ticks_to_timestamp(ff_sys::AV_NOPTS_VALUE, 48000);
+        assert_eq!(ts.pts(), 0);
+        assert_eq!(ts.time_base(), Rational::new(1, 48000));
+    }
 }
 
 /// Build an [`AudioFrame`] by copying data out of an `AVFrame`.
@@ -1220,20 +1361,10 @@ unsafe fn av_frame_to_audio_frame(raw_frame: *const AVFrame) -> Result<AudioFram
     let sample_rate = (*raw_frame).sample_rate as u32;
     let format = av_to_sample_format((*raw_frame).format);
     let pts_raw = (*raw_frame).pts;
-    let secs = if sample_rate > 0 {
-        pts_raw as f64 / f64::from(sample_rate)
-    } else {
-        0.0
-    };
-    let time_base = Rational::new(
-        1,
-        if sample_rate > 0 {
-            sample_rate as i32
-        } else {
-            1
-        },
-    );
-    let timestamp = Timestamp::from_secs_f64(secs, time_base);
+    if pts_raw == ff_sys::AV_NOPTS_VALUE {
+        log::warn!("pts invalid in output audio frame from filter graph sample_rate={sample_rate}");
+    }
+    let timestamp = audio_ticks_to_timestamp(pts_raw, sample_rate);
 
     let num_planes = if format.is_planar() {
         channels as usize
