@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ff_filter::{FilterError, FilterGraph};
+use ff_filter::{FilterError, FilterGraph, ToneMap};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -297,4 +297,28 @@ fn push_video_through_rotate_should_return_frame() {
     }
     let result = graph.pull_video().expect("pull_video must not fail");
     assert!(result.is_some(), "expected Some(frame) after rotate push");
+}
+
+#[test]
+fn push_video_through_tone_map_should_return_frame() {
+    // The tonemap filter is HDR-specific and may not be available in all
+    // FFmpeg builds, or may reject non-HDR input. All failure paths are
+    // treated as graceful skips.
+    let mut graph = match FilterGraph::builder().tone_map(ToneMap::Hable).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    assert!(result.is_some(), "expected Some(frame) after tone_map push");
 }
