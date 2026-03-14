@@ -45,6 +45,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) audio_bitrate: Option<u64>,
     pub(crate) progress_callback: Option<Box<dyn ProgressCallback>>,
     pub(crate) two_pass: bool,
+    pub(crate) metadata: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -68,6 +69,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
                 &self.progress_callback.as_ref().map(|_| "<callback>"),
             )
             .field("two_pass", &self.two_pass)
+            .field("metadata", &self.metadata)
             .finish()
     }
 }
@@ -90,6 +92,7 @@ impl VideoEncoderBuilder {
             audio_bitrate: None,
             progress_callback: None,
             two_pass: false,
+            metadata: Vec::new(),
         }
     }
 
@@ -192,6 +195,19 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn two_pass(mut self) -> Self {
         self.two_pass = true;
+        self
+    }
+
+    // === Metadata ===
+
+    /// Embed a metadata tag in the output container.
+    ///
+    /// Calls `av_dict_set` on `AVFormatContext->metadata` before the header
+    /// is written. Multiple calls accumulate entries; duplicate keys use the
+    /// last value.
+    #[must_use]
+    pub fn metadata(mut self, key: &str, value: &str) -> Self {
+        self.metadata.push((key.to_string(), value.to_string()));
         self
     }
 
@@ -343,6 +359,7 @@ impl VideoEncoder {
             audio_bitrate: builder.audio_bitrate,
             _progress_callback: builder.progress_callback.is_some(),
             two_pass: builder.two_pass,
+            metadata: builder.metadata,
         };
 
         let inner = if config.video_width.is_some() {
@@ -581,6 +598,7 @@ mod tests {
                 audio_bitrate: None,
                 _progress_callback: false,
                 two_pass: false,
+                metadata: Vec::new(),
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,

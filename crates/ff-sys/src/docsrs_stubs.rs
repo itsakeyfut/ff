@@ -315,6 +315,15 @@ pub unsafe fn av_dict_get(
     std::ptr::null_mut()
 }
 
+pub unsafe fn av_dict_set(
+    _pm: *mut *mut AVDictionary,
+    _key: *const c_char,
+    _value: *const c_char,
+    _flags: c_int,
+) -> c_int {
+    0
+}
+
 pub unsafe fn avcodec_get_name(_id: AVCodecID) -> *const c_char {
     std::ptr::null()
 }

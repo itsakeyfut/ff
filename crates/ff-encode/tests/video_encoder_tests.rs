@@ -488,3 +488,35 @@ fn two_pass_encode_should_produce_valid_output() {
     println!("Two-pass output: {} bytes", file_size);
     assert!(file_size > 1000, "File too small, might be corrupted");
 }
+
+#[test]
+fn metadata_mpeg4_should_produce_valid_output() {
+    let output_path = test_output_path("metadata_mpeg4.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .metadata("title", "Test Video")
+        .metadata("artist", "ff-encode integration test")
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping metadata_mpeg4 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+}
