@@ -11,6 +11,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-03-14
+
+### Added
+
+#### ff-filter (new crate)
+- Full filter graph implementation: `FilterGraph`, `FilterGraphBuilder`, `FilterGraphInner`, and `FilterError` types ([#15](https://github.com/itsakeyfut/avio/issues/15)–[#20](https://github.com/itsakeyfut/avio/issues/20))
+- `AVFilterGraph` lifecycle management with RAII `Drop` ([#16](https://github.com/itsakeyfut/avio/issues/16))
+- `buffersrc` / `buffersink` argument helpers for both video and audio ([#21](https://github.com/itsakeyfut/avio/issues/21))
+- Multi-input slot management for video and audio filter chains ([#22](https://github.com/itsakeyfut/avio/issues/22))
+- Graph validation via `avfilter_graph_config` with propagated error codes and messages ([#23](https://github.com/itsakeyfut/avio/issues/23))
+- `push_video` / `pull_video` and `push_audio` / `pull_audio` API with correct PTS/DTS timestamp handling ([#18](https://github.com/itsakeyfut/avio/issues/18), [#19](https://github.com/itsakeyfut/avio/issues/19))
+- Filter name validation at `build()` time ([#17](https://github.com/itsakeyfut/avio/issues/17))
+- Video filters: `scale`, `crop`, `trim` (with `setpts=PTS-STARTPTS` timestamp reset), `overlay`, `fade_in`, `fade_out`, `rotate`, `tone_map` ([#24](https://github.com/itsakeyfut/avio/issues/24)–[#30](https://github.com/itsakeyfut/avio/issues/30))
+- Audio filters: `volume`, `amix`, `equalizer` ([#31](https://github.com/itsakeyfut/avio/issues/31)–[#33](https://github.com/itsakeyfut/avio/issues/33))
+- Hardware-accelerated filter chains: CUDA (`hwupload_cuda` / `hwdownload`), VideoToolbox, VAAPI ([#34](https://github.com/itsakeyfut/avio/issues/34)–[#36](https://github.com/itsakeyfut/avio/issues/36))
+- Integration tests covering all single-stream, multi-stream, and hardware filter paths ([#40](https://github.com/itsakeyfut/avio/issues/40), [#41](https://github.com/itsakeyfut/avio/issues/41))
+
+#### ff-decode
+- `ImageDecoder`: decodes still images (JPEG, PNG, BMP, TIFF, WebP) into `VideoFrame` using FFmpeg ([#37](https://github.com/itsakeyfut/avio/issues/37)–[#39](https://github.com/itsakeyfut/avio/issues/39))
+- Builder pattern: `ImageDecoder::open(path)` → `ImageDecoderBuilder` → `ImageDecoder` ([#38](https://github.com/itsakeyfut/avio/issues/38))
+- `decode()` (consuming), `decode_one()` (incremental), and `frames()` (iterator) APIs ([#39](https://github.com/itsakeyfut/avio/issues/39))
+- `ImageFrameIterator` for API consistency with `VideoFrameIterator` and `AudioFrameIterator`
+- `ImageDecoder`, `ImageDecoderBuilder`, and `ImageFrameIterator` re-exported from crate root and `prelude`
+- Integration tests covering JPEG and PNG decode (width, height, pixel format) and error handling ([#42](https://github.com/itsakeyfut/avio/issues/42))
+
+### Fixed
+
+#### ff-filter
+- `AV_BUFFERSRC_FLAG_KEEP_REF` type normalized across platforms to prevent Windows/Linux build divergence
+- Null `avfilter_get_by_name` return treated as unverifiable (skipped) rather than a build error at startup
+
+#### ff-sys
+- `docsrs_stubs.rs` completed for `ff-probe`, `ff-decode`, and `ff-encode` crates ([#127](https://github.com/itsakeyfut/avio/issues/127))
+
+---
+
 ## [0.1.3] - 2026-03-13
 
 ### Fixed
