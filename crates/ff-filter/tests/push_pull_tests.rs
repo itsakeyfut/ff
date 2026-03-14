@@ -322,3 +322,35 @@ fn push_video_through_tone_map_should_return_frame() {
     let result = graph.pull_video().expect("pull_video must not fail");
     assert!(result.is_some(), "expected Some(frame) after tone_map push");
 }
+
+#[test]
+fn push_audio_through_amix_should_return_mixed_frame() {
+    let mut graph = match FilterGraph::builder().amix(2).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_audio_frame();
+    // Push to slot 0 — this also initialises the audio graph.
+    match graph.push_audio(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    // Push to slot 1 so amix has data on both inputs and can produce output.
+    match graph.push_audio(1, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_audio().expect("pull_audio must not fail");
+    let out = result.expect("expected Some(frame) after amix push to both slots");
+    assert_eq!(out.sample_rate(), 48000, "sample rate should be unchanged");
+    assert_eq!(out.channels(), 2, "channel count should be unchanged");
+}
