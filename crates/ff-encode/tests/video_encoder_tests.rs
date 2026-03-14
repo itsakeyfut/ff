@@ -412,3 +412,45 @@ fn test_encode_many_frames() {
     let file_size = get_file_size(&output_path);
     println!("300 frames: {} bytes", file_size);
 }
+
+// ============================================================================
+// Two-Pass Tests
+// ============================================================================
+
+#[test]
+fn two_pass_encode_should_produce_valid_output() {
+    let output_path = test_output_path("two_pass_mpeg4.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .video_bitrate(1_000_000) // Two-pass is most useful with a target bitrate
+        .preset(Preset::Ultrafast)
+        .two_pass()
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping two_pass test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..30 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder
+        .finish()
+        .expect("Failed to finish two-pass encoding");
+
+    assert_valid_output_file(&output_path);
+    let file_size = get_file_size(&output_path);
+    println!("Two-pass output: {} bytes", file_size);
+    assert!(file_size > 1000, "File too small, might be corrupted");
+}

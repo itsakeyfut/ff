@@ -33,6 +33,30 @@ use std::ptr;
 /// exotic formats that may require more planes.
 const MAX_PLANES: usize = 8;
 
+/// FFmpeg pass-1 encoding flag: collect two-pass statistics, discard encoded output.
+const AV_CODEC_FLAG_PASS1: i32 = 512; // 1 << 9
+
+/// FFmpeg pass-2 encoding flag: use two-pass statistics from pass 1.
+const AV_CODEC_FLAG_PASS2: i32 = 1024; // 1 << 10
+
+/// Buffered raw frame data for two-pass re-encoding.
+///
+/// Stores the already-converted YUV420P plane data from pass 1 so that
+/// the same frames can be re-encoded in pass 2 without re-reading from
+/// the caller.
+pub(super) struct TwoPassFrame {
+    /// YUV420P plane data (Y plane at index 0, U at 1, V at 2).
+    planes: Vec<Vec<u8>>,
+    /// Linesize (stride) for each plane.
+    strides: Vec<usize>,
+    /// Frame width in pixels.
+    width: u32,
+    /// Frame height in pixels.
+    height: u32,
+    /// Presentation timestamp used when encoding this frame.
+    pts: i64,
+}
+
 /// Internal encoder state with FFmpeg contexts.
 pub(super) struct VideoEncoderInner {
     /// Output format context
@@ -79,6 +103,24 @@ pub(super) struct VideoEncoderInner {
 
     /// Last source frame format (for SwsContext reuse optimization)
     pub(super) last_src_format: Option<AVPixelFormat>,
+
+    /// Whether two-pass encoding is active.
+    pub(super) two_pass: bool,
+
+    /// Pass-1 codec context (two-pass mode only; None in single-pass and after pass 1 completes).
+    pub(super) pass1_codec_ctx: Option<*mut AVCodecContext>,
+
+    /// Buffered YUV420P frame data for pass-2 re-encoding (two-pass mode only).
+    pub(super) buffered_frames: Vec<TwoPassFrame>,
+
+    /// Stored configuration for reconstructing the pass-2 codec context.
+    pub(super) two_pass_config: Option<VideoEncoderConfig>,
+
+    /// Owned `stats_in` C string that must outlive the pass-2 codec context.
+    ///
+    /// Nulled out in `cleanup()` before `avcodec_free_context` to prevent FFmpeg
+    /// from calling `av_free` on a Rust-allocated pointer.
+    pub(super) stats_in_cstr: Option<std::ffi::CString>,
 }
 
 /// VideoEncoder configuration (stored from builder).
@@ -98,6 +140,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) audio_codec: AudioCodec,
     pub(super) audio_bitrate: Option<u64>,
     pub(super) _progress_callback: bool,
+    pub(super) two_pass: bool,
 }
 impl VideoEncoderInner {
     /// Create a new encoder with the given configuration.
@@ -146,6 +189,11 @@ impl VideoEncoderInner {
                 last_src_width: None,
                 last_src_height: None,
                 last_src_format: None,
+                two_pass: config.two_pass,
+                pass1_codec_ctx: None,
+                buffered_frames: Vec::new(),
+                two_pass_config: None,
+                stats_in_cstr: None,
             };
 
             // Initialize video encoder if configured
@@ -161,7 +209,13 @@ impl VideoEncoderInner {
                     config.video_quality,
                     &config.preset,
                     config.hardware_encoder,
+                    config.two_pass,
                 )?;
+            }
+
+            // Store config for pass-2 reconstruction (two-pass mode only).
+            if config.two_pass {
+                encoder.two_pass_config = Some(config.clone());
             }
 
             // Initialize audio encoder if configured
@@ -176,25 +230,30 @@ impl VideoEncoderInner {
                 )?;
             }
 
-            // Open output file
-            match ff_sys::avformat::open_output(&config.path, ff_sys::avformat::avio_flags::WRITE) {
-                Ok(pb) => (*format_ctx).pb = pb,
-                Err(_) => {
-                    encoder.cleanup();
-                    return Err(EncodeError::CannotCreateFile {
-                        path: config.path.clone(),
-                    });
+            // For two-pass encoding the output file is opened in run_pass2() after
+            // pass-1 statistics have been collected.  Single-pass opens it now.
+            if !config.two_pass {
+                match ff_sys::avformat::open_output(
+                    &config.path,
+                    ff_sys::avformat::avio_flags::WRITE,
+                ) {
+                    Ok(pb) => (*format_ctx).pb = pb,
+                    Err(_) => {
+                        encoder.cleanup();
+                        return Err(EncodeError::CannotCreateFile {
+                            path: config.path.clone(),
+                        });
+                    }
                 }
-            }
 
-            // Write file header
-            let ret = avformat_write_header(format_ctx, ptr::null_mut());
-            if ret < 0 {
-                encoder.cleanup();
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Cannot write header: {}",
-                    ff_sys::av_error_string(ret)
-                )));
+                let ret = avformat_write_header(format_ctx, ptr::null_mut());
+                if ret < 0 {
+                    encoder.cleanup();
+                    return Err(EncodeError::Ffmpeg(format!(
+                        "Cannot write header: {}",
+                        ff_sys::av_error_string(ret)
+                    )));
+                }
             }
 
             Ok(encoder)
@@ -202,6 +261,10 @@ impl VideoEncoderInner {
     }
 
     /// Initialize video encoder.
+    ///
+    /// When `two_pass` is `true` the codec context is opened with
+    /// `AV_CODEC_FLAG_PASS1` and stored in `pass1_codec_ctx`; in single-pass
+    /// mode it is stored in `video_codec_ctx` as usual.
     unsafe fn init_video_encoder(
         &mut self,
         width: u32,
@@ -212,6 +275,7 @@ impl VideoEncoderInner {
         quality: Option<u32>,
         preset: &str,
         hardware_encoder: crate::HardwareEncoder,
+        two_pass: bool,
     ) -> Result<(), EncodeError> {
         // Select encoder based on codec and availability
         let encoder_name = self.select_video_encoder(codec, hardware_encoder)?;
@@ -286,6 +350,12 @@ impl VideoEncoderInner {
             }
         }
 
+        // For two-pass, set the pass-1 flag before opening the codec.
+        if two_pass {
+            // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
+            (*codec_ctx).flags |= AV_CODEC_FLAG_PASS1;
+        }
+
         // Open codec
         avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
             .map_err(EncodeError::from_ffmpeg_error)?;
@@ -310,7 +380,14 @@ impl VideoEncoderInner {
         }
 
         self.video_stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
-        self.video_codec_ctx = Some(codec_ctx);
+
+        // In two-pass mode the pass-1 context is stored separately; the real
+        // (pass-2) video_codec_ctx is initialised later in run_pass2().
+        if two_pass {
+            self.pass1_codec_ctx = Some(codec_ctx);
+        } else {
+            self.video_codec_ctx = Some(codec_ctx);
+        }
 
         // Note: SwsContext initialization is deferred to convert_video_frame()
         // for better optimization (skip unnecessary conversions, reuse context)
@@ -588,10 +665,82 @@ impl VideoEncoderInner {
     }
 
     /// Push a video frame for encoding.
+    ///
+    /// In two-pass mode the frame is converted to YUV420P via the pass-1 codec
+    /// context, the converted data is buffered for pass-2 replay, and the frame
+    /// is then sent through the pass-1 encoder (whose output is discarded).
     pub(super) unsafe fn push_video_frame(
         &mut self,
         frame: &VideoFrame,
     ) -> Result<(), EncodeError> {
+        // ── Two-pass path ────────────────────────────────────────────────────
+        if self.two_pass {
+            let pass1_ctx = self
+                .pass1_codec_ctx
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Pass-1 codec context not initialized".to_string(),
+                })?;
+
+            // Convert the incoming frame to YUV420P (the pass-1 codec's format).
+            let mut av_frame = av_frame_alloc();
+            if av_frame.is_null() {
+                return Err(EncodeError::Ffmpeg("Cannot allocate frame".to_string()));
+            }
+
+            let convert_result = self.convert_video_frame(frame, av_frame, pass1_ctx);
+            if let Err(e) = convert_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(e);
+            }
+
+            // Buffer the converted YUV420P data for pass-2 replay.
+            let width = (*pass1_ctx).width as u32;
+            let height = (*pass1_ctx).height as u32;
+            let uv_height = (height as usize).div_ceil(2);
+
+            let planes: Vec<Vec<u8>> = (0..3)
+                .map(|i| {
+                    if (*av_frame).data[i].is_null() {
+                        return Vec::new();
+                    }
+                    let stride = (*av_frame).linesize[i] as usize;
+                    let h = if i == 0 { height as usize } else { uv_height };
+                    // SAFETY: data[i] points to a valid buffer of stride * h bytes
+                    // allocated by av_frame_get_buffer inside convert_video_frame.
+                    std::slice::from_raw_parts((*av_frame).data[i], stride * h).to_vec()
+                })
+                .collect();
+
+            let strides: Vec<usize> = (0..3).map(|i| (*av_frame).linesize[i] as usize).collect();
+
+            self.buffered_frames.push(TwoPassFrame {
+                planes,
+                strides,
+                width,
+                height,
+                pts: self.frame_count as i64,
+            });
+
+            // Send to pass-1 encoder and discard the encoded output.
+            (*av_frame).pts = self.frame_count as i64;
+            let send_result = avcodec::send_frame(pass1_ctx, av_frame);
+            if let Err(e) = send_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(EncodeError::Ffmpeg(format!(
+                    "Failed to send frame to pass-1 encoder: {}",
+                    ff_sys::av_error_string(e)
+                )));
+            }
+
+            let drain_result = self.drain_pass1_packets(pass1_ctx);
+            av_frame_free(&mut av_frame as *mut *mut _);
+            drain_result?;
+
+            self.frame_count += 1;
+            return Ok(());
+        }
+
+        // ── Single-pass path ─────────────────────────────────────────────────
         let codec_ctx = self
             .video_codec_ctx
             .ok_or_else(|| EncodeError::InvalidConfig {
@@ -605,7 +754,7 @@ impl VideoEncoderInner {
         }
 
         // Convert VideoFrame to AVFrame
-        let convert_result = self.convert_video_frame(frame, av_frame);
+        let convert_result = self.convert_video_frame(frame, av_frame, codec_ctx);
         if let Err(e) = convert_result {
             av_frame_free(&mut av_frame as *mut *mut _);
             return Err(e);
@@ -638,6 +787,46 @@ impl VideoEncoderInner {
         Ok(())
     }
 
+    /// Drain and discard all pending packets from a codec context.
+    ///
+    /// Used during pass-1 of two-pass encoding to prevent the packet queue
+    /// from filling up without writing any data to the output file.
+    ///
+    /// # Safety
+    ///
+    /// `codec_ctx` must be a valid, open `AVCodecContext`.
+    unsafe fn drain_pass1_packets(
+        &self,
+        codec_ctx: *mut AVCodecContext,
+    ) -> Result<(), EncodeError> {
+        let mut packet = av_packet_alloc();
+        if packet.is_null() {
+            return Err(EncodeError::Ffmpeg("Cannot allocate packet".to_string()));
+        }
+
+        loop {
+            match avcodec::receive_packet(codec_ctx, packet) {
+                Ok(()) => {
+                    // Discard — do not write to the format context.
+                    av_packet_unref(packet);
+                }
+                Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
+                    break;
+                }
+                Err(e) => {
+                    av_packet_free(&mut packet as *mut *mut _);
+                    return Err(EncodeError::Ffmpeg(format!(
+                        "Error receiving packet from pass-1 encoder: {}",
+                        ff_sys::av_error_string(e)
+                    )));
+                }
+            }
+        }
+
+        av_packet_free(&mut packet as *mut *mut _);
+        Ok(())
+    }
+
     /// Convert VideoFrame to AVFrame with pixel format conversion if needed.
     ///
     /// This method implements several optimizations in priority order:
@@ -645,6 +834,9 @@ impl VideoEncoderInner {
     /// 2. **Context reuse**: Reuses SwsContext when source properties unchanged
     /// 3. **Lazy init**: Reinitializes SwsContext only when needed
     /// 4. **Fast algorithm**: Uses BILINEAR scaling for speed/quality balance
+    ///
+    /// The caller supplies `codec_ctx` explicitly so this function can be used
+    /// with both the regular `video_codec_ctx` and the pass-1 `pass1_codec_ctx`.
     ///
     /// # Performance Characteristics
     ///
@@ -655,18 +847,14 @@ impl VideoEncoderInner {
     /// # Safety
     ///
     /// This function is unsafe because it directly manipulates FFmpeg AVFrame pointers.
-    /// The caller must ensure that `dst` is a valid, properly allocated AVFrame pointer.
+    /// The caller must ensure that `dst` is a valid, properly allocated AVFrame pointer
+    /// and that `codec_ctx` is a valid, open `AVCodecContext`.
     unsafe fn convert_video_frame(
         &mut self,
         src: &VideoFrame,
         dst: *mut AVFrame,
+        codec_ctx: *mut AVCodecContext,
     ) -> Result<(), EncodeError> {
-        let codec_ctx = self
-            .video_codec_ctx
-            .ok_or_else(|| EncodeError::InvalidConfig {
-                reason: "Video codec not initialized".to_string(),
-            })?;
-
         let target_fmt = (*codec_ctx).pix_fmt;
         let target_width = (*codec_ctx).width as u32;
         let target_height = (*codec_ctx).height as u32;
@@ -1174,7 +1362,12 @@ impl VideoEncoderInner {
 
     /// Finish encoding and write trailer.
     pub(super) unsafe fn finish(&mut self) -> Result<(), EncodeError> {
-        // Flush video encoder
+        // For two-pass, run the second pass now (handles flushing + trailer).
+        if self.two_pass {
+            return self.run_pass2();
+        }
+
+        // Single-pass: flush video encoder
         if let Some(codec_ctx) = self.video_codec_ctx {
             // Send NULL frame to flush
             avcodec::send_frame(codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
@@ -1200,10 +1393,352 @@ impl VideoEncoderInner {
         Ok(())
     }
 
+    /// Run the second pass of two-pass encoding.
+    ///
+    /// 1. Flushes the pass-1 encoder and collects `stats_out`.
+    /// 2. Initialises a pass-2 codec context with `AV_CODEC_FLAG_PASS2` and
+    ///    the collected statistics.
+    /// 3. Opens the real output file and writes the container header.
+    /// 4. Re-encodes all buffered frames through the pass-2 context.
+    /// 5. Flushes the pass-2 encoder and writes the container trailer.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called from `finish` when `self.two_pass` is `true`.
+    /// All FFmpeg resources must be valid at the point of the call.
+    unsafe fn run_pass2(&mut self) -> Result<(), EncodeError> {
+        // ── Step 1: Flush pass-1 encoder ────────────────────────────────────
+        let mut pass1_ctx = self
+            .pass1_codec_ctx
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Pass-1 codec context not available".to_string(),
+            })?;
+
+        // SAFETY: pass1_ctx is a valid open codec context.
+        if let Err(e) = avcodec::send_frame(pass1_ctx, ptr::null())
+            && e != ff_sys::error_codes::EOF
+        {
+            return Err(EncodeError::Ffmpeg(format!(
+                "pass1 flush send_frame: {}",
+                ff_sys::av_error_string(e)
+            )));
+        }
+        self.drain_pass1_packets(pass1_ctx)?;
+
+        // ── Step 2: Collect stats_out ────────────────────────────────────────
+        // SAFETY: stats_out is either null or a valid C string owned by the
+        // codec context; it remains valid until avcodec_free_context is called.
+        let stats_str = if !(*pass1_ctx).stats_out.is_null() {
+            std::ffi::CStr::from_ptr((*pass1_ctx).stats_out)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            log::warn!(
+                "two-pass pass-1 produced no stats_out; pass-2 quality may not improve \
+                 codec={}",
+                self.actual_video_codec
+            );
+            String::new()
+        };
+        log::info!("two-pass pass-1 complete stats_len={}", stats_str.len());
+
+        // ── Step 3: Free pass-1 codec context ───────────────────────────────
+        // SAFETY: pass1_ctx is no longer needed; we own it exclusively.
+        avcodec::free_context(&mut pass1_ctx as *mut *mut _);
+        self.pass1_codec_ctx = None;
+
+        // ── Step 4: Set up pass-2 codec context ─────────────────────────────
+        let config = self
+            .two_pass_config
+            .take()
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Two-pass config not available for pass-2 initialisation".to_string(),
+            })?;
+
+        let output_path = config.path.clone();
+        self.init_pass2_codec_ctx(&config, &stats_str)?;
+
+        // ── Step 5: Open output file and write header ────────────────────────
+        match ff_sys::avformat::open_output(&output_path, ff_sys::avformat::avio_flags::WRITE) {
+            Ok(pb) => (*self.format_ctx).pb = pb,
+            Err(_) => {
+                return Err(EncodeError::CannotCreateFile { path: output_path });
+            }
+        }
+
+        let ret = avformat_write_header(self.format_ctx, ptr::null_mut());
+        if ret < 0 {
+            return Err(EncodeError::Ffmpeg(format!(
+                "Cannot write header in pass 2: {}",
+                ff_sys::av_error_string(ret)
+            )));
+        }
+
+        // ── Step 6: Re-encode all buffered frames ────────────────────────────
+        let frames = std::mem::take(&mut self.buffered_frames);
+        self.frame_count = 0;
+        for tf in &frames {
+            self.push_two_pass_frame(tf)?;
+        }
+
+        // ── Step 7: Flush pass-2 encoder and write trailer ───────────────────
+        if let Some(codec_ctx) = self.video_codec_ctx {
+            // SAFETY: codec_ctx is a valid open pass-2 codec context.
+            if let Err(e) = avcodec::send_frame(codec_ctx, ptr::null())
+                && e != ff_sys::error_codes::EOF
+            {
+                return Err(EncodeError::Ffmpeg(format!(
+                    "pass2 flush send_frame: {}",
+                    ff_sys::av_error_string(e)
+                )));
+            }
+            self.receive_packets()?;
+        }
+
+        let ret = av_write_trailer(self.format_ctx);
+        if ret < 0 {
+            return Err(EncodeError::Ffmpeg(format!(
+                "Cannot write trailer: {}",
+                ff_sys::av_error_string(ret)
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Initialise the pass-2 video codec context.
+    ///
+    /// Mirrors the configuration performed in `init_video_encoder` but sets
+    /// `AV_CODEC_FLAG_PASS2` and assigns `stats_in` from the pass-1 statistics
+    /// string. Does **not** create a new AVStream — the stream was already
+    /// registered during `init_video_encoder` (pass 1).
+    ///
+    /// # Safety
+    ///
+    /// Must only be called from `run_pass2`. `self.format_ctx` must be valid.
+    unsafe fn init_pass2_codec_ctx(
+        &mut self,
+        config: &VideoEncoderConfig,
+        stats: &str,
+    ) -> Result<(), EncodeError> {
+        let width = config.video_width.unwrap_or(0);
+        let height = config.video_height.unwrap_or(0);
+        let fps = config.video_fps.unwrap_or(30.0);
+        let encoder_name = self.actual_video_codec.clone();
+
+        let c_encoder_name = CString::new(encoder_name.as_str())
+            .map_err(|_| EncodeError::Ffmpeg("Invalid encoder name for pass 2".to_string()))?;
+
+        let codec_ptr =
+            avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
+                EncodeError::NoSuitableEncoder {
+                    codec: encoder_name.clone(),
+                    tried: vec![encoder_name.clone()],
+                }
+            })?;
+
+        let codec_ctx =
+            avcodec::alloc_context3(codec_ptr).map_err(EncodeError::from_ffmpeg_error)?;
+
+        // Mirror the same codec configuration as pass 1.
+        (*codec_ctx).codec_id = codec_to_id(config.video_codec);
+        (*codec_ctx).width = width as i32;
+        (*codec_ctx).height = height as i32;
+        (*codec_ctx).time_base.num = 1;
+        (*codec_ctx).time_base.den = (fps * 1000.0) as i32;
+        (*codec_ctx).framerate.num = fps as i32;
+        (*codec_ctx).framerate.den = 1;
+        (*codec_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+
+        if let Some(br) = config.video_bitrate {
+            (*codec_ctx).bit_rate = br as i64;
+        } else if let Some(q) = config.video_quality {
+            let crf_str = CString::new(q.to_string())
+                .map_err(|_| EncodeError::Ffmpeg("Invalid CRF value".to_string()))?;
+            // SAFETY: priv_data, option name, and value are all valid pointers.
+            let ret = ff_sys::av_opt_set(
+                (*codec_ctx).priv_data,
+                b"crf\0".as_ptr() as *const i8,
+                crf_str.as_ptr(),
+                0,
+            );
+            if ret < 0 {
+                log::warn!(
+                    "crf option not supported by pass-2 encoder, falling back to default \
+                     encoder={encoder_name} crf={q}"
+                );
+                (*codec_ctx).bit_rate = 2_000_000;
+            }
+        } else {
+            (*codec_ctx).bit_rate = 2_000_000;
+        }
+
+        if encoder_name.contains("264") || encoder_name.contains("265") {
+            let preset_cstr = CString::new(config.preset.as_str())
+                .map_err(|_| EncodeError::Ffmpeg("Invalid preset value".to_string()))?;
+            // SAFETY: priv_data, option name, and value are all valid pointers.
+            let ret = ff_sys::av_opt_set(
+                (*codec_ctx).priv_data,
+                b"preset\0".as_ptr() as *const i8,
+                preset_cstr.as_ptr(),
+                0,
+            );
+            if ret < 0 {
+                log::warn!(
+                    "preset option not supported by pass-2 encoder, ignoring \
+                     encoder={encoder_name} preset={}",
+                    config.preset
+                );
+            }
+        }
+
+        // Set the pass-2 flag and provide stats_in.
+        // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
+        (*codec_ctx).flags |= AV_CODEC_FLAG_PASS2;
+
+        // Point stats_in to our owned CString (kept alive in self.stats_in_cstr
+        // until cleanup() nulls the pointer and drops it).
+        if !stats.is_empty() {
+            let stats_cstr = CString::new(stats)
+                .map_err(|_| EncodeError::Ffmpeg("Invalid stats string from pass 1".to_string()))?;
+            // SAFETY: stats_cstr.as_ptr() is valid for the lifetime of stats_cstr,
+            // which is stored in self.stats_in_cstr and dropped only after the codec
+            // context is freed in cleanup().
+            (*codec_ctx).stats_in = stats_cstr.as_ptr().cast_mut();
+            self.stats_in_cstr = Some(stats_cstr);
+        }
+
+        // Try to open the pass-2 codec with PASS2 flag. Some encoders (e.g. the
+        // native mpeg4 encoder without meaningful stats) do not support PASS2 and
+        // return AVERROR(EPERM). In that case, fall back to opening without the
+        // flag so the caller still gets a valid encoder and usable output.
+        if avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut()).is_err() {
+            log::warn!(
+                "two-pass pass-2 codec rejected AV_CODEC_FLAG_PASS2, \
+                 falling back to single-pass mode codec={encoder_name}"
+            );
+            (*codec_ctx).flags &= !AV_CODEC_FLAG_PASS2;
+            (*codec_ctx).stats_in = ptr::null_mut();
+            self.stats_in_cstr = None;
+            avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut()).map_err(|e| {
+                EncodeError::Ffmpeg(format!(
+                    "pass2 avcodec_open2 fallback: {}",
+                    ff_sys::av_error_string(e)
+                ))
+            })?;
+        }
+        log::info!(
+            "two-pass pass-2 codec opened codec={encoder_name} width={width} height={height}"
+        );
+
+        self.video_codec_ctx = Some(codec_ctx);
+        Ok(())
+    }
+
+    /// Encode a single buffered YUV420P frame through the pass-2 codec context.
+    ///
+    /// The frame data was captured during pass 1 (already converted to YUV420P)
+    /// and is re-encoded here with the optimised pass-2 settings.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called from `run_pass2`. `self.video_codec_ctx` and
+    /// `self.format_ctx` must be valid and the output file must be open.
+    unsafe fn push_two_pass_frame(&mut self, tf: &TwoPassFrame) -> Result<(), EncodeError> {
+        let codec_ctx = self
+            .video_codec_ctx
+            .ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Pass-2 codec context not initialized".to_string(),
+            })?;
+
+        let mut av_frame = av_frame_alloc();
+        if av_frame.is_null() {
+            return Err(EncodeError::Ffmpeg(
+                "Cannot allocate frame for pass 2".to_string(),
+            ));
+        }
+
+        // Set frame format — always YUV420P (converted during pass 1).
+        (*av_frame).format = AVPixelFormat_AV_PIX_FMT_YUV420P;
+        (*av_frame).width = tf.width as i32;
+        (*av_frame).height = tf.height as i32;
+
+        // Allocate the frame buffer.
+        let ret = ff_sys::av_frame_get_buffer(av_frame, 0);
+        if ret < 0 {
+            av_frame_free(&mut av_frame as *mut *mut _);
+            return Err(EncodeError::Ffmpeg(format!(
+                "Cannot allocate pass-2 frame buffer: {}",
+                ff_sys::av_error_string(ret)
+            )));
+        }
+
+        // Copy the buffered YUV420P data into the AVFrame.
+        let uv_height = (tf.height as usize).div_ceil(2);
+        for (plane_idx, (plane_data, src_stride)) in
+            tf.planes.iter().zip(tf.strides.iter()).enumerate()
+        {
+            if plane_idx >= 3 || (*av_frame).data[plane_idx].is_null() || plane_data.is_empty() {
+                break;
+            }
+            let dst_stride = (*av_frame).linesize[plane_idx] as usize;
+            let plane_height = if plane_idx == 0 {
+                tf.height as usize
+            } else {
+                uv_height
+            };
+
+            for row in 0..plane_height {
+                let src_off = row * src_stride;
+                let dst_off = row * dst_stride;
+                let copy_len = (*src_stride).min(dst_stride);
+
+                if src_off + copy_len <= plane_data.len() {
+                    // SAFETY: bounds checked above; both pointers are valid and
+                    // the regions do not overlap.
+                    ptr::copy_nonoverlapping(
+                        plane_data.as_ptr().add(src_off),
+                        (*av_frame).data[plane_idx].add(dst_off),
+                        copy_len,
+                    );
+                }
+            }
+        }
+
+        (*av_frame).pts = tf.pts;
+
+        // Send to pass-2 encoder.
+        let send_result = avcodec::send_frame(codec_ctx, av_frame);
+        if let Err(e) = send_result {
+            av_frame_free(&mut av_frame as *mut *mut _);
+            return Err(EncodeError::Ffmpeg(format!(
+                "Failed to send frame to pass-2 encoder: {}",
+                ff_sys::av_error_string(e)
+            )));
+        }
+
+        let receive_result = self.receive_packets();
+        av_frame_free(&mut av_frame as *mut *mut _);
+        receive_result?;
+
+        self.frame_count += 1;
+        Ok(())
+    }
+
     /// Cleanup FFmpeg resources.
     unsafe fn cleanup(&mut self) {
-        // Free video codec context
+        // Free video codec context.
+        // For two-pass encoding, stats_in points into self.stats_in_cstr (Rust-owned).
+        // Null it out BEFORE avcodec_free_context so FFmpeg does not call av_free on it.
         if let Some(mut ctx) = self.video_codec_ctx.take() {
+            (*ctx).stats_in = ptr::null_mut();
+            avcodec::free_context(&mut ctx as *mut *mut _);
+        }
+        // Drop the owned CString now that the codec context no longer references it.
+        self.stats_in_cstr = None;
+
+        // Free pass-1 codec context (only set in two-pass mode).
+        if let Some(mut ctx) = self.pass1_codec_ctx.take() {
             avcodec::free_context(&mut ctx as *mut *mut _);
         }
 
@@ -1575,6 +2110,11 @@ mod tests {
             last_src_width: None,
             last_src_height: None,
             last_src_format: None,
+            two_pass: false,
+            pass1_codec_ctx: None,
+            buffered_frames: Vec::new(),
+            two_pass_config: None,
+            stats_in_cstr: None,
         }
     }
 }
