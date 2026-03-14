@@ -36,8 +36,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) video_height: Option<u32>,
     pub(crate) video_fps: Option<f64>,
     pub(crate) video_codec: VideoCodec,
-    pub(crate) video_bitrate: Option<u64>,
-    pub(crate) video_quality: Option<u32>,
+    pub(crate) video_bitrate_mode: Option<crate::BitrateMode>,
     pub(crate) preset: Preset,
     pub(crate) hardware_encoder: HardwareEncoder,
     pub(crate) audio_sample_rate: Option<u32>,
@@ -57,8 +56,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("video_height", &self.video_height)
             .field("video_fps", &self.video_fps)
             .field("video_codec", &self.video_codec)
-            .field("video_bitrate", &self.video_bitrate)
-            .field("video_quality", &self.video_quality)
+            .field("video_bitrate_mode", &self.video_bitrate_mode)
             .field("preset", &self.preset)
             .field("hardware_encoder", &self.hardware_encoder)
             .field("audio_sample_rate", &self.audio_sample_rate)
@@ -83,8 +81,7 @@ impl VideoEncoderBuilder {
             video_height: None,
             video_fps: None,
             video_codec: VideoCodec::default(),
-            video_bitrate: None,
-            video_quality: None,
+            video_bitrate_mode: None,
             preset: Preset::default(),
             hardware_encoder: HardwareEncoder::default(),
             audio_sample_rate: None,
@@ -114,17 +111,10 @@ impl VideoEncoderBuilder {
         self
     }
 
-    /// Set video bitrate in bits per second.
+    /// Set the bitrate control mode for video encoding.
     #[must_use]
-    pub fn video_bitrate(mut self, bitrate: u64) -> Self {
-        self.video_bitrate = Some(bitrate);
-        self
-    }
-
-    /// Set video quality using CRF (Constant Rate Factor, 0–51).
-    #[must_use]
-    pub fn video_quality(mut self, crf: u32) -> Self {
-        self.video_quality = Some(crf);
+    pub fn bitrate_mode(mut self, mode: crate::BitrateMode) -> Self {
+        self.video_bitrate_mode = Some(mode);
         self
     }
 
@@ -266,11 +256,21 @@ impl VideoEncoderBuilder {
                     reason: format!("Video FPS must be positive, got {fps}"),
                 });
             }
-            if let Some(quality) = self.video_quality
-                && quality > 51
+            if let Some(crate::BitrateMode::Crf(q)) = self.video_bitrate_mode
+                && q > crate::CRF_MAX
             {
                 return Err(EncodeError::InvalidConfig {
-                    reason: format!("Video quality (CRF) must be 0-51, got {quality}"),
+                    reason: format!(
+                        "BitrateMode::Crf value must be 0-{}, got {q}",
+                        crate::CRF_MAX
+                    ),
+                });
+            }
+            if let Some(crate::BitrateMode::Vbr { target, max }) = self.video_bitrate_mode
+                && max < target
+            {
+                return Err(EncodeError::InvalidConfig {
+                    reason: format!("BitrateMode::Vbr max ({max}) must be >= target ({target})"),
                 });
             }
         }
@@ -334,8 +334,7 @@ impl VideoEncoder {
             video_height: builder.video_height,
             video_fps: builder.video_fps,
             video_codec: builder.video_codec,
-            video_bitrate: builder.video_bitrate,
-            video_quality: builder.video_quality,
+            video_bitrate_mode: builder.video_bitrate_mode,
             preset: preset_to_string(&builder.preset),
             hardware_encoder: builder.hardware_encoder,
             audio_sample_rate: builder.audio_sample_rate,
@@ -573,8 +572,7 @@ mod tests {
                 video_height: Some(1080),
                 video_fps: Some(30.0),
                 video_codec: crate::VideoCodec::H264,
-                video_bitrate: None,
-                video_quality: None,
+                video_bitrate_mode: None,
                 preset: "medium".to_string(),
                 hardware_encoder: HardwareEncoder::Auto,
                 audio_sample_rate: None,
@@ -599,12 +597,15 @@ mod tests {
         let builder = VideoEncoder::create("output.mp4")
             .video(1920, 1080, 30.0)
             .video_codec(VideoCodec::H264)
-            .video_bitrate(8_000_000);
+            .bitrate_mode(crate::BitrateMode::Cbr(8_000_000));
         assert_eq!(builder.video_width, Some(1920));
         assert_eq!(builder.video_height, Some(1080));
         assert_eq!(builder.video_fps, Some(30.0));
         assert_eq!(builder.video_codec, VideoCodec::H264);
-        assert_eq!(builder.video_bitrate, Some(8_000_000));
+        assert_eq!(
+            builder.video_bitrate_mode,
+            Some(crate::BitrateMode::Cbr(8_000_000))
+        );
     }
 
     #[test]
@@ -707,7 +708,20 @@ mod tests {
     fn build_with_crf_above_51_should_return_error() {
         let result = VideoEncoder::create("output.mp4")
             .video(1920, 1080, 30.0)
-            .video_quality(100)
+            .bitrate_mode(crate::BitrateMode::Crf(100))
+            .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bitrate_mode_vbr_with_max_less_than_target_should_return_error() {
+        let output_path = "test_vbr.mp4";
+        let result = VideoEncoder::create(output_path)
+            .video(640, 480, 30.0)
+            .bitrate_mode(crate::BitrateMode::Vbr {
+                target: 4_000_000,
+                max: 2_000_000,
+            })
             .build();
         assert!(result.is_err());
     }

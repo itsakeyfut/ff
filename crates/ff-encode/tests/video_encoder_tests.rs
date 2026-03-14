@@ -12,7 +12,7 @@
 
 mod fixtures;
 
-use ff_encode::{Preset, VideoCodec, VideoEncoder};
+use ff_encode::{BitrateMode, Preset, VideoCodec, VideoEncoder};
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
 };
@@ -218,7 +218,7 @@ fn test_builder_pattern() {
     let mut encoder = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
-        .video_bitrate(1_000_000) // 1 Mbps
+        .bitrate_mode(BitrateMode::Cbr(1_000_000)) // 1 Mbps
         .preset(Preset::Medium)
         .build()
         .expect("Failed to build encoder");
@@ -243,7 +243,7 @@ fn test_builder_with_quality() {
     let mut encoder = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
-        .video_quality(30) // CRF 30
+        .bitrate_mode(BitrateMode::Crf(30)) // CRF 30
         .preset(Preset::Fast)
         .build()
         .expect("Failed to build encoder");
@@ -267,7 +267,7 @@ fn crf_h264_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H264)
-        .video_quality(23) // CRF 23 — default quality for H.264
+        .bitrate_mode(BitrateMode::Crf(23)) // CRF 23 — default quality for H.264
         .preset(Preset::Ultrafast)
         .build();
 
@@ -298,7 +298,7 @@ fn crf_h265_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H265)
-        .video_quality(28) // CRF 28 — default quality for H.265
+        .bitrate_mode(BitrateMode::Crf(28)) // CRF 28 — default quality for H.265
         .preset(Preset::Ultrafast)
         .build();
 
@@ -425,7 +425,7 @@ fn two_pass_encode_should_produce_valid_output() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
-        .video_bitrate(1_000_000) // Two-pass is most useful with a target bitrate
+        .bitrate_mode(BitrateMode::Cbr(1_000_000)) // Two-pass is most useful with a target bitrate
         .preset(Preset::Ultrafast)
         .two_pass()
         .build();

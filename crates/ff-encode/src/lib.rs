@@ -44,14 +44,14 @@
 //! ### Basic Encoding
 //!
 //! ```ignore
-//! use ff_encode::{VideoEncoder, VideoCodec, AudioCodec, Preset};
+//! use ff_encode::{VideoEncoder, VideoCodec, AudioCodec, BitrateMode, Preset};
 //! use ff_format::VideoFrame;
 //!
 //! // Create encoder with Builder pattern
 //! let mut encoder = VideoEncoder::create("output.mp4")?
 //!     .video(1920, 1080, 30.0)          // resolution, FPS
 //!     .video_codec(VideoCodec::H264)     // codec
-//!     .video_bitrate(8_000_000)          // 8 Mbps
+//!     .bitrate_mode(BitrateMode::Cbr(8_000_000))  // 8 Mbps
 //!     .preset(Preset::Medium)            // speed/quality balance
 //!     .audio(48000, 2)                   // sample rate, channels
 //!     .audio_codec(AudioCodec::Aac)
@@ -193,6 +193,7 @@
 //! ```
 
 mod audio;
+mod bitrate;
 mod codec;
 mod container;
 mod error;
@@ -202,6 +203,7 @@ mod progress;
 mod video;
 
 pub use audio::{AudioEncoder, AudioEncoderBuilder};
+pub use bitrate::{BitrateMode, CRF_MAX};
 pub use codec::{AudioCodec, VideoCodec};
 pub use container::Container;
 pub use error::EncodeError;
