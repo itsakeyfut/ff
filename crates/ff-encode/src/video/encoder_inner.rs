@@ -2064,6 +2064,13 @@ impl VideoEncoderInner {
             ff_sys::av_packet_rescale_ts(pkt, in_time_base, out_time_base);
             (*pkt).stream_index = out_stream_index;
 
+            // SRT/subtitle packets typically carry only PTS (DTS is AV_NOPTS_VALUE).
+            // The matroska muxer requires a valid DTS for av_interleaved_write_frame;
+            // mirror PTS → DTS when DTS is absent so packets are not silently dropped.
+            if (*pkt).dts == i64::MIN {
+                (*pkt).dts = (*pkt).pts;
+            }
+
             let write_ret = av_interleaved_write_frame(self.format_ctx, pkt);
             if write_ret < 0 {
                 log::warn!(
