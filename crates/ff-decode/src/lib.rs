@@ -102,12 +102,14 @@
 // Module declarations
 pub mod audio;
 pub mod error;
+pub mod image;
 pub mod pool;
 pub mod video;
 
 // Re-exports for convenience
 pub use audio::{AudioDecoder, AudioDecoderBuilder, AudioFrameIterator};
 pub use error::DecodeError;
+pub use image::{ImageDecoder, ImageDecoderBuilder, ImageFrameIterator};
 pub use pool::{FramePool, PooledBuffer, SimpleFramePool};
 pub use video::{VideoDecoder, VideoDecoderBuilder, VideoFrameIterator};
 
@@ -287,8 +289,8 @@ impl HardwareAccel {
 pub mod prelude {
     pub use crate::{
         AudioDecoder, AudioDecoderBuilder, AudioFrameIterator, DecodeError, FramePool,
-        HardwareAccel, PooledBuffer, SeekMode, SimpleFramePool, VideoDecoder, VideoDecoderBuilder,
-        VideoFrameIterator,
+        HardwareAccel, ImageDecoder, ImageDecoderBuilder, ImageFrameIterator, PooledBuffer,
+        SeekMode, SimpleFramePool, VideoDecoder, VideoDecoderBuilder, VideoFrameIterator,
     };
 }
 
