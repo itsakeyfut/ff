@@ -609,3 +609,110 @@ fn chapter_mpeg4_should_produce_valid_output() {
     encoder.finish().expect("Failed to finish encoding");
     assert_valid_output_file(&output_path);
 }
+
+#[test]
+fn chapter_round_trip_should_preserve_count_titles_and_timestamps() {
+    use ff_format::chapter::ChapterInfo;
+    use std::time::Duration;
+
+    let output_path = test_output_path("chapter_round_trip.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    // Known chapters with explicit titles and timestamps.
+    let chapters = vec![
+        ChapterInfo::builder()
+            .id(0)
+            .title("Intro")
+            .start(Duration::ZERO)
+            .end(Duration::from_secs(5))
+            .build(),
+        ChapterInfo::builder()
+            .id(1)
+            .title("Main Content")
+            .start(Duration::from_secs(5))
+            .end(Duration::from_secs(15))
+            .build(),
+        ChapterInfo::builder()
+            .id(2)
+            .title("Credits")
+            .start(Duration::from_secs(15))
+            .end(Duration::from_secs(20))
+            .build(),
+    ];
+
+    // Encode a short black-frame video with the chapters written.
+    let mut builder = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast);
+    for ch in &chapters {
+        builder = builder.chapter(ch.clone());
+    }
+    let mut encoder = match builder.build() {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping chapter_round_trip test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    // Encode 20 seconds worth of frames at 30 fps (600 frames).
+    for _ in 0..600 {
+        let frame = create_black_frame(320, 240);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+
+    // Re-probe the output and verify the chapter round-trip.
+    let info = ff_probe::open(&output_path).expect("Failed to probe output file");
+
+    assert_eq!(
+        info.chapter_count(),
+        chapters.len(),
+        "Chapter count mismatch after round-trip"
+    );
+
+    // Tolerance for timestamp comparison: FFmpeg stores chapters in a rational
+    // time-base (typically 1/1000 ms), so allow up to 10 ms of rounding error.
+    let tolerance = Duration::from_millis(10);
+
+    for (i, expected) in chapters.iter().enumerate() {
+        let actual = info
+            .chapters()
+            .get(i)
+            .unwrap_or_else(|| panic!("Chapter {i} missing after round-trip"));
+
+        assert_eq!(
+            actual.title(),
+            expected.title(),
+            "Title mismatch for chapter {i}"
+        );
+
+        let start_diff = if actual.start() >= expected.start() {
+            actual.start() - expected.start()
+        } else {
+            expected.start() - actual.start()
+        };
+        assert!(
+            start_diff <= tolerance,
+            "Start timestamp mismatch for chapter {i}: expected {:?}, got {:?}",
+            expected.start(),
+            actual.start()
+        );
+
+        let end_diff = if actual.end() >= expected.end() {
+            actual.end() - expected.end()
+        } else {
+            expected.end() - actual.end()
+        };
+        assert!(
+            end_diff <= tolerance,
+            "End timestamp mismatch for chapter {i}: expected {:?}, got {:?}",
+            expected.end(),
+            actual.end()
+        );
+    }
+}
