@@ -47,6 +47,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) two_pass: bool,
     pub(crate) metadata: Vec<(String, String)>,
     pub(crate) chapters: Vec<ff_format::chapter::ChapterInfo>,
+    pub(crate) subtitle_passthrough: Option<(String, usize)>,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -72,6 +73,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("two_pass", &self.two_pass)
             .field("metadata", &self.metadata)
             .field("chapters", &self.chapters)
+            .field("subtitle_passthrough", &self.subtitle_passthrough)
             .finish()
     }
 }
@@ -96,6 +98,7 @@ impl VideoEncoderBuilder {
             two_pass: false,
             metadata: Vec::new(),
             chapters: Vec::new(),
+            subtitle_passthrough: None,
         }
     }
 
@@ -223,6 +226,26 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn chapter(mut self, chapter: ff_format::chapter::ChapterInfo) -> Self {
         self.chapters.push(chapter);
+        self
+    }
+
+    // === Subtitle passthrough ===
+
+    /// Copy a subtitle stream from an existing file into the output container.
+    ///
+    /// Opens `source_path`, locates the stream at `stream_index`, and registers it
+    /// as a passthrough stream in the output.  Packets are copied verbatim using
+    /// `av_interleaved_write_frame` without re-encoding.
+    ///
+    /// `stream_index` is the zero-based index of the subtitle stream inside
+    /// `source_path`.  For files with a single subtitle track this is typically `0`
+    /// (or whichever index `ffprobe` reports).
+    ///
+    /// If the source cannot be opened or the stream index is invalid, a warning is
+    /// logged and encoding continues without subtitles.
+    #[must_use]
+    pub fn subtitle_passthrough(mut self, source_path: &str, stream_index: usize) -> Self {
+        self.subtitle_passthrough = Some((source_path.to_string(), stream_index));
         self
     }
 
@@ -376,6 +399,7 @@ impl VideoEncoder {
             two_pass: builder.two_pass,
             metadata: builder.metadata,
             chapters: builder.chapters,
+            subtitle_passthrough: builder.subtitle_passthrough,
         };
 
         let inner = if config.video_width.is_some() {
@@ -598,6 +622,7 @@ mod tests {
                 buffered_frames: Vec::new(),
                 two_pass_config: None,
                 stats_in_cstr: None,
+                subtitle_passthrough: None,
             }),
             _config: VideoEncoderConfig {
                 path: "test.mp4".into(),
@@ -616,6 +641,7 @@ mod tests {
                 two_pass: false,
                 metadata: Vec::new(),
                 chapters: Vec::new(),
+                subtitle_passthrough: None,
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,

@@ -187,6 +187,7 @@ pub const AV_TIME_BASE: u32 = 1_000_000;
 
 pub const AVMediaType_AVMEDIA_TYPE_VIDEO: AVMediaType = 0;
 pub const AVMediaType_AVMEDIA_TYPE_AUDIO: AVMediaType = 1;
+pub const AVMediaType_AVMEDIA_TYPE_SUBTITLE: AVMediaType = 3;
 
 pub const AVChannelOrder_AV_CHANNEL_ORDER_UNSPEC: AVChannelOrder = 0;
 pub const AVChannelOrder_AV_CHANNEL_ORDER_NATIVE: AVChannelOrder = 1;
@@ -475,6 +476,20 @@ pub unsafe fn av_channel_layout_uninit(_ch_layout: *mut AVChannelLayout) {}
 
 pub unsafe fn av_mallocz(_size: usize) -> *mut c_void {
     std::ptr::null_mut()
+}
+
+pub unsafe fn avcodec_parameters_copy(
+    _dst: *mut AVCodecParameters,
+    _src: *const AVCodecParameters,
+) -> c_int {
+    0
+}
+
+pub unsafe fn av_packet_rescale_ts(
+    _pkt: *mut AVPacket,
+    _tb_src: AVRational,
+    _tb_dst: AVRational,
+) {
 }
 
 // ── Wrapper module stubs ──────────────────────────────────────────────────────

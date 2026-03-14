@@ -17,11 +17,11 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP3,
     AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
     AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP9,
-    AVFormatContext, AVFrame, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext,
-    SwsContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_mallocz,
-    av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer, avcodec,
-    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
-    avformat_write_header, swresample, swscale,
+    AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc, av_frame_free,
+    av_interleaved_write_frame, av_mallocz, av_packet_alloc, av_packet_free, av_packet_unref,
+    av_write_trailer, avcodec, avformat_alloc_output_context2, avformat_free_context,
+    avformat_new_stream, avformat_write_header, swresample, swscale,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -122,6 +122,12 @@ pub(super) struct VideoEncoderInner {
     /// Nulled out in `cleanup()` before `avcodec_free_context` to prevent FFmpeg
     /// from calling `av_free` on a Rust-allocated pointer.
     pub(super) stats_in_cstr: Option<std::ffi::CString>,
+
+    /// Subtitle passthrough info: (source_path, source_stream_index, output_stream_index).
+    ///
+    /// Set by `init_subtitle_passthrough`; read by `write_subtitle_packets`.
+    /// `None` if no subtitle passthrough was requested.
+    pub(super) subtitle_passthrough: Option<(String, usize, i32)>,
 }
 
 /// VideoEncoder configuration (stored from builder).
@@ -143,6 +149,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) two_pass: bool,
     pub(super) metadata: Vec<(String, String)>,
     pub(super) chapters: Vec<ff_format::chapter::ChapterInfo>,
+    pub(super) subtitle_passthrough: Option<(String, usize)>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -308,6 +315,7 @@ impl VideoEncoderInner {
                 buffered_frames: Vec::new(),
                 two_pass_config: None,
                 stats_in_cstr: None,
+                subtitle_passthrough: None,
             };
 
             // Initialize video encoder if configured
@@ -341,6 +349,11 @@ impl VideoEncoderInner {
                     config.audio_codec,
                     config.audio_bitrate,
                 )?;
+            }
+
+            // Register subtitle passthrough stream (must happen before avformat_write_header).
+            if let Some((ref path, stream_index)) = config.subtitle_passthrough {
+                encoder.init_subtitle_passthrough(path, stream_index);
             }
 
             // For two-pass encoding the output file is opened in run_pass2() after
@@ -1505,6 +1518,9 @@ impl VideoEncoderInner {
             self.receive_audio_packets()?;
         }
 
+        // Write subtitle passthrough packets before trailer.
+        self.write_subtitle_packets()?;
+
         // Write trailer
         let ret = av_write_trailer(self.format_ctx);
         if ret < 0 {
@@ -1620,6 +1636,9 @@ impl VideoEncoderInner {
             }
             self.receive_packets()?;
         }
+
+        // Write subtitle passthrough packets before trailer.
+        self.write_subtitle_packets()?;
 
         let ret = av_write_trailer(self.format_ctx);
         if ret < 0 {
@@ -1858,6 +1877,208 @@ impl VideoEncoderInner {
         receive_result?;
 
         self.frame_count += 1;
+        Ok(())
+    }
+
+    /// Open the subtitle source file, find the requested stream, register an output subtitle
+    /// stream with copied codec parameters, and close the source.
+    ///
+    /// Stores `(source_path, source_stream_index, output_stream_index)` in
+    /// `self.subtitle_passthrough` on success. On any failure it logs a warning and returns
+    /// without modifying state, so encoding can continue without subtitles.
+    ///
+    /// # Safety
+    ///
+    /// `self.format_ctx` must be a valid, non-null `AVFormatContext` pointer.
+    /// Must be called before `avformat_write_header`.
+    unsafe fn init_subtitle_passthrough(&mut self, source_path: &str, source_stream_index: usize) {
+        let path = std::path::Path::new(source_path);
+        let src_ctx = match ff_sys::avformat::open_input(path) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                log::warn!(
+                    "subtitle_passthrough: failed to open source file \
+                     path={source_path} error={}",
+                    ff_sys::av_error_string(e)
+                );
+                return;
+            }
+        };
+
+        if let Err(e) = ff_sys::avformat::find_stream_info(src_ctx) {
+            log::warn!(
+                "subtitle_passthrough: failed to find stream info \
+                 path={source_path} error={}",
+                ff_sys::av_error_string(e)
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        let nb_streams = (*src_ctx).nb_streams as usize;
+        if source_stream_index >= nb_streams {
+            log::warn!(
+                "subtitle_passthrough: stream index out of range \
+                 index={source_stream_index} nb_streams={nb_streams}"
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        // SAFETY: source_stream_index < nb_streams; streams is a valid array.
+        let in_stream = *(*src_ctx).streams.add(source_stream_index);
+
+        if (*(*in_stream).codecpar).codec_type != AVMediaType_AVMEDIA_TYPE_SUBTITLE {
+            log::warn!(
+                "subtitle_passthrough: stream at index {source_stream_index} \
+                 is not a subtitle stream"
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        // Record the output stream index before adding the new stream.
+        let out_stream_index = (*self.format_ctx).nb_streams as i32;
+        // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
+        let out_stream = avformat_new_stream(self.format_ctx, std::ptr::null());
+        if out_stream.is_null() {
+            log::warn!("subtitle_passthrough: avformat_new_stream failed");
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        // SAFETY: out_stream and in_stream->codecpar are valid non-null pointers.
+        let ret = ff_sys::avcodec_parameters_copy((*out_stream).codecpar, (*in_stream).codecpar);
+        if ret < 0 {
+            log::warn!(
+                "subtitle_passthrough: avcodec_parameters_copy failed error={}",
+                ff_sys::av_error_string(ret)
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        // Reset codec_tag so the muxer can pick the appropriate value for the container.
+        (*(*out_stream).codecpar).codec_tag = 0;
+
+        let mut src_ctx_ptr = src_ctx;
+        ff_sys::avformat::close_input(&mut src_ctx_ptr);
+
+        self.subtitle_passthrough = Some((
+            source_path.to_string(),
+            source_stream_index,
+            out_stream_index,
+        ));
+        log::info!(
+            "subtitle_passthrough: registered subtitle stream \
+             source={source_path} stream_index={source_stream_index} \
+             out_stream_index={out_stream_index}"
+        );
+    }
+
+    /// Re-open the subtitle source file, read all packets from the registered subtitle stream,
+    /// rescale their timestamps, and write them to the output.
+    ///
+    /// No-op if `self.subtitle_passthrough` is `None`.  On non-fatal errors (open failure,
+    /// read errors) it logs a warning and returns `Ok(())` so the caller can still write the
+    /// trailer.
+    ///
+    /// # Safety
+    ///
+    /// `self.format_ctx` must be valid. Must be called before `av_write_trailer`.
+    unsafe fn write_subtitle_packets(&mut self) -> Result<(), EncodeError> {
+        let Some((source_path, source_stream_index, out_stream_index)) =
+            self.subtitle_passthrough.clone()
+        else {
+            return Ok(());
+        };
+
+        let path = std::path::Path::new(&source_path);
+        let src_ctx = match ff_sys::avformat::open_input(path) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                log::warn!(
+                    "subtitle_passthrough: failed to re-open source file \
+                     path={source_path} error={}",
+                    ff_sys::av_error_string(e)
+                );
+                return Ok(());
+            }
+        };
+
+        if let Err(e) = ff_sys::avformat::find_stream_info(src_ctx) {
+            log::warn!(
+                "subtitle_passthrough: failed to find stream info on re-open \
+                 path={source_path} error={}",
+                ff_sys::av_error_string(e)
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return Ok(());
+        }
+
+        // SAFETY: source_stream_index was validated in init_subtitle_passthrough.
+        let in_stream = *(*src_ctx).streams.add(source_stream_index);
+        let in_time_base = (*in_stream).time_base;
+
+        // SAFETY: out_stream_index was set by avformat_new_stream; format_ctx is valid.
+        let out_stream = *(*self.format_ctx).streams.add(out_stream_index as usize);
+        let out_time_base = (*out_stream).time_base;
+
+        let pkt = av_packet_alloc();
+        if pkt.is_null() {
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return Err(EncodeError::Ffmpeg(
+                "subtitle_passthrough: av_packet_alloc failed".to_string(),
+            ));
+        }
+
+        loop {
+            match ff_sys::avformat::read_frame(src_ctx, pkt) {
+                Err(e) if e == ff_sys::error_codes::EOF => break,
+                Err(e) => {
+                    log::warn!(
+                        "subtitle_passthrough: read_frame error, stopping \
+                         path={source_path} error={}",
+                        ff_sys::av_error_string(e)
+                    );
+                    break;
+                }
+                Ok(()) => {}
+            }
+
+            // Skip packets from other streams.
+            if (*pkt).stream_index != source_stream_index as i32 {
+                av_packet_unref(pkt);
+                continue;
+            }
+
+            // Rescale timestamps from the source stream's time base to the output stream's.
+            // SAFETY: pkt is valid; time bases are plain value types.
+            ff_sys::av_packet_rescale_ts(pkt, in_time_base, out_time_base);
+            (*pkt).stream_index = out_stream_index;
+
+            let write_ret = av_interleaved_write_frame(self.format_ctx, pkt);
+            if write_ret < 0 {
+                log::warn!(
+                    "subtitle_passthrough: av_interleaved_write_frame failed \
+                     error={}",
+                    ff_sys::av_error_string(write_ret)
+                );
+            }
+            av_packet_unref(pkt);
+        }
+
+        av_packet_free(&mut (pkt as *mut _) as *mut *mut _);
+        let mut src_ctx_ptr = src_ctx;
+        ff_sys::avformat::close_input(&mut src_ctx_ptr);
+
         Ok(())
     }
 
@@ -2251,6 +2472,7 @@ mod tests {
             buffered_frames: Vec::new(),
             two_pass_config: None,
             stats_in_cstr: None,
+            subtitle_passthrough: None,
         }
     }
 }
