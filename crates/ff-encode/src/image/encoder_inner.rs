@@ -28,6 +28,18 @@ use crate::EncodeError;
 /// Maximum number of planes in AVFrame data/linesize arrays.
 const MAX_PLANES: usize = 8;
 
+/// Options forwarded from the builder to the encoder.
+pub(super) struct ImageEncodeOptions {
+    /// Override output width (pixels). `None` → use source frame width.
+    pub(super) width: Option<u32>,
+    /// Override output height (pixels). `None` → use source frame height.
+    pub(super) height: Option<u32>,
+    /// Quality 0–100 (100 = best). `None` → codec default.
+    pub(super) quality: Option<u32>,
+    /// Output pixel format override. `None` → codec-native default.
+    pub(super) pixel_format: Option<PixelFormat>,
+}
+
 /// Return the `AVCodecID` for the given file extension.
 ///
 /// This is `pub(super)` so `builder.rs` can call it for early validation.
@@ -84,17 +96,103 @@ fn pixel_format_to_av(fmt: PixelFormat) -> AVPixelFormat {
     }
 }
 
+/// Apply a quality value (0–100, 100 = best) to the codec context.
+///
+/// Must be called after the codec context fields are set but before
+/// `avcodec_open2`.
+///
+/// # Safety
+///
+/// `codec_ctx` must be a valid, non-null pointer to an allocated
+/// `AVCodecContext` whose `priv_data` is valid (guaranteed after
+/// `avcodec_alloc_context3`).
+unsafe fn apply_quality(codec_ctx: *mut ff_sys::AVCodecContext, codec_id: AVCodecID, quality: u32) {
+    let q = quality.min(100);
+
+    if codec_id == AVCodecID_AV_CODEC_ID_MJPEG {
+        // Map 0–100 (100 = best) → MJPEG qscale 1–31 (1 = best, 31 = worst).
+        let qscale = (1 + (100 - q) * 30 / 100) as i32;
+        (*codec_ctx).qmin = qscale;
+        (*codec_ctx).qmax = qscale;
+        log::info!("MJPEG quality applied quality={q} qscale={qscale}");
+    } else if codec_id == AVCodecID_AV_CODEC_ID_PNG {
+        // Map 0–100 → compression_level 0–9 (9 = maximum compression).
+        let level = q * 9 / 100;
+        if (*codec_ctx).priv_data.is_null() {
+            log::warn!("PNG compression_level: priv_data is null, skipping quality={q}");
+            return;
+        }
+        let Ok(key) = CString::new("compression_level") else {
+            return;
+        };
+        let Ok(val) = CString::new(level.to_string()) else {
+            return;
+        };
+        // SAFETY: priv_data is non-null; key/val are valid NUL-terminated strings.
+        let ret = ff_sys::av_opt_set((*codec_ctx).priv_data, key.as_ptr(), val.as_ptr(), 0);
+        if ret < 0 {
+            log::warn!(
+                "av_opt_set compression_level failed, ignoring \
+                 quality={q} error={}",
+                ff_sys::av_error_string(ret)
+            );
+        } else {
+            log::info!("PNG compression_level applied quality={q} level={level}");
+        }
+    } else if codec_id == AVCodecID_AV_CODEC_ID_WEBP {
+        // Direct 0–100 mapping for WebP quality.
+        if (*codec_ctx).priv_data.is_null() {
+            log::warn!("WebP quality: priv_data is null, skipping quality={q}");
+            return;
+        }
+        let Ok(key) = CString::new("quality") else {
+            return;
+        };
+        let Ok(val) = CString::new(q.to_string()) else {
+            return;
+        };
+        // SAFETY: priv_data is non-null; key/val are valid NUL-terminated strings.
+        let ret = ff_sys::av_opt_set((*codec_ctx).priv_data, key.as_ptr(), val.as_ptr(), 0);
+        if ret < 0 {
+            log::warn!(
+                "av_opt_set quality failed for WebP, ignoring \
+                 quality={q} error={}",
+                ff_sys::av_error_string(ret)
+            );
+        } else {
+            log::info!("WebP quality applied quality={q}");
+        }
+    } else {
+        log::warn!(
+            "quality option has no effect for this codec \
+             codec_id={codec_id} quality={q}"
+        );
+    }
+}
+
 /// Encode a single `VideoFrame` and write it to `path`.
 ///
 /// # Safety
 ///
 /// Caller must ensure `path` is a valid file path. All FFmpeg resources
 /// allocated inside this function are freed before returning.
-pub(super) unsafe fn encode_image(path: &Path, frame: &VideoFrame) -> Result<(), EncodeError> {
+pub(super) unsafe fn encode_image(
+    path: &Path,
+    frame: &VideoFrame,
+    opts: &ImageEncodeOptions,
+) -> Result<(), EncodeError> {
     ff_sys::ensure_initialized();
 
     let codec_id = codec_from_extension(path)?;
-    let pix_fmt = preferred_pix_fmt(codec_id);
+
+    // Resolve output dimensions — fall back to source frame dimensions if unset.
+    let dst_width = opts.width.unwrap_or_else(|| frame.width());
+    let dst_height = opts.height.unwrap_or_else(|| frame.height());
+
+    // Resolve output pixel format — fall back to codec-native default if unset.
+    let pix_fmt = opts
+        .pixel_format
+        .map_or_else(|| preferred_pix_fmt(codec_id), pixel_format_to_av);
 
     // ── Step 1: Build the output format context ───────────────────────────────
     let c_path = CString::new(path.to_str().ok_or_else(|| EncodeError::CannotCreateFile {
@@ -142,10 +240,16 @@ pub(super) unsafe fn encode_image(path: &Path, frame: &VideoFrame) -> Result<(),
     })?;
 
     // ── Step 5: Set codec context fields ─────────────────────────────────────
-    (*codec_ctx).width = frame.width() as i32;
-    (*codec_ctx).height = frame.height() as i32;
+    (*codec_ctx).width = dst_width as i32;
+    (*codec_ctx).height = dst_height as i32;
     (*codec_ctx).time_base = AVRational { num: 1, den: 1 };
     (*codec_ctx).pix_fmt = pix_fmt;
+
+    // ── Step 5b: Apply quality (before open2) ────────────────────────────────
+    if let Some(q) = opts.quality {
+        // SAFETY: codec_ctx is non-null and was just allocated with alloc_context3.
+        apply_quality(codec_ctx, codec_id, q);
+    }
 
     // ── Step 6: Open the codec ────────────────────────────────────────────────
     if let Err(e) = avcodec::open2(codec_ctx, codec, ptr::null_mut()) {
@@ -192,8 +296,8 @@ pub(super) unsafe fn encode_image(path: &Path, frame: &VideoFrame) -> Result<(),
     }
 
     (*dst_frame).format = pix_fmt;
-    (*dst_frame).width = frame.width() as i32;
-    (*dst_frame).height = frame.height() as i32;
+    (*dst_frame).width = dst_width as i32;
+    (*dst_frame).height = dst_height as i32;
 
     let ret = ff_sys::av_frame_get_buffer(dst_frame, 0);
     if ret < 0 {
@@ -204,18 +308,19 @@ pub(super) unsafe fn encode_image(path: &Path, frame: &VideoFrame) -> Result<(),
         return Err(EncodeError::from_ffmpeg_error(ret));
     }
 
-    // ── Step 11: Fill dst_frame (convert if needed) ───────────────────────────
+    // ── Step 11: Fill dst_frame (convert / resize if needed) ─────────────────
     let src_fmt = pixel_format_to_av(frame.format());
-    let needs_conversion = src_fmt != pix_fmt;
+    let needs_conversion =
+        src_fmt != pix_fmt || frame.width() != dst_width || frame.height() != dst_height;
 
     if needs_conversion {
-        // Use swscale for pixel format conversion.
+        // Use swscale for pixel format conversion and/or resize.
         let sws_ctx = swscale::get_context(
             frame.width() as i32,
             frame.height() as i32,
             src_fmt,
-            frame.width() as i32,
-            frame.height() as i32,
+            dst_width as i32,
+            dst_height as i32,
             pix_fmt,
             swscale::scale_flags::BILINEAR,
         )
@@ -256,7 +361,7 @@ pub(super) unsafe fn encode_image(path: &Path, frame: &VideoFrame) -> Result<(),
             return Err(EncodeError::from_ffmpeg_error(e));
         }
     } else {
-        // Direct plane copy — same format.
+        // Direct plane copy — same format and dimensions.
         for (i, plane) in frame.planes().iter().enumerate() {
             if i >= MAX_PLANES || (*dst_frame).data[i].is_null() {
                 break;
@@ -362,10 +467,7 @@ pub(super) unsafe fn encode_image(path: &Path, frame: &VideoFrame) -> Result<(),
                     return Err(EncodeError::from_ffmpeg_error(ret));
                 }
             }
-            Err(e) if e == ff_sys::error_codes::EOF => {
-                break;
-            }
-            Err(e) if e == ff_sys::error_codes::EAGAIN => {
+            Err(e) if e == ff_sys::error_codes::EOF || e == ff_sys::error_codes::EAGAIN => {
                 break;
             }
             Err(e) => {
@@ -388,10 +490,12 @@ pub(super) unsafe fn encode_image(path: &Path, frame: &VideoFrame) -> Result<(),
     avformat_free_context(format_ctx);
 
     log::info!(
-        "Image encoded successfully path={} width={} height={}",
+        "Image encoded successfully path={} src={}x{} dst={}x{}",
         path.display(),
         frame.width(),
-        frame.height()
+        frame.height(),
+        dst_width,
+        dst_height,
     );
 
     Ok(())
