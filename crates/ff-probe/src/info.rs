@@ -59,9 +59,9 @@ use std::time::Duration;
 
 use ff_format::channel::ChannelLayout;
 use ff_format::chapter::ChapterInfo;
-use ff_format::codec::{AudioCodec, VideoCodec};
+use ff_format::codec::{AudioCodec, SubtitleCodec, VideoCodec};
 use ff_format::color::{ColorPrimaries, ColorRange, ColorSpace};
-use ff_format::stream::{AudioStreamInfo, VideoStreamInfo};
+use ff_format::stream::{AudioStreamInfo, SubtitleStreamInfo, VideoStreamInfo};
 use ff_format::{MediaInfo, PixelFormat, Rational, SampleFormat};
 
 use crate::error::ProbeError;
@@ -180,6 +180,10 @@ pub fn open(path: impl AsRef<Path>) -> Result<MediaInfo, ProbeError> {
     // SAFETY: ctx is valid and find_stream_info succeeded
     let audio_streams = unsafe { extract_audio_streams(ctx) };
 
+    // Extract subtitle streams
+    // SAFETY: ctx is valid and find_stream_info succeeded
+    let subtitle_streams = unsafe { extract_subtitle_streams(ctx) };
+
     // Extract chapter info
     // SAFETY: ctx is valid and find_stream_info succeeded
     let chapters = unsafe { extract_chapters(ctx) };
@@ -199,6 +203,7 @@ pub fn open(path: impl AsRef<Path>) -> Result<MediaInfo, ProbeError> {
         .file_size(file_size)
         .video_streams(video_streams)
         .audio_streams(audio_streams)
+        .subtitle_streams(subtitle_streams)
         .chapters(chapters)
         .metadata_map(metadata);
 
@@ -1020,6 +1025,150 @@ unsafe fn extract_language(stream: *mut ff_sys::AVStream) -> Option<String> {
 // ============================================================================
 // Audio Type Mapping Functions
 // ============================================================================
+
+// ============================================================================
+// Subtitle Stream Extraction
+// ============================================================================
+
+/// Extracts all subtitle streams from an `AVFormatContext`.
+///
+/// This function iterates through all streams in the container and extracts
+/// detailed information for each subtitle stream.
+///
+/// # Safety
+///
+/// The `ctx` pointer must be valid and `avformat_find_stream_info` must have been called.
+unsafe fn extract_subtitle_streams(ctx: *mut ff_sys::AVFormatContext) -> Vec<SubtitleStreamInfo> {
+    // SAFETY: Caller guarantees ctx is valid and find_stream_info was called
+    unsafe {
+        let nb_streams = (*ctx).nb_streams;
+        let streams_ptr = (*ctx).streams;
+
+        if streams_ptr.is_null() || nb_streams == 0 {
+            return Vec::new();
+        }
+
+        let mut subtitle_streams = Vec::new();
+
+        for i in 0..nb_streams {
+            // SAFETY: i < nb_streams, so this is within bounds
+            let stream = *streams_ptr.add(i as usize);
+            if stream.is_null() {
+                continue;
+            }
+
+            let codecpar = (*stream).codecpar;
+            if codecpar.is_null() {
+                continue;
+            }
+
+            // Check if this is a subtitle stream
+            if (*codecpar).codec_type != ff_sys::AVMediaType_AVMEDIA_TYPE_SUBTITLE {
+                continue;
+            }
+
+            let stream_info = extract_single_subtitle_stream(stream, codecpar, i);
+            subtitle_streams.push(stream_info);
+        }
+
+        subtitle_streams
+    }
+}
+
+/// Extracts information from a single subtitle stream.
+///
+/// # Safety
+///
+/// Both `stream` and `codecpar` pointers must be valid.
+unsafe fn extract_single_subtitle_stream(
+    stream: *mut ff_sys::AVStream,
+    codecpar: *mut ff_sys::AVCodecParameters,
+    index: u32,
+) -> SubtitleStreamInfo {
+    // SAFETY: Caller guarantees pointers are valid
+    unsafe {
+        let codec_id = (*codecpar).codec_id;
+        let codec = map_subtitle_codec(codec_id);
+        let codec_name = extract_codec_name(codec_id);
+
+        // disposition is a c_int bitmask; cast to u32 for bitwise AND with the u32 constant
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "disposition is a non-negative bitmask"
+        )]
+        let forced = ((*stream).disposition as u32 & ff_sys::AV_DISPOSITION_FORCED) != 0;
+
+        let duration = extract_stream_duration(stream);
+        let language = extract_language(stream);
+        let title = extract_stream_title(stream);
+
+        let mut builder = SubtitleStreamInfo::builder()
+            .index(index)
+            .codec(codec)
+            .codec_name(codec_name)
+            .forced(forced);
+
+        if let Some(d) = duration {
+            builder = builder.duration(d);
+        }
+        if let Some(lang) = language {
+            builder = builder.language(lang);
+        }
+        if let Some(t) = title {
+            builder = builder.title(t);
+        }
+
+        builder.build()
+    }
+}
+
+/// Extracts the "title" metadata tag from a stream's `AVDictionary`.
+///
+/// # Safety
+///
+/// The `stream` pointer must be valid.
+unsafe fn extract_stream_title(stream: *mut ff_sys::AVStream) -> Option<String> {
+    // SAFETY: Caller guarantees stream is valid
+    unsafe {
+        let metadata = (*stream).metadata;
+        if metadata.is_null() {
+            return None;
+        }
+
+        let key = c"title";
+        let entry = ff_sys::av_dict_get(metadata, key.as_ptr(), std::ptr::null(), 0);
+
+        if entry.is_null() {
+            return None;
+        }
+
+        let value_ptr = (*entry).value;
+        if value_ptr.is_null() {
+            return None;
+        }
+
+        Some(CStr::from_ptr(value_ptr).to_string_lossy().into_owned())
+    }
+}
+
+/// Maps an `FFmpeg` `AVCodecID` to our [`SubtitleCodec`] enum.
+fn map_subtitle_codec(codec_id: ff_sys::AVCodecID) -> SubtitleCodec {
+    match codec_id {
+        ff_sys::AVCodecID_AV_CODEC_ID_SRT | ff_sys::AVCodecID_AV_CODEC_ID_SUBRIP => {
+            SubtitleCodec::Srt
+        }
+        ff_sys::AVCodecID_AV_CODEC_ID_SSA | ff_sys::AVCodecID_AV_CODEC_ID_ASS => SubtitleCodec::Ass,
+        ff_sys::AVCodecID_AV_CODEC_ID_DVB_SUBTITLE => SubtitleCodec::Dvb,
+        ff_sys::AVCodecID_AV_CODEC_ID_HDMV_PGS_SUBTITLE => SubtitleCodec::Hdmv,
+        ff_sys::AVCodecID_AV_CODEC_ID_WEBVTT => SubtitleCodec::Webvtt,
+        _ => {
+            // SAFETY: avcodec_get_name is safe for any codec ID
+            let name = unsafe { extract_codec_name(codec_id) };
+            log::warn!("unknown subtitle codec codec_id={codec_id}");
+            SubtitleCodec::Other(name)
+        }
+    }
+}
 
 /// Maps an `FFmpeg` `AVCodecID` to our [`AudioCodec`] enum.
 fn map_audio_codec(codec_id: ff_sys::AVCodecID) -> AudioCodec {

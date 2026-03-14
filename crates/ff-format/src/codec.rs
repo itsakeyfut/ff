@@ -383,6 +383,128 @@ impl fmt::Display for AudioCodec {
     }
 }
 
+/// Subtitle codec identifier.
+///
+/// This enum represents common subtitle codecs used in media files.
+/// It covers text-based and bitmap-based formats while remaining extensible
+/// via the `Other` variant.
+///
+/// Note: No `Copy` or `Default` derive because `Other(String)` is not `Copy`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SubtitleCodec {
+    /// `SubRip` / SRT — text-based timed subtitles
+    Srt,
+    /// ASS/SSA (Advanced `SubStation` Alpha) — styled text subtitles
+    Ass,
+    /// DVB bitmap subtitles (digital broadcast)
+    Dvb,
+    /// HDMV/PGS — Blu-ray bitmap subtitles
+    Hdmv,
+    /// `WebVTT` — web-standard text subtitles
+    Webvtt,
+    /// Unrecognized codec; raw codec name stored for transparency
+    Other(String),
+}
+
+impl SubtitleCodec {
+    /// Returns the codec name as a short string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::codec::SubtitleCodec;
+    ///
+    /// assert_eq!(SubtitleCodec::Srt.name(), "srt");
+    /// assert_eq!(SubtitleCodec::Ass.name(), "ass");
+    /// ```
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Srt => "srt",
+            Self::Ass => "ass",
+            Self::Dvb => "dvb_subtitle",
+            Self::Hdmv => "hdmv_pgs_subtitle",
+            Self::Webvtt => "webvtt",
+            Self::Other(name) => name.as_str(),
+        }
+    }
+
+    /// Returns the human-readable display name for the codec.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::codec::SubtitleCodec;
+    ///
+    /// assert_eq!(SubtitleCodec::Srt.display_name(), "SubRip (SRT)");
+    /// assert_eq!(SubtitleCodec::Hdmv.display_name(), "HDMV/PGS");
+    /// ```
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        match self {
+            Self::Srt => "SubRip (SRT)",
+            Self::Ass => "ASS/SSA",
+            Self::Dvb => "DVB Subtitle",
+            Self::Hdmv => "HDMV/PGS",
+            Self::Webvtt => "WebVTT",
+            Self::Other(name) => name.as_str(),
+        }
+    }
+
+    /// Returns `true` if this is a text-based subtitle codec.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::codec::SubtitleCodec;
+    ///
+    /// assert!(SubtitleCodec::Srt.is_text_based());
+    /// assert!(SubtitleCodec::Ass.is_text_based());
+    /// assert!(!SubtitleCodec::Dvb.is_text_based());
+    /// ```
+    #[must_use]
+    pub fn is_text_based(&self) -> bool {
+        matches!(self, Self::Srt | Self::Ass | Self::Webvtt)
+    }
+
+    /// Returns `true` if this is a bitmap-based subtitle codec.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::codec::SubtitleCodec;
+    ///
+    /// assert!(SubtitleCodec::Dvb.is_bitmap_based());
+    /// assert!(SubtitleCodec::Hdmv.is_bitmap_based());
+    /// assert!(!SubtitleCodec::Srt.is_bitmap_based());
+    /// ```
+    #[must_use]
+    pub fn is_bitmap_based(&self) -> bool {
+        matches!(self, Self::Dvb | Self::Hdmv)
+    }
+
+    /// Returns `true` if the codec is unrecognized.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::codec::SubtitleCodec;
+    ///
+    /// assert!(SubtitleCodec::Other("dvd_subtitle".to_string()).is_unknown());
+    /// assert!(!SubtitleCodec::Srt.is_unknown());
+    /// ```
+    #[must_use]
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Other(_))
+    }
+}
+
+impl fmt::Display for SubtitleCodec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,6 +605,84 @@ mod tests {
             let codec = VideoCodec::H264;
             let copied = codec;
             assert_eq!(codec, copied);
+        }
+    }
+
+    mod subtitle_codec_tests {
+        use super::*;
+
+        #[test]
+        fn name_should_return_short_codec_name() {
+            assert_eq!(SubtitleCodec::Srt.name(), "srt");
+            assert_eq!(SubtitleCodec::Ass.name(), "ass");
+            assert_eq!(SubtitleCodec::Dvb.name(), "dvb_subtitle");
+            assert_eq!(SubtitleCodec::Hdmv.name(), "hdmv_pgs_subtitle");
+            assert_eq!(SubtitleCodec::Webvtt.name(), "webvtt");
+            assert_eq!(
+                SubtitleCodec::Other("dvd_subtitle".to_string()).name(),
+                "dvd_subtitle"
+            );
+        }
+
+        #[test]
+        fn display_name_should_return_human_readable_name() {
+            assert_eq!(SubtitleCodec::Srt.display_name(), "SubRip (SRT)");
+            assert_eq!(SubtitleCodec::Ass.display_name(), "ASS/SSA");
+            assert_eq!(SubtitleCodec::Dvb.display_name(), "DVB Subtitle");
+            assert_eq!(SubtitleCodec::Hdmv.display_name(), "HDMV/PGS");
+            assert_eq!(SubtitleCodec::Webvtt.display_name(), "WebVTT");
+        }
+
+        #[test]
+        fn display_should_use_display_name() {
+            assert_eq!(format!("{}", SubtitleCodec::Srt), "SubRip (SRT)");
+            assert_eq!(format!("{}", SubtitleCodec::Hdmv), "HDMV/PGS");
+        }
+
+        #[test]
+        fn is_text_based_should_return_true_for_text_codecs() {
+            assert!(SubtitleCodec::Srt.is_text_based());
+            assert!(SubtitleCodec::Ass.is_text_based());
+            assert!(SubtitleCodec::Webvtt.is_text_based());
+            assert!(!SubtitleCodec::Dvb.is_text_based());
+            assert!(!SubtitleCodec::Hdmv.is_text_based());
+        }
+
+        #[test]
+        fn is_bitmap_based_should_return_true_for_bitmap_codecs() {
+            assert!(SubtitleCodec::Dvb.is_bitmap_based());
+            assert!(SubtitleCodec::Hdmv.is_bitmap_based());
+            assert!(!SubtitleCodec::Srt.is_bitmap_based());
+            assert!(!SubtitleCodec::Ass.is_bitmap_based());
+            assert!(!SubtitleCodec::Webvtt.is_bitmap_based());
+        }
+
+        #[test]
+        fn is_unknown_should_return_true_only_for_other_variant() {
+            assert!(SubtitleCodec::Other("dvd_subtitle".to_string()).is_unknown());
+            assert!(!SubtitleCodec::Srt.is_unknown());
+            assert!(!SubtitleCodec::Dvb.is_unknown());
+        }
+
+        #[test]
+        fn equality_should_compare_by_value() {
+            assert_eq!(SubtitleCodec::Srt, SubtitleCodec::Srt);
+            assert_ne!(SubtitleCodec::Srt, SubtitleCodec::Ass);
+            assert_eq!(
+                SubtitleCodec::Other("foo".to_string()),
+                SubtitleCodec::Other("foo".to_string())
+            );
+            assert_ne!(
+                SubtitleCodec::Other("foo".to_string()),
+                SubtitleCodec::Other("bar".to_string())
+            );
+        }
+
+        #[test]
+        fn clone_should_produce_equal_value() {
+            let codec = SubtitleCodec::Other("test".to_string());
+            let cloned = codec.clone();
+            assert_eq!(codec, cloned);
         }
     }
 
