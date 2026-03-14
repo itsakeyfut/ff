@@ -3,7 +3,7 @@ pub const CRF_MAX: u32 = 51;
 
 /// Bitrate control mode for video encoding.
 ///
-/// Passed to [`VideoEncoderBuilder::bitrate_mode`].
+/// Passed to [`crate::VideoEncoderBuilder::bitrate_mode`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum BitrateMode {
     /// Constant bitrate in bits per second.
