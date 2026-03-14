@@ -260,6 +260,40 @@ fn test_builder_with_quality() {
 }
 
 #[test]
+fn vbr_mpeg4_should_produce_valid_output() {
+    let output_path = test_output_path("vbr_mpeg4.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .bitrate_mode(BitrateMode::Vbr {
+            target: 1_000_000,
+            max: 2_000_000,
+        })
+        .preset(Preset::Ultrafast)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping vbr_mpeg4 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+}
+
+#[test]
 fn crf_h264_should_produce_valid_output() {
     let output_path = test_output_path("crf_h264.mp4");
     let _guard = FileGuard::new(output_path.clone());
