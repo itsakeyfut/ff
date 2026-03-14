@@ -183,6 +183,7 @@ pub struct AVCodecContext {
 
 pub const AV_DICT_IGNORE_SUFFIX: u32 = 2;
 pub const AV_NUM_DATA_POINTERS: usize = 8;
+pub const AV_TIME_BASE: u32 = 1_000_000;
 
 pub const AVMediaType_AVMEDIA_TYPE_VIDEO: AVMediaType = 0;
 pub const AVMediaType_AVMEDIA_TYPE_AUDIO: AVMediaType = 1;
@@ -471,6 +472,10 @@ pub unsafe fn swr_init(_s: *mut SwrContext) -> c_int {
 pub unsafe fn av_channel_layout_default(_ch_layout: *mut AVChannelLayout, _nb_channels: c_int) {}
 
 pub unsafe fn av_channel_layout_uninit(_ch_layout: *mut AVChannelLayout) {}
+
+pub unsafe fn av_mallocz(_size: usize) -> *mut c_void {
+    std::ptr::null_mut()
+}
 
 // ── Wrapper module stubs ──────────────────────────────────────────────────────
 //

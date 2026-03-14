@@ -46,6 +46,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) progress_callback: Option<Box<dyn ProgressCallback>>,
     pub(crate) two_pass: bool,
     pub(crate) metadata: Vec<(String, String)>,
+    pub(crate) chapters: Vec<ff_format::chapter::ChapterInfo>,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -70,6 +71,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             )
             .field("two_pass", &self.two_pass)
             .field("metadata", &self.metadata)
+            .field("chapters", &self.chapters)
             .finish()
     }
 }
@@ -93,6 +95,7 @@ impl VideoEncoderBuilder {
             progress_callback: None,
             two_pass: false,
             metadata: Vec::new(),
+            chapters: Vec::new(),
         }
     }
 
@@ -208,6 +211,18 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn metadata(mut self, key: &str, value: &str) -> Self {
         self.metadata.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    // === Chapters ===
+
+    /// Add a chapter to the output container.
+    ///
+    /// Allocates an `AVChapter` entry on `AVFormatContext` before the header
+    /// is written. Multiple calls accumulate chapters in the order added.
+    #[must_use]
+    pub fn chapter(mut self, chapter: ff_format::chapter::ChapterInfo) -> Self {
+        self.chapters.push(chapter);
         self
     }
 
@@ -360,6 +375,7 @@ impl VideoEncoder {
             _progress_callback: builder.progress_callback.is_some(),
             two_pass: builder.two_pass,
             metadata: builder.metadata,
+            chapters: builder.chapters,
         };
 
         let inner = if config.video_width.is_some() {
@@ -599,6 +615,7 @@ mod tests {
                 _progress_callback: false,
                 two_pass: false,
                 metadata: Vec::new(),
+                chapters: Vec::new(),
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,
