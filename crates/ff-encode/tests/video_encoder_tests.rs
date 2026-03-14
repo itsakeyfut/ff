@@ -522,6 +522,47 @@ fn metadata_mpeg4_should_produce_valid_output() {
 }
 
 #[test]
+fn subtitle_passthrough_mkv_should_produce_valid_output() {
+    // Create a minimal SRT subtitle file as the passthrough source.
+    let srt_path = test_output_path("subtitle_passthrough_source.srt");
+    let _srt_guard = FileGuard::new(srt_path.clone());
+    let srt_content = "1\n00:00:00,000 --> 00:00:05,000\nHello, world!\n\n\
+                       2\n00:00:05,000 --> 00:00:10,000\nSubtitle passthrough test.\n\n";
+    if let Err(e) = std::fs::write(&srt_path, srt_content) {
+        println!("Skipping subtitle_passthrough test: cannot write srt file ({e})");
+        return;
+    }
+
+    let output_path = test_output_path("subtitle_passthrough.mkv");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .subtitle_passthrough(srt_path.to_str().unwrap(), 0)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping subtitle_passthrough test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+}
+
+#[test]
 fn chapter_mpeg4_should_produce_valid_output() {
     use ff_format::chapter::ChapterInfo;
     use std::time::Duration;
