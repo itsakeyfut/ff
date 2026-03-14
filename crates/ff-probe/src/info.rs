@@ -127,6 +127,8 @@ const AV_TIME_BASE: i64 = 1_000_000;
 pub fn open(path: impl AsRef<Path>) -> Result<MediaInfo, ProbeError> {
     let path = path.as_ref();
 
+    log::debug!("probing media file path={}", path.display());
+
     // Check if file exists
     if !path.exists() {
         return Err(ProbeError::FileNotFound {
@@ -194,6 +196,14 @@ pub fn open(path: impl AsRef<Path>) -> Result<MediaInfo, ProbeError> {
         let mut ctx_ptr = ctx;
         ff_sys::avformat::close_input(&raw mut ctx_ptr);
     }
+
+    log::debug!(
+        "probe complete video_streams={} audio_streams={} subtitle_streams={} chapters={}",
+        video_streams.len(),
+        audio_streams.len(),
+        subtitle_streams.len(),
+        chapters.len()
+    );
 
     // Build MediaInfo
     let mut builder = MediaInfo::builder()
