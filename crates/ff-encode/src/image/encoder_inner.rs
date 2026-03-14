@@ -2,6 +2,14 @@
 //!
 //! All `unsafe` FFmpeg calls are isolated here. The public API in `builder.rs`
 //! is fully safe.
+//!
+//! ## Resource management
+//!
+//! [`ImageEncoderInner`] owns every FFmpeg pointer allocated during a single
+//! still-image encode. Its [`Drop`] implementation frees them in the order
+//! mandated by FFmpeg: frame → packet → sws_ctx → codec_ctx → format_ctx.
+//! Because `Drop` runs on every exit path — including panics and early `?`
+//! returns — no manual cleanup is needed at individual error sites.
 
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -28,6 +36,8 @@ use crate::EncodeError;
 /// Maximum number of planes in AVFrame data/linesize arrays.
 const MAX_PLANES: usize = 8;
 
+// ── Public options struct ─────────────────────────────────────────────────────
+
 /// Options forwarded from the builder to the encoder.
 pub(super) struct ImageEncodeOptions {
     /// Override output width (pixels). `None` → use source frame width.
@@ -39,6 +49,348 @@ pub(super) struct ImageEncodeOptions {
     /// Output pixel format override. `None` → codec-native default.
     pub(super) pixel_format: Option<PixelFormat>,
 }
+
+// ── RAII wrapper ──────────────────────────────────────────────────────────────
+
+/// Owns all FFmpeg resources for a single still-image encode operation.
+///
+/// Every field is initialised to null/`None`. Resources are set as they are
+/// successfully allocated so that `Drop` only frees what actually exists.
+///
+/// # Drop contract
+///
+/// Resources are released in the following order to satisfy FFmpeg's lifetime
+/// requirements:
+///
+/// 1. `dst_frame` — `av_frame_free`
+/// 2. `packet`    — `av_packet_free`
+/// 3. `sws_ctx`   — `sws_freeContext`
+/// 4. `codec_ctx` — `avcodec_free_context`
+/// 5. `format_ctx`— IO close (`avio_closep`) then `avformat_free_context`
+struct ImageEncoderInner {
+    format_ctx: *mut AVFormatContext,
+    codec_ctx: *mut ff_sys::AVCodecContext,
+    dst_frame: *mut ff_sys::AVFrame,
+    packet: *mut ff_sys::AVPacket,
+    sws_ctx: Option<*mut ff_sys::SwsContext>,
+    dst_width: u32,
+    dst_height: u32,
+    pix_fmt: AVPixelFormat,
+}
+
+impl ImageEncoderInner {
+    /// Allocate all FFmpeg resources and open the encoder.
+    ///
+    /// On error the partially-initialised struct is dropped, which frees
+    /// whatever was successfully allocated via the `Drop` impl.
+    ///
+    /// # Safety
+    ///
+    /// `path` must be a valid UTF-8 file path. `src` is used only to derive
+    /// fallback dimensions when `opts` does not override them.
+    unsafe fn open(
+        path: &Path,
+        opts: &ImageEncodeOptions,
+        src: &VideoFrame,
+    ) -> Result<Self, EncodeError> {
+        let codec_id = codec_from_extension(path)?;
+        let dst_width = opts.width.unwrap_or_else(|| src.width());
+        let dst_height = opts.height.unwrap_or_else(|| src.height());
+        let pix_fmt = opts
+            .pixel_format
+            .map_or_else(|| preferred_pix_fmt(codec_id), pixel_format_to_av);
+
+        // Start with everything null so Drop is safe from the very first field.
+        let mut inner = Self {
+            format_ctx: ptr::null_mut(),
+            codec_ctx: ptr::null_mut(),
+            dst_frame: ptr::null_mut(),
+            packet: ptr::null_mut(),
+            sws_ctx: None,
+            dst_width,
+            dst_height,
+            pix_fmt,
+        };
+
+        // ── Step 1: Output format context ─────────────────────────────────────
+        let c_path = CString::new(path.to_str().ok_or_else(|| EncodeError::CannotCreateFile {
+            path: path.to_path_buf(),
+        })?)
+        .map_err(|_| EncodeError::CannotCreateFile {
+            path: path.to_path_buf(),
+        })?;
+
+        let ret = avformat_alloc_output_context2(
+            &mut inner.format_ctx,
+            ptr::null_mut(),
+            ptr::null(),
+            c_path.as_ptr(),
+        );
+        if ret < 0 || inner.format_ctx.is_null() {
+            return Err(EncodeError::Ffmpeg(format!(
+                "Cannot create output context: {}",
+                ff_sys::av_error_string(ret)
+            )));
+        }
+
+        // ── Step 2: Video stream ──────────────────────────────────────────────
+        let stream = avformat_new_stream(inner.format_ctx, ptr::null());
+        if stream.is_null() {
+            return Err(EncodeError::Ffmpeg(
+                "Cannot create output stream".to_string(),
+            ));
+        }
+
+        // ── Step 3: Find encoder ──────────────────────────────────────────────
+        let codec = avcodec::find_encoder(codec_id).ok_or(EncodeError::UnsupportedCodec {
+            codec: format!("codec_id={codec_id}"),
+        })?;
+
+        // ── Step 4: Allocate codec context ────────────────────────────────────
+        inner.codec_ctx = avcodec::alloc_context3(codec).map_err(EncodeError::from_ffmpeg_error)?;
+
+        // ── Step 5: Configure codec context ──────────────────────────────────
+        (*inner.codec_ctx).width = dst_width as i32;
+        (*inner.codec_ctx).height = dst_height as i32;
+        (*inner.codec_ctx).time_base = AVRational { num: 1, den: 1 };
+        (*inner.codec_ctx).pix_fmt = pix_fmt;
+
+        if let Some(q) = opts.quality {
+            // SAFETY: codec_ctx is non-null and freshly allocated.
+            apply_quality(inner.codec_ctx, codec_id, q);
+        }
+
+        // ── Step 6: Open codec ────────────────────────────────────────────────
+        avcodec::open2(inner.codec_ctx, codec, ptr::null_mut())
+            .map_err(EncodeError::from_ffmpeg_error)?;
+
+        // ── Step 7: Copy parameters to stream ─────────────────────────────────
+        // SAFETY: stream is non-null (checked above); codec_ctx is open.
+        let par = (*stream).codecpar;
+        (*par).codec_id = codec_id;
+        (*par).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
+        (*par).width = (*inner.codec_ctx).width;
+        (*par).height = (*inner.codec_ctx).height;
+        (*par).format = pix_fmt;
+
+        // ── Step 8: Open output file ──────────────────────────────────────────
+        let io_ctx = avformat::open_output(path, avformat::avio_flags::WRITE)
+            .map_err(EncodeError::from_ffmpeg_error)?;
+        (*inner.format_ctx).pb = io_ctx;
+
+        // ── Step 9: Write file header ─────────────────────────────────────────
+        let ret = avformat_write_header(inner.format_ctx, ptr::null_mut());
+        if ret < 0 {
+            return Err(EncodeError::from_ffmpeg_error(ret));
+        }
+
+        // ── Step 10: Allocate destination frame ───────────────────────────────
+        inner.dst_frame = av_frame_alloc();
+        if inner.dst_frame.is_null() {
+            return Err(EncodeError::Ffmpeg(
+                "Cannot allocate destination frame".to_string(),
+            ));
+        }
+        (*inner.dst_frame).format = pix_fmt;
+        (*inner.dst_frame).width = dst_width as i32;
+        (*inner.dst_frame).height = dst_height as i32;
+
+        let ret = ff_sys::av_frame_get_buffer(inner.dst_frame, 0);
+        if ret < 0 {
+            return Err(EncodeError::from_ffmpeg_error(ret));
+        }
+
+        // ── Step 11: Allocate packet ──────────────────────────────────────────
+        inner.packet = av_packet_alloc();
+        if inner.packet.is_null() {
+            return Err(EncodeError::Ffmpeg("Cannot allocate packet".to_string()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Fill `dst_frame`, encode it, write all packets, and finalise the file.
+    ///
+    /// Writes the trailer and closes the IO context on success. On failure the
+    /// `Drop` impl handles releasing the remaining FFmpeg resources.
+    ///
+    /// # Safety
+    ///
+    /// `self` must have been successfully opened via [`open`].
+    unsafe fn encode_frame(&mut self, src: &VideoFrame) -> Result<(), EncodeError> {
+        // ── Fill dst_frame ────────────────────────────────────────────────────
+        let src_fmt = pixel_format_to_av(src.format());
+        let needs_conversion = src_fmt != self.pix_fmt
+            || src.width() != self.dst_width
+            || src.height() != self.dst_height;
+
+        if needs_conversion {
+            let sws_ctx = swscale::get_context(
+                src.width() as i32,
+                src.height() as i32,
+                src_fmt,
+                self.dst_width as i32,
+                self.dst_height as i32,
+                self.pix_fmt,
+                swscale::scale_flags::BILINEAR,
+            )
+            .map_err(EncodeError::from_ffmpeg_error)?;
+
+            // Store so Drop frees it if scale panics.
+            self.sws_ctx = Some(sws_ctx);
+
+            let mut src_data: [*const u8; MAX_PLANES] = [ptr::null(); MAX_PLANES];
+            let mut src_linesize: [i32; MAX_PLANES] = [0; MAX_PLANES];
+            for (i, plane) in src.planes().iter().enumerate() {
+                if i < MAX_PLANES {
+                    src_data[i] = plane.data().as_ptr();
+                    src_linesize[i] = src.strides()[i] as i32;
+                }
+            }
+
+            let scale_result = swscale::scale(
+                sws_ctx,
+                src_data.as_ptr(),
+                src_linesize.as_ptr(),
+                0,
+                src.height() as i32,
+                (*self.dst_frame).data.as_mut_ptr().cast_const(),
+                (*self.dst_frame).linesize.as_mut_ptr(),
+            );
+
+            // Free immediately — single use; Drop handles null case.
+            if let Some(sws) = self.sws_ctx.take() {
+                swscale::free_context(sws);
+            }
+
+            scale_result.map_err(EncodeError::from_ffmpeg_error)?;
+        } else {
+            // Direct plane copy — same format and dimensions.
+            for (i, plane) in src.planes().iter().enumerate() {
+                if i >= MAX_PLANES || (*self.dst_frame).data[i].is_null() {
+                    break;
+                }
+                let src_stride = src.strides()[i];
+                let dst_stride = (*self.dst_frame).linesize[i] as usize;
+                let plane_data = plane.data();
+
+                if src_stride == dst_stride {
+                    std::ptr::copy_nonoverlapping(
+                        plane_data.as_ptr(),
+                        (*self.dst_frame).data[i],
+                        plane_data.len(),
+                    );
+                } else {
+                    let row_bytes = src_stride.min(dst_stride);
+                    let num_rows = plane_data.len() / src_stride;
+                    for row in 0..num_rows {
+                        std::ptr::copy_nonoverlapping(
+                            plane_data[row * src_stride..].as_ptr(),
+                            (*self.dst_frame).data[i].add(row * dst_stride),
+                            row_bytes,
+                        );
+                    }
+                }
+            }
+        }
+
+        (*self.dst_frame).pts = 0;
+
+        // ── Send frame → encoder ──────────────────────────────────────────────
+        avcodec::send_frame(self.codec_ctx, self.dst_frame)
+            .map_err(EncodeError::from_ffmpeg_error)?;
+
+        // ── Receive packets ───────────────────────────────────────────────────
+        self.drain_packets(false)?;
+
+        // ── Flush encoder ─────────────────────────────────────────────────────
+        avcodec::send_frame(self.codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
+
+        // ── Drain remaining packets ───────────────────────────────────────────
+        self.drain_packets(true)?;
+
+        // ── Finalise file ─────────────────────────────────────────────────────
+        av_write_trailer(self.format_ctx);
+        // SAFETY: format_ctx and pb are non-null at this point.
+        avformat::close_output(&mut (*self.format_ctx).pb);
+
+        Ok(())
+    }
+
+    /// Drain encoded packets from the codec and write them to the container.
+    ///
+    /// When `until_eof` is `true` the loop continues until `AVERROR_EOF`;
+    /// when `false` it also stops on `AVERROR(EAGAIN)` (no more packets yet).
+    ///
+    /// # Safety
+    ///
+    /// `self.codec_ctx`, `self.packet`, and `self.format_ctx` must all be valid.
+    unsafe fn drain_packets(&mut self, until_eof: bool) -> Result<(), EncodeError> {
+        loop {
+            match avcodec::receive_packet(self.codec_ctx, self.packet) {
+                Ok(()) => {
+                    (*self.packet).stream_index = 0;
+                    let ret = av_interleaved_write_frame(self.format_ctx, self.packet);
+                    av_packet_unref(self.packet);
+                    if ret < 0 {
+                        return Err(EncodeError::from_ffmpeg_error(ret));
+                    }
+                }
+                Err(e) if e == ff_sys::error_codes::EOF => break,
+                Err(e) if !until_eof && e == ff_sys::error_codes::EAGAIN => break,
+                Err(e) => return Err(EncodeError::from_ffmpeg_error(e)),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ImageEncoderInner {
+    fn drop(&mut self) {
+        // SAFETY: Every pointer was allocated by the FFmpeg API and is either
+        // null (never allocated, or already freed) or a valid owned allocation.
+        // We check for null before each free to make Drop idempotent.
+        //
+        // Release order per the issue #154 Drop contract:
+        //   1. dst_frame  — av_frame_free  (sets pointer to null)
+        //   2. packet     — av_packet_free (sets pointer to null)
+        //   3. sws_ctx    — sws_freeContext
+        //   4. codec_ctx  — avcodec_free_context (sets pointer to null)
+        //   5. format_ctx — avio_closep (if pb still open) + avformat_free_context
+        unsafe {
+            if !self.dst_frame.is_null() {
+                // SAFETY: dst_frame is non-null and owned by this struct.
+                av_frame_free(&mut self.dst_frame);
+            }
+            if !self.packet.is_null() {
+                // SAFETY: packet is non-null and owned by this struct.
+                av_packet_free(&mut self.packet);
+            }
+            if let Some(sws) = self.sws_ctx.take() {
+                // SAFETY: sws is a valid SwsContext that hasn't been freed yet.
+                swscale::free_context(sws);
+            }
+            if !self.codec_ctx.is_null() {
+                // SAFETY: codec_ctx is non-null and owned by this struct.
+                // avcodec_free_context sets the pointer to null after freeing.
+                avcodec::free_context(&mut self.codec_ctx);
+            }
+            if !self.format_ctx.is_null() {
+                // SAFETY: format_ctx is non-null and owned by this struct.
+                // Close the IO context if it hasn't been closed yet (it is set
+                // to null by avio_closep, so this check prevents a double-close
+                // when encode_frame already closed it on success).
+                if !(*self.format_ctx).pb.is_null() {
+                    avformat::close_output(&mut (*self.format_ctx).pb);
+                }
+                avformat_free_context(self.format_ctx);
+                self.format_ctx = ptr::null_mut();
+            }
+        }
+    }
+}
+
+// ── Extension / format helpers ────────────────────────────────────────────────
 
 /// Return the `AVCodecID` for the given file extension.
 ///
@@ -95,6 +447,8 @@ fn pixel_format_to_av(fmt: PixelFormat) -> AVPixelFormat {
         _ => ff_sys::AVPixelFormat_AV_PIX_FMT_RGB24,
     }
 }
+
+// ── Quality helper ────────────────────────────────────────────────────────────
 
 /// Apply a quality value (0–100, 100 = best) to the codec context.
 ///
@@ -170,12 +524,18 @@ unsafe fn apply_quality(codec_ctx: *mut ff_sys::AVCodecContext, codec_id: AVCode
     }
 }
 
+// ── Public entry point ────────────────────────────────────────────────────────
+
 /// Encode a single `VideoFrame` and write it to `path`.
+///
+/// Resources are managed via [`ImageEncoderInner`]'s [`Drop`] implementation,
+/// which frees frame → packet → sws_ctx → codec_ctx → format_ctx regardless
+/// of whether encoding succeeds or fails.
 ///
 /// # Safety
 ///
-/// Caller must ensure `path` is a valid file path. All FFmpeg resources
-/// allocated inside this function are freed before returning.
+/// `path` must be a valid UTF-8 file path. The caller must ensure that `opts`
+/// and `frame` are consistent (i.e. non-zero dimensions after fallback).
 pub(super) unsafe fn encode_image(
     path: &Path,
     frame: &VideoFrame,
@@ -183,320 +543,160 @@ pub(super) unsafe fn encode_image(
 ) -> Result<(), EncodeError> {
     ff_sys::ensure_initialized();
 
-    let codec_id = codec_from_extension(path)?;
+    // Open the encoder; any error here drops `inner` (partially initialised),
+    // which frees whatever was allocated so far.
+    let mut inner = ImageEncoderInner::open(path, opts, frame)?;
 
-    // Resolve output dimensions — fall back to source frame dimensions if unset.
-    let dst_width = opts.width.unwrap_or_else(|| frame.width());
-    let dst_height = opts.height.unwrap_or_else(|| frame.height());
-
-    // Resolve output pixel format — fall back to codec-native default if unset.
-    let pix_fmt = opts
-        .pixel_format
-        .map_or_else(|| preferred_pix_fmt(codec_id), pixel_format_to_av);
-
-    // ── Step 1: Build the output format context ───────────────────────────────
-    let c_path = CString::new(path.to_str().ok_or_else(|| EncodeError::CannotCreateFile {
-        path: path.to_path_buf(),
-    })?)
-    .map_err(|_| EncodeError::CannotCreateFile {
-        path: path.to_path_buf(),
-    })?;
-
-    let mut format_ctx: *mut AVFormatContext = ptr::null_mut();
-    let ret = avformat_alloc_output_context2(
-        &mut format_ctx,
-        ptr::null_mut(),
-        ptr::null(),
-        c_path.as_ptr(),
-    );
-    if ret < 0 || format_ctx.is_null() {
-        return Err(EncodeError::Ffmpeg(format!(
-            "Cannot create output context: {}",
-            ff_sys::av_error_string(ret)
-        )));
-    }
-
-    // ── Step 2: Add one video stream ─────────────────────────────────────────
-    let stream = avformat_new_stream(format_ctx, ptr::null());
-    if stream.is_null() {
-        avformat_free_context(format_ctx);
-        return Err(EncodeError::Ffmpeg(
-            "Cannot create output stream".to_string(),
-        ));
-    }
-
-    // ── Step 3: Find the encoder ──────────────────────────────────────────────
-    let codec = avcodec::find_encoder(codec_id).ok_or_else(|| {
-        avformat_free_context(format_ctx);
-        EncodeError::UnsupportedCodec {
-            codec: format!("codec_id={codec_id}"),
-        }
-    })?;
-
-    // ── Step 4: Allocate codec context ────────────────────────────────────────
-    let codec_ctx = avcodec::alloc_context3(codec).map_err(|e| {
-        avformat_free_context(format_ctx);
-        EncodeError::from_ffmpeg_error(e)
-    })?;
-
-    // ── Step 5: Set codec context fields ─────────────────────────────────────
-    (*codec_ctx).width = dst_width as i32;
-    (*codec_ctx).height = dst_height as i32;
-    (*codec_ctx).time_base = AVRational { num: 1, den: 1 };
-    (*codec_ctx).pix_fmt = pix_fmt;
-
-    // ── Step 5b: Apply quality (before open2) ────────────────────────────────
-    if let Some(q) = opts.quality {
-        // SAFETY: codec_ctx is non-null and was just allocated with alloc_context3.
-        apply_quality(codec_ctx, codec_id, q);
-    }
-
-    // ── Step 6: Open the codec ────────────────────────────────────────────────
-    if let Err(e) = avcodec::open2(codec_ctx, codec, ptr::null_mut()) {
-        avcodec::free_context(&mut (codec_ctx as *mut _));
-        avformat_free_context(format_ctx);
-        return Err(EncodeError::from_ffmpeg_error(e));
-    }
-
-    // ── Step 7: Copy codec parameters to stream ───────────────────────────────
-    // SAFETY: stream and codec_ctx are non-null and valid at this point.
-    let par = (*stream).codecpar;
-    (*par).codec_id = codec_id;
-    (*par).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
-    (*par).width = (*codec_ctx).width;
-    (*par).height = (*codec_ctx).height;
-    (*par).format = pix_fmt;
-
-    // ── Step 8: Open output file ──────────────────────────────────────────────
-    let io_ctx = avformat::open_output(path, avformat::avio_flags::WRITE).map_err(|e| {
-        avcodec::free_context(&mut (codec_ctx as *mut _));
-        avformat_free_context(format_ctx);
-        EncodeError::from_ffmpeg_error(e)
-    })?;
-    (*format_ctx).pb = io_ctx;
-
-    // ── Step 9: Write the file header ─────────────────────────────────────────
-    let ret = avformat_write_header(format_ctx, ptr::null_mut());
-    if ret < 0 {
-        avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-        avcodec::free_context(&mut (codec_ctx as *mut _));
-        avformat_free_context(format_ctx);
-        return Err(EncodeError::from_ffmpeg_error(ret));
-    }
-
-    // ── Step 10: Allocate destination AVFrame ─────────────────────────────────
-    let dst_frame = av_frame_alloc();
-    if dst_frame.is_null() {
-        avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-        avcodec::free_context(&mut (codec_ctx as *mut _));
-        avformat_free_context(format_ctx);
-        return Err(EncodeError::Ffmpeg(
-            "Cannot allocate destination frame".to_string(),
-        ));
-    }
-
-    (*dst_frame).format = pix_fmt;
-    (*dst_frame).width = dst_width as i32;
-    (*dst_frame).height = dst_height as i32;
-
-    let ret = ff_sys::av_frame_get_buffer(dst_frame, 0);
-    if ret < 0 {
-        av_frame_free(&mut (dst_frame as *mut _));
-        avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-        avcodec::free_context(&mut (codec_ctx as *mut _));
-        avformat_free_context(format_ctx);
-        return Err(EncodeError::from_ffmpeg_error(ret));
-    }
-
-    // ── Step 11: Fill dst_frame (convert / resize if needed) ─────────────────
-    let src_fmt = pixel_format_to_av(frame.format());
-    let needs_conversion =
-        src_fmt != pix_fmt || frame.width() != dst_width || frame.height() != dst_height;
-
-    if needs_conversion {
-        // Use swscale for pixel format conversion and/or resize.
-        let sws_ctx = swscale::get_context(
-            frame.width() as i32,
-            frame.height() as i32,
-            src_fmt,
-            dst_width as i32,
-            dst_height as i32,
-            pix_fmt,
-            swscale::scale_flags::BILINEAR,
-        )
-        .map_err(|e| {
-            av_frame_free(&mut (dst_frame as *mut _));
-            avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-            avcodec::free_context(&mut (codec_ctx as *mut _));
-            avformat_free_context(format_ctx);
-            EncodeError::from_ffmpeg_error(e)
-        })?;
-
-        let mut src_data: [*const u8; MAX_PLANES] = [ptr::null(); MAX_PLANES];
-        let mut src_linesize: [i32; MAX_PLANES] = [0; MAX_PLANES];
-
-        for (i, plane) in frame.planes().iter().enumerate() {
-            if i < MAX_PLANES {
-                src_data[i] = plane.data().as_ptr();
-                src_linesize[i] = frame.strides()[i] as i32;
-            }
-        }
-
-        let scale_result = swscale::scale(
-            sws_ctx,
-            src_data.as_ptr(),
-            src_linesize.as_ptr(),
-            0,
-            frame.height() as i32,
-            (*dst_frame).data.as_mut_ptr().cast_const(),
-            (*dst_frame).linesize.as_mut_ptr(),
-        );
-        swscale::free_context(sws_ctx);
-
-        if let Err(e) = scale_result {
-            av_frame_free(&mut (dst_frame as *mut _));
-            avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-            avcodec::free_context(&mut (codec_ctx as *mut _));
-            avformat_free_context(format_ctx);
-            return Err(EncodeError::from_ffmpeg_error(e));
-        }
-    } else {
-        // Direct plane copy — same format and dimensions.
-        for (i, plane) in frame.planes().iter().enumerate() {
-            if i >= MAX_PLANES || (*dst_frame).data[i].is_null() {
-                break;
-            }
-            let src_stride = frame.strides()[i];
-            let dst_stride = (*dst_frame).linesize[i] as usize;
-            let plane_data = plane.data();
-
-            if src_stride == dst_stride {
-                std::ptr::copy_nonoverlapping(
-                    plane_data.as_ptr(),
-                    (*dst_frame).data[i],
-                    plane_data.len(),
-                );
-            } else {
-                // Stride mismatch: copy row by row.
-                let row_bytes = src_stride.min(dst_stride);
-                let num_rows = plane_data.len() / src_stride;
-                for row in 0..num_rows {
-                    std::ptr::copy_nonoverlapping(
-                        plane_data[row * src_stride..].as_ptr(),
-                        (*dst_frame).data[i].add(row * dst_stride),
-                        row_bytes,
-                    );
-                }
-            }
-        }
-    }
-
-    // ── Step 12: Set PTS ──────────────────────────────────────────────────────
-    (*dst_frame).pts = 0;
-
-    // ── Step 13: Send frame to encoder ────────────────────────────────────────
-    let packet = av_packet_alloc();
-    if packet.is_null() {
-        av_frame_free(&mut (dst_frame as *mut _));
-        avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-        avcodec::free_context(&mut (codec_ctx as *mut _));
-        avformat_free_context(format_ctx);
-        return Err(EncodeError::Ffmpeg("Cannot allocate packet".to_string()));
-    }
-
-    let send_result = avcodec::send_frame(codec_ctx, dst_frame);
-    av_frame_free(&mut (dst_frame as *mut _));
-
-    if let Err(e) = send_result {
-        av_packet_free(&mut (packet as *mut _));
-        avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-        avcodec::free_context(&mut (codec_ctx as *mut _));
-        avformat_free_context(format_ctx);
-        return Err(EncodeError::from_ffmpeg_error(e));
-    }
-
-    // ── Step 14: Receive encoded packets ──────────────────────────────────────
-    loop {
-        match avcodec::receive_packet(codec_ctx, packet) {
-            Ok(()) => {
-                (*packet).stream_index = 0;
-                let ret = av_interleaved_write_frame(format_ctx, packet);
-                av_packet_unref(packet);
-                if ret < 0 {
-                    av_packet_free(&mut (packet as *mut _));
-                    avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-                    avcodec::free_context(&mut (codec_ctx as *mut _));
-                    avformat_free_context(format_ctx);
-                    return Err(EncodeError::from_ffmpeg_error(ret));
-                }
-            }
-            Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
-                break;
-            }
-            Err(e) => {
-                av_packet_free(&mut (packet as *mut _));
-                avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-                avcodec::free_context(&mut (codec_ctx as *mut _));
-                avformat_free_context(format_ctx);
-                return Err(EncodeError::from_ffmpeg_error(e));
-            }
-        }
-    }
-
-    // ── Step 15: Flush encoder ────────────────────────────────────────────────
-    if let Err(e) = avcodec::send_frame(codec_ctx, ptr::null()) {
-        av_packet_free(&mut (packet as *mut _));
-        avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-        avcodec::free_context(&mut (codec_ctx as *mut _));
-        avformat_free_context(format_ctx);
-        return Err(EncodeError::from_ffmpeg_error(e));
-    }
-
-    // ── Step 16: Drain remaining packets after flush ──────────────────────────
-    loop {
-        match avcodec::receive_packet(codec_ctx, packet) {
-            Ok(()) => {
-                (*packet).stream_index = 0;
-                let ret = av_interleaved_write_frame(format_ctx, packet);
-                av_packet_unref(packet);
-                if ret < 0 {
-                    av_packet_free(&mut (packet as *mut _));
-                    avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-                    avcodec::free_context(&mut (codec_ctx as *mut _));
-                    avformat_free_context(format_ctx);
-                    return Err(EncodeError::from_ffmpeg_error(ret));
-                }
-            }
-            Err(e) if e == ff_sys::error_codes::EOF || e == ff_sys::error_codes::EAGAIN => {
-                break;
-            }
-            Err(e) => {
-                av_packet_free(&mut (packet as *mut _));
-                avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-                avcodec::free_context(&mut (codec_ctx as *mut _));
-                avformat_free_context(format_ctx);
-                return Err(EncodeError::from_ffmpeg_error(e));
-            }
-        }
-    }
-
-    // ── Step 17: Write trailer ────────────────────────────────────────────────
-    av_write_trailer(format_ctx);
-
-    // ── Step 18: Cleanup ──────────────────────────────────────────────────────
-    av_packet_free(&mut (packet as *mut _));
-    avformat::close_output(&mut ((*format_ctx).pb as *mut _));
-    avcodec::free_context(&mut (codec_ctx as *mut _));
-    avformat_free_context(format_ctx);
+    // Encode and finalise the file; on error `inner` is dropped here via `?`,
+    // releasing all remaining FFmpeg resources.
+    inner.encode_frame(frame)?;
 
     log::info!(
         "Image encoded successfully path={} src={}x{} dst={}x{}",
         path.display(),
         frame.width(),
         frame.height(),
-        dst_width,
-        dst_height,
+        inner.dst_width,
+        inner.dst_height,
     );
 
     Ok(())
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn codec_from_extension_jpeg_should_return_mjpeg() {
+        let id = codec_from_extension(Path::new("img.jpg")).unwrap();
+        assert_eq!(id, AVCodecID_AV_CODEC_ID_MJPEG);
+    }
+
+    #[test]
+    fn codec_from_extension_jpeg_alias_should_return_mjpeg() {
+        let id = codec_from_extension(Path::new("img.jpeg")).unwrap();
+        assert_eq!(id, AVCodecID_AV_CODEC_ID_MJPEG);
+    }
+
+    #[test]
+    fn codec_from_extension_png_should_return_png() {
+        let id = codec_from_extension(Path::new("img.PNG")).unwrap(); // upper-case
+        assert_eq!(id, AVCodecID_AV_CODEC_ID_PNG);
+    }
+
+    #[test]
+    fn codec_from_extension_bmp_should_return_bmp() {
+        let id = codec_from_extension(Path::new("img.bmp")).unwrap();
+        assert_eq!(id, AVCodecID_AV_CODEC_ID_BMP);
+    }
+
+    #[test]
+    fn codec_from_extension_tif_should_return_tiff() {
+        let id = codec_from_extension(Path::new("img.tif")).unwrap();
+        assert_eq!(id, AVCodecID_AV_CODEC_ID_TIFF);
+    }
+
+    #[test]
+    fn codec_from_extension_tiff_should_return_tiff() {
+        let id = codec_from_extension(Path::new("img.tiff")).unwrap();
+        assert_eq!(id, AVCodecID_AV_CODEC_ID_TIFF);
+    }
+
+    #[test]
+    fn codec_from_extension_webp_should_return_webp() {
+        let id = codec_from_extension(Path::new("img.webp")).unwrap();
+        assert_eq!(id, AVCodecID_AV_CODEC_ID_WEBP);
+    }
+
+    #[test]
+    fn codec_from_extension_no_ext_should_return_invalid_config() {
+        let result = codec_from_extension(Path::new("no_extension"));
+        assert!(matches!(result, Err(EncodeError::InvalidConfig { .. })));
+    }
+
+    #[test]
+    fn codec_from_extension_unknown_should_return_unsupported_codec() {
+        let result = codec_from_extension(Path::new("img.avi"));
+        assert!(matches!(result, Err(EncodeError::UnsupportedCodec { .. })));
+    }
+
+    #[test]
+    fn preferred_pix_fmt_mjpeg_should_return_yuvj420p() {
+        assert_eq!(
+            preferred_pix_fmt(AVCodecID_AV_CODEC_ID_MJPEG),
+            AVPixelFormat_AV_PIX_FMT_YUVJ420P
+        );
+    }
+
+    #[test]
+    fn preferred_pix_fmt_png_should_return_rgb24() {
+        assert_eq!(
+            preferred_pix_fmt(AVCodecID_AV_CODEC_ID_PNG),
+            AVPixelFormat_AV_PIX_FMT_RGB24
+        );
+    }
+
+    #[test]
+    fn preferred_pix_fmt_bmp_should_return_bgr24() {
+        assert_eq!(
+            preferred_pix_fmt(AVCodecID_AV_CODEC_ID_BMP),
+            AVPixelFormat_AV_PIX_FMT_BGR24
+        );
+    }
+
+    #[test]
+    fn preferred_pix_fmt_webp_should_return_yuv420p() {
+        assert_eq!(
+            preferred_pix_fmt(AVCodecID_AV_CODEC_ID_WEBP),
+            AVPixelFormat_AV_PIX_FMT_YUV420P
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_yuv420p_should_match() {
+        assert_eq!(
+            pixel_format_to_av(PixelFormat::Yuv420p),
+            AVPixelFormat_AV_PIX_FMT_YUV420P
+        );
+    }
+
+    #[test]
+    fn pixel_format_to_av_rgb24_should_match() {
+        assert_eq!(
+            pixel_format_to_av(PixelFormat::Rgb24),
+            AVPixelFormat_AV_PIX_FMT_RGB24
+        );
+    }
+
+    // Verify Drop does not panic on a zero-initialised (all-null) inner struct.
+    // This guards the partial-allocation cleanup path exercised when `open`
+    // returns early with an error before every field is set.
+    #[test]
+    fn drop_on_uninitialised_inner_should_not_panic() {
+        // We deliberately construct an all-null inner and drop it.
+        // SAFETY: all pointers are null; Drop checks for null before freeing.
+        let inner = ImageEncoderInner {
+            format_ctx: ptr::null_mut(),
+            codec_ctx: ptr::null_mut(),
+            dst_frame: ptr::null_mut(),
+            packet: ptr::null_mut(),
+            sws_ctx: None,
+            dst_width: 0,
+            dst_height: 0,
+            pix_fmt: ff_sys::AVPixelFormat_AV_PIX_FMT_NONE,
+        };
+        drop(inner); // must not panic
+    }
+
+    // Verify codec_from_extension is case-insensitive (uses .to_lowercase()).
+    #[test]
+    fn codec_from_extension_case_insensitive_should_work() {
+        let _ = codec_from_extension(&PathBuf::from("IMG.JPG")).unwrap();
+        let _ = codec_from_extension(&PathBuf::from("IMG.BMP")).unwrap();
+        let _ = codec_from_extension(&PathBuf::from("IMG.WEBP")).unwrap();
+    }
 }
