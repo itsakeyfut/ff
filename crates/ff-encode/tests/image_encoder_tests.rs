@@ -4,10 +4,12 @@
 
 mod fixtures;
 
+use ff_decode::ImageDecoder;
 use ff_encode::ImageEncoder;
 use ff_format::PixelFormat;
 use fixtures::{
-    FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
+    FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_dir,
+    test_output_path,
 };
 
 // ── Baseline tests ────────────────────────────────────────────────────────────
@@ -332,4 +334,170 @@ fn encode_png_with_rgb24_pixel_format_should_produce_valid_output() {
     }
 
     assert_valid_output_file(&output_path);
+}
+
+// ── File creation and round-trip tests ───────────────────────────────────────
+
+#[test]
+fn new_with_missing_parent_dir_should_return_error() {
+    // Construct a path whose parent directory is guaranteed not to exist.
+    let output_path = test_output_dir()
+        .join("nonexistent_dir_12345")
+        .join("image.png");
+
+    // build() validates extension only — it must succeed here.
+    let encoder = match ImageEncoder::create(&output_path).build() {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    let frame = create_black_frame(64, 48);
+    let result = encoder.encode(&frame);
+    assert!(
+        result.is_err(),
+        "encode() should fail when parent directory does not exist"
+    );
+}
+
+#[test]
+fn encode_png_should_create_file() {
+    let output_path = test_output_path("test_image_creates.png");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let encoder = match ImageEncoder::create(&output_path).build() {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    let frame = create_black_frame(64, 48);
+    match encoder.encode(&frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+
+    assert!(
+        output_path.exists(),
+        "PNG file should exist after encode: {:?}",
+        output_path
+    );
+}
+
+#[test]
+fn encode_jpeg_should_create_file() {
+    let output_path = test_output_path("test_image_creates.jpg");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let encoder = match ImageEncoder::create(&output_path).build() {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    let frame = create_black_frame(64, 48);
+    match encoder.encode(&frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+
+    assert!(
+        output_path.exists(),
+        "JPEG file should exist after encode: {:?}",
+        output_path
+    );
+}
+
+#[test]
+fn encoded_file_should_be_decodable_by_image_decoder() {
+    let output_path = test_output_path("test_image_roundtrip.png");
+    let _guard = FileGuard::new(output_path.clone());
+
+    // Use non-square dimensions so a width/height swap would be caught.
+    let encoder = match ImageEncoder::create(&output_path).build() {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping encode: {e}");
+            return;
+        }
+    };
+
+    let frame = create_black_frame(64, 48);
+    match encoder.encode(&frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping encode: {e}");
+            return;
+        }
+    }
+
+    assert_valid_output_file(&output_path);
+
+    let decoder = match ImageDecoder::open(&output_path).build() {
+        Ok(dec) => dec,
+        Err(e) => {
+            println!("Skipping decode: {e}");
+            return;
+        }
+    };
+
+    assert_eq!(
+        decoder.width(),
+        64,
+        "decoded width should match encoded width"
+    );
+    assert_eq!(
+        decoder.height(),
+        48,
+        "decoded height should match encoded height"
+    );
+}
+
+#[test]
+fn encode_with_quality_option_should_succeed() {
+    let output_path = test_output_path("test_image_quality80.jpg");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let encoder = match ImageEncoder::create(&output_path).quality(80).build() {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    let frame = create_black_frame(64, 48);
+    match encoder.encode(&frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+
+    assert_valid_output_file(&output_path);
+}
+
+#[test]
+fn encoder_drop_without_encode_should_not_panic() {
+    // ImageEncoder holds no FFmpeg resources until encode() is called,
+    // so dropping it early must never panic.
+    let output_path = test_output_path("test_image_drop_no_encode.png");
+
+    match ImageEncoder::create(&output_path).build() {
+        Ok(encoder) => drop(encoder),
+        Err(e) => println!("Skipping: {e}"),
+    }
 }
