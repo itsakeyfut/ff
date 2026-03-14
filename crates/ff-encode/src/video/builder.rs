@@ -45,6 +45,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) audio_codec: AudioCodec,
     pub(crate) audio_bitrate: Option<u64>,
     pub(crate) progress_callback: Option<Box<dyn ProgressCallback>>,
+    pub(crate) two_pass: bool,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -68,6 +69,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
                 "progress_callback",
                 &self.progress_callback.as_ref().map(|_| "<callback>"),
             )
+            .field("two_pass", &self.two_pass)
             .finish()
     }
 }
@@ -90,6 +92,7 @@ impl VideoEncoderBuilder {
             audio_codec: AudioCodec::default(),
             audio_bitrate: None,
             progress_callback: None,
+            two_pass: false,
         }
     }
 
@@ -191,6 +194,17 @@ impl VideoEncoderBuilder {
         self
     }
 
+    // === Two-pass ===
+
+    /// Enable two-pass encoding for more accurate bitrate distribution.
+    ///
+    /// Two-pass encoding is video-only and is incompatible with audio streams.
+    #[must_use]
+    pub fn two_pass(mut self) -> Self {
+        self.two_pass = true;
+        self
+    }
+
     // === Build ===
 
     /// Validate builder state and open the output file.
@@ -213,6 +227,21 @@ impl VideoEncoderBuilder {
             return Err(EncodeError::InvalidConfig {
                 reason: "At least one video or audio stream must be configured".to_string(),
             });
+        }
+
+        if self.two_pass {
+            if !has_video {
+                return Err(EncodeError::InvalidConfig {
+                    reason: "Two-pass encoding requires a video stream".to_string(),
+                });
+            }
+            if has_audio {
+                return Err(EncodeError::InvalidConfig {
+                    reason:
+                        "Two-pass encoding is video-only and is incompatible with audio streams"
+                            .to_string(),
+                });
+            }
         }
 
         if has_video {
@@ -314,6 +343,7 @@ impl VideoEncoder {
             audio_codec: builder.audio_codec,
             audio_bitrate: builder.audio_bitrate,
             _progress_callback: builder.progress_callback.is_some(),
+            two_pass: builder.two_pass,
         };
 
         let inner = if config.video_width.is_some() {
@@ -531,6 +561,11 @@ mod tests {
                 last_src_width: None,
                 last_src_height: None,
                 last_src_format: None,
+                two_pass: false,
+                pass1_codec_ctx: None,
+                buffered_frames: Vec::new(),
+                two_pass_config: None,
+                stats_in_cstr: None,
             }),
             _config: VideoEncoderConfig {
                 path: "test.mp4".into(),
@@ -547,6 +582,7 @@ mod tests {
                 audio_codec: crate::AudioCodec::Aac,
                 audio_bitrate: None,
                 _progress_callback: false,
+                two_pass: false,
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,
@@ -634,6 +670,36 @@ mod tests {
         let result = VideoEncoder::create("output.mp4")
             .video(1920, 1080, -1.0)
             .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn two_pass_flag_should_be_stored_in_builder() {
+        let builder = VideoEncoder::create("output.mp4")
+            .video(640, 480, 30.0)
+            .two_pass();
+        assert!(builder.two_pass);
+    }
+
+    #[test]
+    fn two_pass_with_audio_should_return_error() {
+        let result = VideoEncoder::create("output.mp4")
+            .video(640, 480, 30.0)
+            .audio(48000, 2)
+            .two_pass()
+            .build();
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(
+                matches!(e, crate::EncodeError::InvalidConfig { .. }),
+                "expected InvalidConfig, got {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_pass_without_video_should_return_error() {
+        let result = VideoEncoder::create("output.mp4").two_pass().build();
         assert!(result.is_err());
     }
 
