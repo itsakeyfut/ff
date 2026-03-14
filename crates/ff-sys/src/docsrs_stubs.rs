@@ -206,6 +206,12 @@ pub const AVCodecID_AV_CODEC_ID_HEVC: AVCodecID = 173;
 pub const AVCodecID_AV_CODEC_ID_AV1: AVCodecID = 226;
 pub const AVCodecID_AV_CODEC_ID_DNXHD: AVCodecID = 99;
 
+// AVCodecID — image (still image)
+pub const AVCodecID_AV_CODEC_ID_PNG: AVCodecID = 61;
+pub const AVCodecID_AV_CODEC_ID_BMP: AVCodecID = 76;
+pub const AVCodecID_AV_CODEC_ID_TIFF: AVCodecID = 90;
+pub const AVCodecID_AV_CODEC_ID_WEBP: AVCodecID = 219;
+
 // AVCodecID — audio
 pub const AVCodecID_AV_CODEC_ID_PCM_S16LE: AVCodecID = 65536;
 pub const AVCodecID_AV_CODEC_ID_PCM_S16BE: AVCodecID = 65537;
@@ -242,6 +248,7 @@ pub const AVPixelFormat_AV_PIX_FMT_NV12: AVPixelFormat = 23;
 pub const AVPixelFormat_AV_PIX_FMT_NV21: AVPixelFormat = 24;
 pub const AVPixelFormat_AV_PIX_FMT_RGBA: AVPixelFormat = 26;
 pub const AVPixelFormat_AV_PIX_FMT_BGRA: AVPixelFormat = 28;
+pub const AVPixelFormat_AV_PIX_FMT_YUVJ420P: AVPixelFormat = 12;
 pub const AVPixelFormat_AV_PIX_FMT_VAAPI: AVPixelFormat = 51;
 pub const AVPixelFormat_AV_PIX_FMT_DXVA2_VLD: AVPixelFormat = 53;
 pub const AVPixelFormat_AV_PIX_FMT_YUV420P10LE: AVPixelFormat = 66;
