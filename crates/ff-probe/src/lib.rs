@@ -133,8 +133,8 @@ mod info;
 // Re-export types from ff-format for convenience
 pub use ff_format::{
     AudioCodec, AudioStreamInfo, ChannelLayout, ChapterInfo, ChapterInfoBuilder, ColorPrimaries,
-    ColorRange, ColorSpace, MediaInfo, PixelFormat, Rational, SampleFormat, Timestamp, VideoCodec,
-    VideoStreamInfo,
+    ColorRange, ColorSpace, MediaInfo, PixelFormat, Rational, SampleFormat, SubtitleCodec,
+    SubtitleStreamInfo, SubtitleStreamInfoBuilder, Timestamp, VideoCodec, VideoStreamInfo,
 };
 
 pub use error::ProbeError;
@@ -165,7 +165,8 @@ pub mod prelude {
     pub use crate::{
         AudioCodec, AudioStreamInfo, ChannelLayout, ChapterInfo, ChapterInfoBuilder,
         ColorPrimaries, ColorRange, ColorSpace, MediaInfo, PixelFormat, ProbeError, Rational,
-        SampleFormat, Timestamp, VideoCodec, VideoStreamInfo, open,
+        SampleFormat, SubtitleCodec, SubtitleStreamInfo, SubtitleStreamInfoBuilder, Timestamp,
+        VideoCodec, VideoStreamInfo, open,
     };
 }
 

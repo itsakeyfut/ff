@@ -115,6 +115,7 @@ pub struct AVStream {
     pub avg_frame_rate: AVRational,
     pub r_frame_rate: AVRational,
     pub start_time: i64,
+    pub disposition: c_int,
     pub metadata: *mut AVDictionary,
 }
 
@@ -189,6 +190,8 @@ pub const AVMediaType_AVMEDIA_TYPE_VIDEO: AVMediaType = 0;
 pub const AVMediaType_AVMEDIA_TYPE_AUDIO: AVMediaType = 1;
 pub const AVMediaType_AVMEDIA_TYPE_SUBTITLE: AVMediaType = 3;
 
+pub const AV_DISPOSITION_FORCED: u32 = 0x0040;
+
 pub const AVChannelOrder_AV_CHANNEL_ORDER_UNSPEC: AVChannelOrder = 0;
 pub const AVChannelOrder_AV_CHANNEL_ORDER_NATIVE: AVChannelOrder = 1;
 
@@ -211,6 +214,15 @@ pub const AVCodecID_AV_CODEC_ID_PNG: AVCodecID = 61;
 pub const AVCodecID_AV_CODEC_ID_BMP: AVCodecID = 76;
 pub const AVCodecID_AV_CODEC_ID_TIFF: AVCodecID = 90;
 pub const AVCodecID_AV_CODEC_ID_WEBP: AVCodecID = 219;
+
+// AVCodecID — subtitle
+pub const AVCodecID_AV_CODEC_ID_DVB_SUBTITLE: AVCodecID = 94209;
+pub const AVCodecID_AV_CODEC_ID_SSA: AVCodecID = 94212;
+pub const AVCodecID_AV_CODEC_ID_HDMV_PGS_SUBTITLE: AVCodecID = 94214;
+pub const AVCodecID_AV_CODEC_ID_SRT: AVCodecID = 94216;
+pub const AVCodecID_AV_CODEC_ID_SUBRIP: AVCodecID = 94248;
+pub const AVCodecID_AV_CODEC_ID_WEBVTT: AVCodecID = 94249;
+pub const AVCodecID_AV_CODEC_ID_ASS: AVCodecID = 94253;
 
 // AVCodecID — audio
 pub const AVCodecID_AV_CODEC_ID_PCM_S16LE: AVCodecID = 65536;

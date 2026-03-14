@@ -64,7 +64,7 @@ pub mod time;
 
 pub use channel::ChannelLayout;
 pub use chapter::{ChapterInfo, ChapterInfoBuilder};
-pub use codec::{AudioCodec, VideoCodec};
+pub use codec::{AudioCodec, SubtitleCodec, VideoCodec};
 pub use color::{ColorPrimaries, ColorRange, ColorSpace};
 pub use error::{FormatError, FrameError};
 pub use ff_common::PooledBuffer;
@@ -73,7 +73,8 @@ pub use media::{MediaInfo, MediaInfoBuilder};
 pub use pixel::PixelFormat;
 pub use sample::SampleFormat;
 pub use stream::{
-    AudioStreamInfo, AudioStreamInfoBuilder, VideoStreamInfo, VideoStreamInfoBuilder,
+    AudioStreamInfo, AudioStreamInfoBuilder, SubtitleStreamInfo, SubtitleStreamInfoBuilder,
+    VideoStreamInfo, VideoStreamInfoBuilder,
 };
 pub use time::{Rational, Timestamp};
 

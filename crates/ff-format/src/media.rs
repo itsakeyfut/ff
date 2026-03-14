@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::chapter::ChapterInfo;
-use crate::stream::{AudioStreamInfo, VideoStreamInfo};
+use crate::stream::{AudioStreamInfo, SubtitleStreamInfo, VideoStreamInfo};
 
 /// Information about a media file.
 ///
@@ -96,6 +96,8 @@ pub struct MediaInfo {
     video_streams: Vec<VideoStreamInfo>,
     /// Audio streams in the file
     audio_streams: Vec<AudioStreamInfo>,
+    /// Subtitle streams in the file
+    subtitle_streams: Vec<SubtitleStreamInfo>,
     /// Chapter markers in the file
     chapters: Vec<ChapterInfo>,
     /// File metadata (title, artist, etc.)
@@ -179,6 +181,13 @@ impl MediaInfo {
         &self.audio_streams
     }
 
+    /// Returns all subtitle streams in the file.
+    #[must_use]
+    #[inline]
+    pub fn subtitle_streams(&self) -> &[SubtitleStreamInfo] {
+        &self.subtitle_streams
+    }
+
     /// Returns all chapters in the file.
     #[must_use]
     #[inline]
@@ -230,6 +239,13 @@ impl MediaInfo {
         !self.audio_streams.is_empty()
     }
 
+    /// Returns `true` if the file contains at least one subtitle stream.
+    #[must_use]
+    #[inline]
+    pub fn has_subtitles(&self) -> bool {
+        !self.subtitle_streams.is_empty()
+    }
+
     /// Returns the number of video streams.
     #[must_use]
     #[inline]
@@ -244,11 +260,18 @@ impl MediaInfo {
         self.audio_streams.len()
     }
 
-    /// Returns the total number of streams (video + audio).
+    /// Returns the number of subtitle streams.
+    #[must_use]
+    #[inline]
+    pub fn subtitle_stream_count(&self) -> usize {
+        self.subtitle_streams.len()
+    }
+
+    /// Returns the total number of streams (video + audio + subtitle).
     #[must_use]
     #[inline]
     pub fn stream_count(&self) -> usize {
-        self.video_streams.len() + self.audio_streams.len()
+        self.video_streams.len() + self.audio_streams.len() + self.subtitle_streams.len()
     }
 
     // === Primary Stream Selection ===
@@ -285,6 +308,13 @@ impl MediaInfo {
     #[inline]
     pub fn audio_stream(&self, index: usize) -> Option<&AudioStreamInfo> {
         self.audio_streams.get(index)
+    }
+
+    /// Returns a subtitle stream by index within the subtitle streams list.
+    #[must_use]
+    #[inline]
+    pub fn subtitle_stream(&self, index: usize) -> Option<&SubtitleStreamInfo> {
+        self.subtitle_streams.get(index)
     }
 
     // === Convenience Methods ===
@@ -434,6 +464,7 @@ impl Default for MediaInfo {
             bitrate: None,
             video_streams: Vec::new(),
             audio_streams: Vec::new(),
+            subtitle_streams: Vec::new(),
             chapters: Vec::new(),
             metadata: HashMap::new(),
         }
@@ -468,6 +499,7 @@ pub struct MediaInfoBuilder {
     bitrate: Option<u64>,
     video_streams: Vec<VideoStreamInfo>,
     audio_streams: Vec<AudioStreamInfo>,
+    subtitle_streams: Vec<SubtitleStreamInfo>,
     chapters: Vec<ChapterInfo>,
     metadata: HashMap<String, String>,
 }
@@ -543,6 +575,20 @@ impl MediaInfoBuilder {
         self
     }
 
+    /// Adds a subtitle stream.
+    #[must_use]
+    pub fn subtitle_stream(mut self, stream: SubtitleStreamInfo) -> Self {
+        self.subtitle_streams.push(stream);
+        self
+    }
+
+    /// Sets all subtitle streams at once, replacing any existing streams.
+    #[must_use]
+    pub fn subtitle_streams(mut self, streams: Vec<SubtitleStreamInfo>) -> Self {
+        self.subtitle_streams = streams;
+        self
+    }
+
     /// Adds a chapter.
     #[must_use]
     pub fn chapter(mut self, chapter: ChapterInfo) -> Self {
@@ -583,6 +629,7 @@ impl MediaInfoBuilder {
             bitrate: self.bitrate,
             video_streams: self.video_streams,
             audio_streams: self.audio_streams,
+            subtitle_streams: self.subtitle_streams,
             chapters: self.chapters,
             metadata: self.metadata,
         }
@@ -592,7 +639,7 @@ impl MediaInfoBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::{AudioCodec, VideoCodec};
+    use crate::codec::{AudioCodec, SubtitleCodec, VideoCodec};
     use crate::time::Rational;
     use crate::{PixelFormat, SampleFormat};
 
@@ -618,6 +665,15 @@ mod tests {
             .channels(2)
             .sample_format(SampleFormat::F32)
             .duration(Duration::from_secs(120))
+            .build()
+    }
+
+    fn sample_subtitle_stream() -> SubtitleStreamInfo {
+        SubtitleStreamInfo::builder()
+            .index(2)
+            .codec(SubtitleCodec::Srt)
+            .codec_name("srt")
+            .language("eng")
             .build()
     }
 
@@ -816,6 +872,53 @@ mod tests {
             assert_eq!(info.video_stream_count(), 2);
             assert_eq!(info.audio_stream_count(), 3);
             assert_eq!(info.stream_count(), 5);
+        }
+
+        #[test]
+        fn has_subtitles_should_return_true_when_subtitle_streams_present() {
+            let no_subs = MediaInfo::default();
+            assert!(!no_subs.has_subtitles());
+            assert_eq!(no_subs.subtitle_stream_count(), 0);
+
+            let with_subs = MediaInfo::builder()
+                .subtitle_stream(sample_subtitle_stream())
+                .subtitle_stream(sample_subtitle_stream())
+                .build();
+            assert!(with_subs.has_subtitles());
+            assert_eq!(with_subs.subtitle_stream_count(), 2);
+        }
+
+        #[test]
+        fn subtitle_stream_count_should_be_included_in_stream_count() {
+            let info = MediaInfo::builder()
+                .video_stream(sample_video_stream())
+                .audio_stream(sample_audio_stream())
+                .subtitle_stream(sample_subtitle_stream())
+                .build();
+            assert_eq!(info.stream_count(), 3);
+        }
+
+        #[test]
+        fn subtitle_stream_by_index_should_return_correct_stream() {
+            let sub1 = SubtitleStreamInfo::builder()
+                .index(2)
+                .codec(SubtitleCodec::Srt)
+                .language("eng")
+                .build();
+            let sub2 = SubtitleStreamInfo::builder()
+                .index(3)
+                .codec(SubtitleCodec::Ass)
+                .language("jpn")
+                .build();
+
+            let info = MediaInfo::builder()
+                .subtitle_stream(sub1)
+                .subtitle_stream(sub2)
+                .build();
+
+            assert_eq!(info.subtitle_stream(0).unwrap().language(), Some("eng"));
+            assert_eq!(info.subtitle_stream(1).unwrap().language(), Some("jpn"));
+            assert!(info.subtitle_stream(2).is_none());
         }
 
         #[test]
