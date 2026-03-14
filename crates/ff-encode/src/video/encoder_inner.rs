@@ -12,15 +12,16 @@
 use crate::{AudioCodec, EncodeError, VideoCodec};
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
-    AVChannelLayout, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
+    AV_TIME_BASE, AVChannelLayout, AVChapter, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
     AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_FLAC,
     AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP3,
     AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
     AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP9,
     AVFormatContext, AVFrame, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext,
-    SwsContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_packet_alloc,
-    av_packet_free, av_packet_unref, av_write_trailer, avcodec, avformat_alloc_output_context2,
-    avformat_free_context, avformat_new_stream, avformat_write_header, swresample, swscale,
+    SwsContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_mallocz,
+    av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer, avcodec,
+    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
+    avformat_write_header, swresample, swscale,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -141,6 +142,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) _progress_callback: bool,
     pub(super) two_pass: bool,
     pub(super) metadata: Vec<(String, String)>,
+    pub(super) chapters: Vec<ff_format::chapter::ChapterInfo>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -176,6 +178,82 @@ impl VideoEncoderInner {
                     ff_sys::av_error_string(ret)
                 );
             }
+        }
+    }
+
+    /// Allocate `AVChapter` entries on the format context before `avformat_write_header`.
+    ///
+    /// # Safety
+    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`.
+    /// Must be called before `avformat_write_header`.
+    unsafe fn apply_chapters(
+        format_ctx: *mut ff_sys::AVFormatContext,
+        chapters: &[ff_format::chapter::ChapterInfo],
+    ) {
+        if chapters.is_empty() {
+            return;
+        }
+        let n = chapters.len();
+        // SAFETY: allocating an array of n pointers for the chapters field.
+        let chapters_arr =
+            av_mallocz(std::mem::size_of::<*mut AVChapter>() * n) as *mut *mut AVChapter;
+        if chapters_arr.is_null() {
+            log::warn!("av_mallocz failed for chapters array, skipping chapters");
+            return;
+        }
+        (*format_ctx).chapters = chapters_arr;
+        (*format_ctx).nb_chapters = 0;
+
+        for (i, chapter) in chapters.iter().enumerate() {
+            // SAFETY: allocating a zeroed AVChapter struct.
+            let chap = av_mallocz(std::mem::size_of::<AVChapter>()) as *mut AVChapter;
+            if chap.is_null() {
+                log::warn!(
+                    "av_mallocz failed for AVChapter, skipping chapter id={}",
+                    chapter.id()
+                );
+                continue;
+            }
+            // SAFETY: chap is freshly allocated, non-null, and zeroed.
+            (*chap).id = chapter.id();
+            (*chap).time_base = ff_sys::AVRational {
+                num: 1,
+                den: AV_TIME_BASE as i32,
+            };
+            (*chap).start = chapter.start().as_micros() as i64;
+            (*chap).end = chapter.end().as_micros() as i64;
+            (*chap).metadata = std::ptr::null_mut();
+
+            if let Some(title) = chapter.title() {
+                let Ok(c_title) = std::ffi::CString::new(title) else {
+                    log::warn!(
+                        "chapter title contains null byte, skipping title id={}",
+                        chapter.id()
+                    );
+                    // SAFETY: chapters_arr is valid with capacity n.
+                    *chapters_arr.add(i) = chap;
+                    (*format_ctx).nb_chapters += 1;
+                    continue;
+                };
+                // SAFETY: chap->metadata is null; av_dict_set allocates and copies.
+                let ret = ff_sys::av_dict_set(
+                    &mut (*chap).metadata,
+                    b"title\0".as_ptr() as *const _,
+                    c_title.as_ptr(),
+                    0,
+                );
+                if ret < 0 {
+                    log::warn!(
+                        "av_dict_set failed for chapter title, skipping title \
+                         id={} error={}",
+                        chapter.id(),
+                        ff_sys::av_error_string(ret)
+                    );
+                }
+            }
+            // SAFETY: i < n so the write is in bounds.
+            *chapters_arr.add(i) = chap;
+            (*format_ctx).nb_chapters += 1;
         }
     }
 
@@ -282,6 +360,7 @@ impl VideoEncoderInner {
                 }
 
                 Self::apply_metadata(format_ctx, &config.metadata);
+                Self::apply_chapters(format_ctx, &config.chapters);
                 let ret = avformat_write_header(format_ctx, ptr::null_mut());
                 if ret < 0 {
                     encoder.cleanup();
@@ -1512,6 +1591,7 @@ impl VideoEncoderInner {
         }
 
         Self::apply_metadata(self.format_ctx, &config.metadata);
+        Self::apply_chapters(self.format_ctx, &config.chapters);
         let ret = avformat_write_header(self.format_ctx, ptr::null_mut());
         if ret < 0 {
             return Err(EncodeError::Ffmpeg(format!(
