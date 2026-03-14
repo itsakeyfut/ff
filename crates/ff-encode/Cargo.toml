@@ -35,6 +35,7 @@ gpl = []
 
 [dev-dependencies]
 criterion = { workspace = true }
+ff-probe = { workspace = true }
 
 # Benchmark configuration
 [[bench]]
