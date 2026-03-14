@@ -193,7 +193,6 @@
 //! ```
 
 mod audio;
-mod builder;
 mod codec;
 mod container;
 mod error;
@@ -202,12 +201,11 @@ mod preset;
 mod progress;
 mod video;
 
-pub use audio::AudioEncoder;
-pub use builder::EncoderBuilder;
+pub use audio::{AudioEncoder, AudioEncoderBuilder};
 pub use codec::{AudioCodec, VideoCodec};
 pub use container::Container;
 pub use error::EncodeError;
 pub use hardware::HardwareEncoder;
 pub use preset::Preset;
 pub use progress::{Progress, ProgressCallback};
-pub use video::VideoEncoder;
+pub use video::{VideoEncoder, VideoEncoderBuilder};

@@ -27,7 +27,6 @@ fn test_progress_callback_closure() {
     let progress_count_clone = progress_count.clone();
 
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .on_progress(move |progress: &Progress| {
@@ -101,7 +100,6 @@ fn test_progress_callback_struct() {
     };
 
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .progress_callback(callback)
@@ -160,7 +158,6 @@ fn test_progress_callback_cancellation() {
     };
 
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .progress_callback(callback)
@@ -206,7 +203,6 @@ fn test_progress_information_accuracy() {
     let last_progress_clone = last_progress.clone();
 
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .on_progress(move |progress: &Progress| {

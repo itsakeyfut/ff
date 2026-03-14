@@ -1,10 +1,10 @@
 //! Audio encoding implementation.
 //!
-//! This module provides audio encoding functionality with FFmpeg backend.
-//! The implementation is split into public API ([`encoder`]) and internal
+//! This module provides audio encoding functionality with an FFmpeg backend.
+//! The implementation is split into public API ([`builder`]) and internal
 //! implementation details ([`encoder_inner`]).
 
-mod encoder;
+pub mod builder;
 mod encoder_inner;
 
-pub use encoder::AudioEncoder;
+pub use builder::{AudioEncoder, AudioEncoderBuilder};
