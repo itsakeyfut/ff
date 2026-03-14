@@ -140,8 +140,45 @@ pub(super) struct VideoEncoderConfig {
     pub(super) audio_bitrate: Option<u64>,
     pub(super) _progress_callback: bool,
     pub(super) two_pass: bool,
+    pub(super) metadata: Vec<(String, String)>,
 }
 impl VideoEncoderInner {
+    /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
+    ///
+    /// # Safety
+    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`.
+    /// Must be called before `avformat_write_header`.
+    unsafe fn apply_metadata(
+        format_ctx: *mut ff_sys::AVFormatContext,
+        metadata: &[(String, String)],
+    ) {
+        for (key, value) in metadata {
+            let Ok(c_key) = std::ffi::CString::new(key.as_str()) else {
+                log::warn!("metadata key contains null byte, skipping key={key}");
+                continue;
+            };
+            let Ok(c_value) = std::ffi::CString::new(value.as_str()) else {
+                log::warn!("metadata value contains null byte, skipping key={key}");
+                continue;
+            };
+            // SAFETY: format_ctx is valid and non-null. c_key/c_value are valid
+            // CStrings covering this call. av_dict_set copies both strings.
+            let ret = ff_sys::av_dict_set(
+                &mut (*format_ctx).metadata,
+                c_key.as_ptr(),
+                c_value.as_ptr(),
+                0,
+            );
+            if ret < 0 {
+                log::warn!(
+                    "av_dict_set failed for metadata entry, skipping \
+                     key={key} error={}",
+                    ff_sys::av_error_string(ret)
+                );
+            }
+        }
+    }
+
     /// Create a new encoder with the given configuration.
     pub(super) fn new(config: &VideoEncoderConfig) -> Result<Self, EncodeError> {
         unsafe {
@@ -244,6 +281,7 @@ impl VideoEncoderInner {
                     }
                 }
 
+                Self::apply_metadata(format_ctx, &config.metadata);
                 let ret = avformat_write_header(format_ctx, ptr::null_mut());
                 if ret < 0 {
                     encoder.cleanup();
@@ -1473,6 +1511,7 @@ impl VideoEncoderInner {
             }
         }
 
+        Self::apply_metadata(self.format_ctx, &config.metadata);
         let ret = avformat_write_header(self.format_ctx, ptr::null_mut());
         if ret < 0 {
             return Err(EncodeError::Ffmpeg(format!(
