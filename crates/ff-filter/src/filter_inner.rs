@@ -41,6 +41,16 @@ const AUDIO_TIME_BASE_NUM: i32 = 1;
 
 type FilterCtxVec = Vec<Option<NonNull<ff_sys::AVFilterContext>>>;
 type BuildResult = Result<(FilterCtxVec, NonNull<ff_sys::AVFilterContext>), FilterError>;
+/// Return type for `build_video_graph`: src contexts, sink, and an optional
+/// hardware device context that must be stored and freed by the caller.
+type VideoGraphResult = Result<
+    (
+        FilterCtxVec,
+        NonNull<ff_sys::AVFilterContext>,
+        Option<*mut ff_sys::AVBufferRef>,
+    ),
+    FilterError,
+>;
 
 // ── FFmpeg error helper ───────────────────────────────────────────────────────
 
@@ -110,11 +120,14 @@ pub(crate) struct FilterGraphInner {
     steps: Vec<FilterStep>,
     /// Optional hardware acceleration backend.
     hw: Option<HwAccel>,
+    /// Owned reference to the hardware device context (`None` when no hardware
+    /// acceleration is in use).  Freed in `Drop` after the graph is freed.
+    hw_device_ctx: Option<*mut ff_sys::AVBufferRef>,
 }
 
 // SAFETY: `FilterGraphInner` owns all raw pointers exclusively.  No other
-// thread holds references to the underlying `AVFilterGraph` or any of its
-// contexts while this struct is alive.
+// thread holds references to the underlying `AVFilterGraph`, any of its
+// contexts, or the hardware device context while this struct is alive.
 unsafe impl Send for FilterGraphInner {}
 
 impl FilterGraphInner {
@@ -127,6 +140,7 @@ impl FilterGraphInner {
             asink_ctx: None,
             steps,
             hw,
+            hw_device_ctx: None,
         }
     }
 
@@ -160,10 +174,11 @@ impl FilterGraphInner {
                 &self.steps,
                 self.hw.as_ref(),
             ) {
-                Ok((src_ctxs, vsink_ctx)) => {
+                Ok((src_ctxs, vsink_ctx, hw_device_ctx)) => {
                     self.graph = Some(graph_nn);
                     self.src_ctxs = src_ctxs;
                     self.vsink_ctx = Some(vsink_ctx);
+                    self.hw_device_ctx = hw_device_ctx;
                     log::info!(
                         "filter graph configured inputs={} filters={}",
                         num_inputs,
@@ -194,19 +209,59 @@ impl FilterGraphInner {
         buffersrc_args: &str,
         num_inputs: usize,
         steps: &[FilterStep],
-        _hw: Option<&HwAccel>,
-    ) -> BuildResult {
+        hw: Option<&HwAccel>,
+    ) -> VideoGraphResult {
         let graph = graph_nn.as_ptr();
+
+        // 0. When hardware acceleration is requested, create a device context
+        //    and disable automatic pixel-format conversion so FFmpeg does not
+        //    insert implicit hwupload/scale filters that would conflict with the
+        //    explicit ones we add below.
+        let hw_device_ctx: Option<*mut ff_sys::AVBufferRef> = if let Some(hw) = hw {
+            let device_type = hw_accel_to_device_type(*hw);
+            let mut raw_hw_ctx: *mut ff_sys::AVBufferRef = std::ptr::null_mut();
+            let ret = ff_sys::av_hwdevice_ctx_create(
+                &raw mut raw_hw_ctx,
+                device_type,
+                std::ptr::null(),     // device: null = system default
+                std::ptr::null_mut(), // opts: null = defaults
+                0,
+            );
+            if ret < 0 {
+                log::warn!("av_hwdevice_ctx_create failed hw={hw:?} code={ret}");
+                return Err(FilterError::BuildFailed);
+            }
+            // AVFILTER_AUTO_CONVERT_NONE = 0: hardware filters must receive
+            // frames in exactly the format they expect.
+            ff_sys::avfilter_graph_set_auto_convert(graph, 0u32);
+            log::debug!("hw device context created hw={hw:?}");
+            Some(raw_hw_ctx)
+        } else {
+            None
+        };
+
+        // Helper closure: free hw_device_ctx and return an error.  Used at
+        // every early-return failure point that occurs *after* the device
+        // context has been allocated so it is not leaked.
+        macro_rules! bail {
+            ($err:expr) => {{
+                if let Some(mut hw_ctx) = hw_device_ctx {
+                    ff_sys::av_buffer_unref(std::ptr::addr_of_mut!(hw_ctx));
+                }
+                return Err($err);
+            }};
+        }
 
         // SAFETY: `avfilter_get_by_name` returns a borrowed pointer valid for
         // the process lifetime; we never free it.
         let buffersrc = ff_sys::avfilter_get_by_name(c"buffer".as_ptr());
         if buffersrc.is_null() {
-            return Err(FilterError::BuildFailed);
+            bail!(FilterError::BuildFailed);
         }
 
-        let src_args =
-            std::ffi::CString::new(buffersrc_args).map_err(|_| FilterError::BuildFailed)?;
+        let Ok(src_args) = std::ffi::CString::new(buffersrc_args) else {
+            bail!(FilterError::BuildFailed)
+        };
         let mut src_ctxs: Vec<Option<NonNull<ff_sys::AVFilterContext>>> =
             Vec::with_capacity(num_inputs);
 
@@ -221,7 +276,7 @@ impl FilterGraphInner {
             graph,
         );
         if ret < 0 {
-            return Err(FilterError::BuildFailed);
+            bail!(FilterError::BuildFailed);
         }
         log::debug!("filter added name=buffersrc slot=0");
         // SAFETY: ret >= 0 guarantees non-null.
@@ -229,8 +284,9 @@ impl FilterGraphInner {
 
         // Create in1..inN-1 (for overlay etc.)
         for slot in 1..num_inputs {
-            let ctx_name = std::ffi::CString::new(format!("in{slot}"))
-                .map_err(|_| FilterError::BuildFailed)?;
+            let Ok(ctx_name) = std::ffi::CString::new(format!("in{slot}")) else {
+                bail!(FilterError::BuildFailed)
+            };
             let mut raw_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
             let ret = ff_sys::avfilter_graph_create_filter(
                 &raw mut raw_ctx,
@@ -241,7 +297,7 @@ impl FilterGraphInner {
                 graph,
             );
             if ret < 0 {
-                return Err(FilterError::BuildFailed);
+                bail!(FilterError::BuildFailed);
             }
             log::debug!("filter added name=buffersrc slot={slot}");
             // SAFETY: ret >= 0 guarantees non-null.
@@ -251,7 +307,7 @@ impl FilterGraphInner {
         // 2. Create buffersink ("buffersink").
         let buffersink = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
         if buffersink.is_null() {
-            return Err(FilterError::BuildFailed);
+            bail!(FilterError::BuildFailed);
         }
 
         let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
@@ -264,19 +320,38 @@ impl FilterGraphInner {
             graph,
         );
         if ret < 0 {
-            return Err(FilterError::BuildFailed);
+            bail!(FilterError::BuildFailed);
         }
 
-        // 3-5. Add each `FilterStep`, link the main chain (in0 → step[0] → …),
-        // and wire extra input pads for multi-input filters.
+        // 3. Insert hwupload/hwupload_cuda BEFORE the filter steps so that
+        //    subsequent filters receive hardware (CUDA/VAAPI/VTB) frames.
         let mut prev_ctx: *mut ff_sys::AVFilterContext = raw_ctx0;
+        if let (Some(hw_ctx), Some(hw_backend)) = (hw_device_ctx, hw) {
+            let upload_name = match hw_backend {
+                HwAccel::Cuda => c"hwupload_cuda",
+                HwAccel::VideoToolbox | HwAccel::Vaapi => c"hwupload",
+            };
+            prev_ctx = match create_hw_filter(graph, prev_ctx, upload_name, c"hwupload0", hw_ctx) {
+                Ok(ctx) => ctx,
+                Err(e) => bail!(e),
+            };
+        }
+
+        // 4-5. Add each `FilterStep`, link the main chain (in0 → step[0] → …),
+        // and wire extra input pads for multi-input filters.
         for (i, step) in steps.iter().enumerate() {
-            prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "step")?;
+            prev_ctx = match add_and_link_step(graph, prev_ctx, step, i, "step") {
+                Ok(ctx) => ctx,
+                Err(e) => bail!(e),
+            };
 
             // After trim, insert setpts=PTS-STARTPTS so the output timestamps
             // are reset to start at zero.
             if matches!(step, FilterStep::Trim { .. }) {
-                prev_ctx = add_setpts_after_trim(graph, prev_ctx, i)?;
+                prev_ctx = match add_setpts_after_trim(graph, prev_ctx, i) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
             }
 
             // Overlay consumes a second input on pad 1.
@@ -285,29 +360,39 @@ impl FilterGraphInner {
             {
                 let ret = ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, 1);
                 if ret < 0 {
-                    return Err(FilterError::BuildFailed);
+                    bail!(FilterError::BuildFailed);
                 }
                 log::debug!("filter linked extra_input=in1 to overlay pad=1");
             }
         }
 
+        // 6. Insert hwdownload AFTER all filter steps so output frames are
+        //    downloaded back to system memory before reaching the buffersink.
+        if let Some(hw_ctx) = hw_device_ctx {
+            prev_ctx =
+                match create_hw_filter(graph, prev_ctx, c"hwdownload", c"hwdownload0", hw_ctx) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+        }
+
         // Link last filter to sink.
         let ret = ff_sys::avfilter_link(prev_ctx, 0, sink_ctx, 0);
         if ret < 0 {
-            return Err(FilterError::BuildFailed);
+            bail!(FilterError::BuildFailed);
         }
 
-        // 6. Configure the graph.
+        // 7. Configure the graph.
         let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
         if ret < 0 {
             log::warn!("avfilter_graph_config failed code={ret}");
-            return Err(ffmpeg_err(ret));
+            bail!(ffmpeg_err(ret));
         }
 
         // SAFETY: `avfilter_graph_create_filter` with ret >= 0 guarantees
         // non-null pointers.
         let sink_nn = NonNull::new_unchecked(sink_ctx);
-        Ok((src_ctxs, sink_nn))
+        Ok((src_ctxs, sink_nn, hw_device_ctx))
     }
 
     /// Push a video frame into the filter graph.
@@ -698,12 +783,103 @@ impl Drop for FilterGraphInner {
             // the sole owner.  `avfilter_graph_free` also frees all
             // `AVFilterContext`s attached to the graph, so `src_ctxs`,
             // `vsink_ctx`, and `asink_ctx` must NOT be freed individually.
+            // Filter contexts that held `av_buffer_ref` refs to `hw_device_ctx`
+            // release those refs here as well.
             unsafe {
                 let mut raw = ptr.as_ptr();
                 ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(raw));
             }
         }
+        // Free our own reference to the hardware device context AFTER the graph
+        // has been freed.  The graph's filter contexts held their own references
+        // (created via `av_buffer_ref` in `create_hw_filter`); those were
+        // released by `avfilter_graph_free` above.
+        if let Some(mut hw_ctx) = self.hw_device_ctx.take() {
+            // SAFETY: `hw_ctx` is the sole remaining reference owned by this
+            // struct; the filter graph (and its filter contexts) has already
+            // been freed above.
+            unsafe {
+                ff_sys::av_buffer_unref(std::ptr::addr_of_mut!(hw_ctx));
+            }
+        }
     }
+}
+
+// ── Hardware acceleration helpers ─────────────────────────────────────────────
+
+/// Map a [`HwAccel`] variant to the corresponding `AVHWDeviceType` constant.
+fn hw_accel_to_device_type(hw: HwAccel) -> ff_sys::AVHWDeviceType {
+    match hw {
+        HwAccel::Cuda => ff_sys::AVHWDeviceType_AV_HWDEVICE_TYPE_CUDA,
+        HwAccel::VideoToolbox => ff_sys::AVHWDeviceType_AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+        HwAccel::Vaapi => ff_sys::AVHWDeviceType_AV_HWDEVICE_TYPE_VAAPI,
+    }
+}
+
+/// Create and link a named hardware filter (e.g., `hwupload_cuda`, `hwdownload`)
+/// with no arguments.  Sets the filter context's `hw_device_ctx` to a new
+/// reference obtained via `av_buffer_ref(hw_ctx)` so the filter owns its own ref.
+///
+/// # Safety
+///
+/// `graph`, `prev_ctx`, and `hw_ctx` must be valid non-null pointers.
+/// `hw_ctx` must be a valid `AVBufferRef` wrapping an `AVHWDeviceContext`.
+unsafe fn create_hw_filter(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    filter_name: &std::ffi::CStr,
+    instance_name: &std::ffi::CStr,
+    hw_ctx: *mut ff_sys::AVBufferRef,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    // SAFETY: `avfilter_get_by_name` reads a valid null-terminated C string and
+    // returns a borrowed, process-lifetime pointer (or null if not found).
+    let filter = ff_sys::avfilter_get_by_name(filter_name.as_ptr());
+    if filter.is_null() {
+        log::warn!(
+            "hw filter not found name={}",
+            filter_name.to_str().unwrap_or("?")
+        );
+        return Err(FilterError::BuildFailed);
+    }
+
+    let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut ctx,
+        filter,
+        instance_name.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!(
+            "hw filter creation failed name={} code={ret}",
+            filter_name.to_str().unwrap_or("?")
+        );
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!(
+        "hw filter added name={}",
+        filter_name.to_str().unwrap_or("?")
+    );
+
+    // Give this filter context its own reference to the hardware device context.
+    // SAFETY: `hw_ctx` is a valid `AVBufferRef`; `av_buffer_ref` returns a new
+    // reference counted ref, or null on allocation failure.
+    let filter_hw_ref = ff_sys::av_buffer_ref(hw_ctx);
+    if filter_hw_ref.is_null() {
+        log::warn!("av_buffer_ref failed for hw device context");
+        return Err(FilterError::BuildFailed);
+    }
+    (*ctx).hw_device_ctx = filter_hw_ref;
+
+    // SAFETY: `prev_ctx` and `ctx` belong to the same graph; pad indices are valid.
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    Ok(ctx)
 }
 
 // ── Shared graph-building helper ──────────────────────────────────────────────
