@@ -131,8 +131,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) video_height: Option<u32>,
     pub(super) video_fps: Option<f64>,
     pub(super) video_codec: VideoCodec,
-    pub(super) video_bitrate: Option<u64>,
-    pub(super) video_quality: Option<u32>,
+    pub(super) video_bitrate_mode: Option<crate::BitrateMode>,
     pub(super) preset: String,
     pub(super) hardware_encoder: crate::HardwareEncoder,
     pub(super) audio_sample_rate: Option<u32>,
@@ -205,8 +204,7 @@ impl VideoEncoderInner {
                     height,
                     fps,
                     config.video_codec,
-                    config.video_bitrate,
-                    config.video_quality,
+                    config.video_bitrate_mode.as_ref(),
                     &config.preset,
                     config.hardware_encoder,
                     config.two_pass,
@@ -271,12 +269,12 @@ impl VideoEncoderInner {
         height: u32,
         fps: f64,
         codec: VideoCodec,
-        bitrate: Option<u64>,
-        quality: Option<u32>,
+        bitrate_mode: Option<&crate::BitrateMode>,
         preset: &str,
         hardware_encoder: crate::HardwareEncoder,
         two_pass: bool,
     ) -> Result<(), EncodeError> {
+        use crate::BitrateMode;
         // Select encoder based on codec and availability
         let encoder_name = self.select_video_encoder(codec, hardware_encoder)?;
         self.actual_video_codec = encoder_name.clone();
@@ -306,29 +304,38 @@ impl VideoEncoderInner {
         (*codec_ctx).framerate.den = 1;
         (*codec_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
 
-        // Set bitrate or quality
-        if let Some(br) = bitrate {
-            (*codec_ctx).bit_rate = br as i64;
-        } else if let Some(q) = quality {
-            let crf_str = CString::new(q.to_string())
-                .map_err(|_| EncodeError::Ffmpeg("Invalid CRF value".to_string()))?;
-            // SAFETY: priv_data, option name, and value are all valid pointers
-            let ret = ff_sys::av_opt_set(
-                (*codec_ctx).priv_data,
-                b"crf\0".as_ptr() as *const i8,
-                crf_str.as_ptr(),
-                0,
-            );
-            if ret < 0 {
-                log::warn!(
-                    "crf option not supported by encoder, falling back to default bitrate \
-                     encoder={encoder_name} crf={q}"
+        // Set bitrate control mode
+        match bitrate_mode {
+            Some(BitrateMode::Cbr(bps)) => {
+                (*codec_ctx).bit_rate = *bps as i64;
+            }
+            Some(BitrateMode::Vbr { target, max }) => {
+                (*codec_ctx).bit_rate = *target as i64;
+                (*codec_ctx).rc_max_rate = *max as i64;
+                (*codec_ctx).rc_buffer_size = (*max * 2) as i32;
+            }
+            Some(BitrateMode::Crf(q)) => {
+                let crf_str = CString::new(q.to_string())
+                    .map_err(|_| EncodeError::Ffmpeg("Invalid CRF value".to_string()))?;
+                // SAFETY: priv_data, option name, and value are all valid pointers
+                let ret = ff_sys::av_opt_set(
+                    (*codec_ctx).priv_data,
+                    b"crf\0".as_ptr() as *const i8,
+                    crf_str.as_ptr(),
+                    0,
                 );
+                if ret < 0 {
+                    log::warn!(
+                        "crf option not supported by encoder, falling back to default bitrate \
+                         encoder={encoder_name} crf={q}"
+                    );
+                    (*codec_ctx).bit_rate = 2_000_000;
+                }
+            }
+            None => {
+                // Default 2 Mbps
                 (*codec_ctx).bit_rate = 2_000_000;
             }
-        } else {
-            // Default bitrate
-            (*codec_ctx).bit_rate = 2_000_000;
         }
 
         // Set preset for x264/x265
@@ -1521,6 +1528,7 @@ impl VideoEncoderInner {
         config: &VideoEncoderConfig,
         stats: &str,
     ) -> Result<(), EncodeError> {
+        use crate::BitrateMode;
         let width = config.video_width.unwrap_or(0);
         let height = config.video_height.unwrap_or(0);
         let fps = config.video_fps.unwrap_or(30.0);
@@ -1550,27 +1558,36 @@ impl VideoEncoderInner {
         (*codec_ctx).framerate.den = 1;
         (*codec_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
 
-        if let Some(br) = config.video_bitrate {
-            (*codec_ctx).bit_rate = br as i64;
-        } else if let Some(q) = config.video_quality {
-            let crf_str = CString::new(q.to_string())
-                .map_err(|_| EncodeError::Ffmpeg("Invalid CRF value".to_string()))?;
-            // SAFETY: priv_data, option name, and value are all valid pointers.
-            let ret = ff_sys::av_opt_set(
-                (*codec_ctx).priv_data,
-                b"crf\0".as_ptr() as *const i8,
-                crf_str.as_ptr(),
-                0,
-            );
-            if ret < 0 {
-                log::warn!(
-                    "crf option not supported by pass-2 encoder, falling back to default \
-                     encoder={encoder_name} crf={q}"
+        match config.video_bitrate_mode.as_ref() {
+            Some(BitrateMode::Cbr(bps)) => {
+                (*codec_ctx).bit_rate = *bps as i64;
+            }
+            Some(BitrateMode::Vbr { target, max }) => {
+                (*codec_ctx).bit_rate = *target as i64;
+                (*codec_ctx).rc_max_rate = *max as i64;
+                (*codec_ctx).rc_buffer_size = (*max * 2) as i32;
+            }
+            Some(BitrateMode::Crf(q)) => {
+                let crf_str = CString::new(q.to_string())
+                    .map_err(|_| EncodeError::Ffmpeg("Invalid CRF value".to_string()))?;
+                // SAFETY: priv_data, option name, and value are all valid pointers.
+                let ret = ff_sys::av_opt_set(
+                    (*codec_ctx).priv_data,
+                    b"crf\0".as_ptr() as *const i8,
+                    crf_str.as_ptr(),
+                    0,
                 );
+                if ret < 0 {
+                    log::warn!(
+                        "crf option not supported by pass-2 encoder, falling back to default \
+                         encoder={encoder_name} crf={q}"
+                    );
+                    (*codec_ctx).bit_rate = 2_000_000;
+                }
+            }
+            None => {
                 (*codec_ctx).bit_rate = 2_000_000;
             }
-        } else {
-            (*codec_ctx).bit_rate = 2_000_000;
         }
 
         if encoder_name.contains("264") || encoder_name.contains("265") {
