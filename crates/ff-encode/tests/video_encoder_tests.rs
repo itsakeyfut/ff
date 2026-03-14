@@ -27,7 +27,6 @@ fn test_encode_black_frames_mpeg4() {
     let _guard = FileGuard::new(output_path.clone());
 
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4) // Use MPEG-4 (always available)
         .preset(Preset::Ultrafast)
@@ -79,7 +78,6 @@ fn test_encode_different_resolutions() {
         let _guard = FileGuard::new(output_path.clone());
 
         let mut encoder = VideoEncoder::create(&output_path)
-            .expect("Failed to create encoder builder")
             .video(width, height, 30.0)
             .video_codec(VideoCodec::Mpeg4)
             .preset(Preset::Ultrafast)
@@ -117,7 +115,6 @@ fn test_encode_different_framerates() {
         let _guard = FileGuard::new(output_path.clone());
 
         let mut encoder = VideoEncoder::create(&output_path)
-            .expect("Failed to create encoder builder")
             .video(640, 480, fps)
             .video_codec(VideoCodec::Mpeg4)
             .preset(Preset::Ultrafast)
@@ -150,7 +147,6 @@ fn test_encode_with_mpeg4() {
     let _guard = FileGuard::new(output_path.clone());
 
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .preset(Preset::Ultrafast)
@@ -184,7 +180,6 @@ fn test_encode_with_av1() {
 
     // AV1 encoding might not be available on all systems
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Av1)
         .preset(Preset::Ultrafast)
@@ -221,7 +216,6 @@ fn test_builder_pattern() {
 
     // Test builder chaining
     let mut encoder = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .video_bitrate(1_000_000) // 1 Mbps
@@ -247,7 +241,6 @@ fn test_builder_with_quality() {
 
     // Test CRF-based quality control
     let mut encoder = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .video_quality(30) // CRF 30
@@ -272,7 +265,6 @@ fn crf_h264_should_produce_valid_output() {
     let _guard = FileGuard::new(output_path.clone());
 
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H264)
         .video_quality(23) // CRF 23 — default quality for H.264
@@ -304,7 +296,6 @@ fn crf_h265_should_produce_valid_output() {
     let _guard = FileGuard::new(output_path.clone());
 
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::H265)
         .video_quality(28) // CRF 28 — default quality for H.265
@@ -349,7 +340,6 @@ fn test_different_presets() {
         let _guard = FileGuard::new(output_path.clone());
 
         let mut encoder = VideoEncoder::create(&output_path)
-            .expect("Failed to create encoder builder")
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Mpeg4)
             .preset(preset)
@@ -380,7 +370,6 @@ fn test_encode_single_frame() {
     let _guard = FileGuard::new(output_path.clone());
 
     let mut encoder = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .preset(Preset::Ultrafast)
@@ -403,7 +392,6 @@ fn test_encode_many_frames() {
     let _guard = FileGuard::new(output_path.clone());
 
     let mut encoder = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .preset(Preset::Ultrafast)

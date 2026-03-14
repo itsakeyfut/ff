@@ -24,7 +24,6 @@ fn test_h264_codec_fallback() {
 
     // Request H.264, let the encoder choose the best available
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(1280, 720, 30.0)
         .video_codec(VideoCodec::H264)
         .build();
@@ -62,7 +61,6 @@ fn test_h264_hardware_preference() {
 
     // Request H.264 with explicit hardware encoder preference
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(1280, 720, 30.0)
         .video_codec(VideoCodec::H264)
         .hardware_encoder(HardwareEncoder::Auto)
@@ -102,7 +100,6 @@ fn test_h264_software_only() {
 
     // Request H.264 with explicit software-only encoding
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(1280, 720, 30.0)
         .video_codec(VideoCodec::H264)
         .hardware_encoder(HardwareEncoder::None)
@@ -156,7 +153,6 @@ fn test_h265_codec_fallback() {
 
     // Request H.265, let the encoder choose the best available
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(1280, 720, 30.0)
         .video_codec(VideoCodec::H265)
         .build();
@@ -197,7 +193,6 @@ fn test_lgpl_compliance_without_gpl_feature() {
 
         // Request H.264 without GPL feature enabled
         let result = VideoEncoder::create(&output_path)
-            .expect("Failed to create encoder builder")
             .video(1280, 720, 30.0)
             .video_codec(VideoCodec::H264)
             .hardware_encoder(HardwareEncoder::None) // Force software encoding
@@ -241,7 +236,6 @@ fn test_lgpl_compliance_with_hardware() {
 
     // Request H.264 with hardware encoder (should be LGPL-compliant)
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(1280, 720, 30.0)
         .video_codec(VideoCodec::H264)
         .hardware_encoder(HardwareEncoder::Auto)
@@ -279,7 +273,6 @@ fn test_vp9_codec() {
 
     // Request VP9 explicitly
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Vp9)
         .build();
@@ -320,7 +313,6 @@ fn test_av1_codec() {
 
     // Request AV1 explicitly
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Av1)
         .build();
@@ -352,7 +344,6 @@ fn test_mpeg4_codec() {
 
     // Request MPEG-4 explicitly (should always be available)
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .build();

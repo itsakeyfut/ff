@@ -23,7 +23,6 @@ fn test_video_audio_mpeg4_aac() {
 
     // Create encoder with both video and audio streams
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4) // MPEG-4 is widely available
         .audio(48000, 2) // 48kHz stereo
@@ -118,7 +117,6 @@ fn test_video_audio_vp9_opus() {
 
     // Create encoder with VP9 + Opus
     let result = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Vp9)
         .audio(48000, 2)
@@ -191,7 +189,6 @@ fn test_video_only_no_regression() {
 
     // Create encoder with video only (no audio configuration)
     let mut encoder = VideoEncoder::create(&output_path)
-        .expect("Failed to create encoder builder")
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
         .build()
