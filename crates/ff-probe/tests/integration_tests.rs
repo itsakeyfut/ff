@@ -770,3 +770,41 @@ fn test_probe_bitrate_consistency() {
         }
     }
 }
+
+// ============================================================================
+// Subtitle Stream Tests
+// ============================================================================
+
+#[test]
+fn test_probe_video_file_has_no_subtitle_streams() {
+    let path = test_video_path();
+    let info = open(&path).expect("Failed to open video file");
+
+    assert!(
+        info.subtitle_streams().is_empty(),
+        "Video file without subtitles should have empty subtitle_streams()"
+    );
+}
+
+#[test]
+fn test_probe_video_file_has_subtitles_returns_false() {
+    let path = test_video_path();
+    let info = open(&path).expect("Failed to open video file");
+
+    assert!(
+        !info.has_subtitles(),
+        "has_subtitles() should return false for a video file without subtitle streams"
+    );
+}
+
+#[test]
+fn test_probe_video_file_subtitle_stream_count_is_zero() {
+    let path = test_video_path();
+    let info = open(&path).expect("Failed to open video file");
+
+    assert_eq!(
+        info.subtitle_stream_count(),
+        0,
+        "subtitle_stream_count() should be 0 for a video file without subtitle streams"
+    );
+}
