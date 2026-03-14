@@ -31,6 +31,11 @@ pub fn test_audio_path() -> PathBuf {
     assets_dir().join("audio/konekonoosanpo.mp3")
 }
 
+/// Returns the path to the test JPEG image file.
+pub fn test_jpeg_path() -> PathBuf {
+    assets_dir().join("img/hello-triangle.jpg")
+}
+
 // ============================================================================
 // Decoder Creation Helpers
 // ============================================================================

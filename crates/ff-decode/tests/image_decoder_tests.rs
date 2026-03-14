@@ -1,7 +1,8 @@
 //! Integration tests for [`ImageDecoder`], [`ImageDecoderBuilder`], and
 //! [`ImageFrameIterator`].
 //!
-//! The real asset `assets/img/hello-triangle.png` is used for happy-path tests.
+//! The real assets `assets/img/hello-triangle.png` and
+//! `assets/img/hello-triangle.jpg` are used for happy-path tests.
 //! If FFmpeg is unavailable or the file cannot be opened the tests skip
 //! gracefully via `println!("Skipping: …"); return;`.
 
@@ -15,6 +16,10 @@ use ff_decode::{ImageDecoder, ImageDecoderBuilder, ImageFrameIterator};
 
 fn png_path() -> PathBuf {
     fixtures::assets_dir().join("img/hello-triangle.png")
+}
+
+fn jpeg_path() -> PathBuf {
+    fixtures::test_jpeg_path()
 }
 
 // ── crate-root exports ────────────────────────────────────────────────────────
@@ -457,4 +462,111 @@ fn decoder_drop_without_decode_should_not_panic() {
         Ok(_decoder) => {} // dropped here without decoding
         Err(e) => println!("Skipping: {e}"),
     }
+}
+
+// ── JPEG decoding ─────────────────────────────────────────────────────────────
+
+#[test]
+fn open_jpeg_should_succeed() {
+    let path = jpeg_path();
+    if !path.exists() {
+        println!("Skipping: JPEG asset not found");
+        return;
+    }
+    match ImageDecoder::open(&path).build() {
+        Ok(_) => {}
+        Err(e) => println!("Skipping: {e}"),
+    }
+}
+
+#[test]
+fn decode_jpeg_frame_should_have_positive_width_and_height() {
+    let path = jpeg_path();
+    if !path.exists() {
+        println!("Skipping: JPEG asset not found");
+        return;
+    }
+    let decoder = match ImageDecoder::open(&path).build() {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    assert!(decoder.width() > 0, "JPEG width must be positive");
+    assert!(decoder.height() > 0, "JPEG height must be positive");
+}
+
+#[test]
+fn decode_jpeg_frame_dimensions_should_match_reported_dimensions() {
+    let path = jpeg_path();
+    if !path.exists() {
+        println!("Skipping: JPEG asset not found");
+        return;
+    }
+    let decoder = match ImageDecoder::open(&path).build() {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let expected_w = decoder.width();
+    let expected_h = decoder.height();
+    let frame = match decoder.decode() {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    assert_eq!(
+        frame.width(),
+        expected_w,
+        "decoded JPEG frame width must match reported width"
+    );
+    assert_eq!(
+        frame.height(),
+        expected_h,
+        "decoded JPEG frame height must match reported height"
+    );
+}
+
+#[test]
+fn decode_jpeg_frame_pixel_format_should_be_supported() {
+    use ff_format::PixelFormat;
+    let supported = [
+        PixelFormat::Yuv420p,
+        PixelFormat::Yuv422p,
+        PixelFormat::Yuv444p,
+        PixelFormat::Rgb24,
+        PixelFormat::Bgr24,
+        PixelFormat::Rgba,
+        PixelFormat::Bgra,
+        PixelFormat::Gray8,
+    ];
+    let path = jpeg_path();
+    if !path.exists() {
+        println!("Skipping: JPEG asset not found");
+        return;
+    }
+    let decoder = match ImageDecoder::open(&path).build() {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = match decoder.decode() {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    assert!(
+        supported.contains(&frame.format()),
+        "JPEG pixel format {:?} must be one of the supported formats",
+        frame.format()
+    );
 }

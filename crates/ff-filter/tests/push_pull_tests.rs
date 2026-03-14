@@ -166,6 +166,34 @@ fn push_video_through_trim_should_return_frame_within_range() {
 }
 
 #[test]
+fn push_video_through_trim_frame_timestamp_should_be_within_trim_range() {
+    // Push a frame at t=0 through a [0, 5) trim window and confirm the output
+    // timestamp lies within the window.
+    let mut graph = match FilterGraph::builder().trim(0.0, 5.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after trim push within range");
+    let secs = out.timestamp().as_secs_f64();
+    assert!(
+        secs >= 0.0 && secs < 5.0,
+        "frame timestamp {secs:.3}s must fall within the [0, 5) trim window"
+    );
+}
+
+#[test]
 fn push_video_through_crop_should_return_cropped_frame() {
     let mut graph = match FilterGraph::builder().crop(0, 0, 32, 32).build() {
         Ok(g) => g,
