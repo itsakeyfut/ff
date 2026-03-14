@@ -563,6 +563,69 @@ fn subtitle_passthrough_mkv_should_produce_valid_output() {
 }
 
 #[test]
+fn subtitle_passthrough_should_preserve_subtitle_stream_in_output() {
+    use ff_probe::SubtitleCodec;
+
+    // Write a minimal SRT file as the subtitle source.
+    let srt_path = test_output_path("subtitle_roundtrip_source.srt");
+    let _srt_guard = FileGuard::new(srt_path.clone());
+    let srt_content = "1\n00:00:00,000 --> 00:00:05,000\nHello subtitle!\n\n\
+                       2\n00:00:05,000 --> 00:00:10,000\nPassthrough round-trip.\n\n";
+    if let Err(e) = std::fs::write(&srt_path, srt_content) {
+        println!("Skipping subtitle passthrough round-trip: cannot write srt file ({e})");
+        return;
+    }
+
+    let output_path = test_output_path("subtitle_roundtrip_output.mkv");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .subtitle_passthrough(srt_path.to_str().unwrap(), 0)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping subtitle passthrough round-trip: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+
+    // Re-probe the output and verify the subtitle stream is present with correct codec.
+    let info = ff_probe::open(&output_path).expect("Failed to probe output file");
+
+    assert!(
+        info.has_subtitles(),
+        "Output should contain at least one subtitle stream"
+    );
+    assert_eq!(
+        info.subtitle_stream_count(),
+        1,
+        "Expected exactly one subtitle stream after passthrough"
+    );
+
+    let stream = &info.subtitle_streams()[0];
+    assert_eq!(
+        stream.codec(),
+        &SubtitleCodec::Srt,
+        "Subtitle codec should be Srt after SRT passthrough, got {:?}",
+        stream.codec()
+    );
+}
+
+#[test]
 fn chapter_mpeg4_should_produce_valid_output() {
     use ff_format::chapter::ChapterInfo;
     use std::time::Duration;
