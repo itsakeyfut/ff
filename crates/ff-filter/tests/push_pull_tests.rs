@@ -444,3 +444,36 @@ fn push_video_through_videotoolbox_scale_should_return_resized_frame_or_skip() {
     assert_eq!(out.width(), 32, "width should be scaled to 32");
     assert_eq!(out.height(), 32, "height should be scaled to 32");
 }
+
+#[test]
+fn push_video_through_vaapi_scale_should_return_resized_frame_or_skip() {
+    // VAAPI is Linux-only; on other platforms (or Linux without a VA-API
+    // device) av_hwdevice_ctx_create will fail and the test skips gracefully.
+    // On a VA-API-capable Linux system the hwupload filter uploads frames to
+    // the VAAPI device and hwdownload brings them back.
+    let mut graph = match FilterGraph::builder()
+        .hardware(HwAccel::Vaapi)
+        .scale(32, 32)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping (build): {e}");
+            return;
+        }
+    };
+
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping (push): {e}");
+            return;
+        }
+    }
+
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after vaapi scale push");
+    assert_eq!(out.width(), 32, "width should be scaled to 32");
+    assert_eq!(out.height(), 32, "height should be scaled to 32");
+}
