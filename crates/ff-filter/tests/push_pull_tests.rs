@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ff_filter::{FilterError, FilterGraph, ToneMap};
+use ff_filter::{FilterError, FilterGraph, HwAccel, ToneMap};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -377,4 +377,37 @@ fn push_audio_through_equalizer_should_return_frame_with_same_properties() {
     assert_eq!(out.sample_rate(), 48000, "sample rate should be unchanged");
     assert_eq!(out.channels(), 2, "channel count should be unchanged");
     assert_eq!(out.samples(), 1024, "sample count should be unchanged");
+}
+
+#[test]
+fn push_video_through_cuda_scale_should_return_resized_frame_or_skip() {
+    // Build a filter graph with CUDA hardware acceleration and a scale step.
+    // If CUDA is not available (av_hwdevice_ctx_create fails, hwupload_cuda
+    // filter is missing, or avfilter_graph_config rejects the chain), all
+    // error paths are treated as graceful skips.
+    let mut graph = match FilterGraph::builder()
+        .hardware(HwAccel::Cuda)
+        .scale(32, 32)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping (build): {e}");
+            return;
+        }
+    };
+
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping (push): {e}");
+            return;
+        }
+    }
+
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after cuda scale push");
+    assert_eq!(out.width(), 32, "width should be scaled to 32");
+    assert_eq!(out.height(), 32, "height should be scaled to 32");
 }
