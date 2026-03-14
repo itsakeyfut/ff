@@ -11,6 +11,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-03-14
+
+### Added
+
+#### ff-encode
+- `ImageEncoder`: encodes a single `VideoFrame` to JPEG, PNG, or BMP using the FFmpeg image2 muxer ([#152](https://github.com/itsakeyfut/avio/issues/152))
+- `ImageEncoderBuilder` options: `width`, `height`, `quality`, and `pixel_format` ([#153](https://github.com/itsakeyfut/avio/issues/153))
+- `ImageEncoderInner` with RAII `Drop` for safe cleanup of FFmpeg resources ([#154](https://github.com/itsakeyfut/avio/issues/154))
+- `BitrateMode` enum (`Cbr` / `Vbr`) for video bitrate control; `Vbr` wired to `AVCodecContext` ([#44](https://github.com/itsakeyfut/avio/issues/44), [#46](https://github.com/itsakeyfut/avio/issues/46))
+- Two-pass video encoding via `VideoEncoderBuilder::two_pass()` ([#43](https://github.com/itsakeyfut/avio/issues/43))
+- Metadata write support via `VideoEncoderBuilder::metadata()` ([#45](https://github.com/itsakeyfut/avio/issues/45))
+- Chapter write support via `VideoEncoderBuilder::chapters()` ([#47](https://github.com/itsakeyfut/avio/issues/47))
+- Subtitle passthrough via `VideoEncoderBuilder::subtitle_passthrough()` ([#48](https://github.com/itsakeyfut/avio/issues/48))
+- Integration tests: `ImageEncoder` file creation, round-trip decode, quality, and drop-without-encode ([#155](https://github.com/itsakeyfut/avio/issues/155))
+- Integration tests: chapter round-trip ([#52](https://github.com/itsakeyfut/avio/issues/52)) and subtitle passthrough round-trip ([#53](https://github.com/itsakeyfut/avio/issues/53))
+
+#### ff-probe
+- `SubtitleCodec` enum covering common subtitle codecs (ASS, SRT, WebVTT, HDMV PGS, DVB, MOV text, TTML) ([#49](https://github.com/itsakeyfut/avio/issues/49))
+- `SubtitleStreamInfo` struct with `codec`, `language`, `title`, and `default_stream` accessors ([#50](https://github.com/itsakeyfut/avio/issues/50))
+- `subtitle_streams()`, `has_subtitles()`, and `subtitle_stream_count()` on `MediaInfo` ([#51](https://github.com/itsakeyfut/avio/issues/51))
+- Integration tests for subtitle stream probing
+
+### Changed
+
+#### ff-encode
+- Module structure restructured to match the `ff-decode` pattern (`video/`, `audio/`, `image/`) ([#151](https://github.com/itsakeyfut/avio/issues/151))
+
+### Fixed
+
+#### ff-encode
+- Subtitle packets with `AV_NOPTS_VALUE` DTS now have DTS mirrored from PTS before `av_interleaved_write_frame`; prevents silent packet drops by the Matroska muxer
+
+---
+
 ## [0.2.0] - 2026-03-14
 
 ### Added
