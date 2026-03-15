@@ -218,4 +218,50 @@ mod tests {
             .build();
         assert!(pipeline.is_ok());
     }
+
+    #[test]
+    fn input_should_accept_multiple_paths() {
+        // Three successive .input() calls must all succeed and build must not
+        // return NoInput.
+        let result = Pipeline::builder()
+            .input("/tmp/a.mp4")
+            .input("/tmp/b.mp4")
+            .input("/tmp/c.mp4")
+            .output("/tmp/out.mp4", dummy_config())
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn on_progress_should_not_prevent_successful_build() {
+        let result = Pipeline::builder()
+            .input("/tmp/in.mp4")
+            .output("/tmp/out.mp4", dummy_config())
+            .on_progress(|_p| true)
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn default_should_produce_empty_builder() {
+        // PipelineBuilder::default() must behave identically to ::new():
+        // an empty builder has no inputs and therefore returns NoInput.
+        let result = PipelineBuilder::default()
+            .output("/tmp/out.mp4", dummy_config())
+            .build();
+        assert!(matches!(result, Err(PipelineError::NoInput)));
+    }
+
+    #[test]
+    fn build_should_require_both_input_and_output() {
+        // Neither input alone nor output alone is sufficient.
+        assert!(matches!(
+            Pipeline::builder().build(),
+            Err(PipelineError::NoInput)
+        ));
+        assert!(matches!(
+            Pipeline::builder().input("/tmp/in.mp4").build(),
+            Err(PipelineError::NoOutput)
+        ));
+    }
 }
