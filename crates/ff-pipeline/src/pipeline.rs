@@ -11,6 +11,7 @@ use std::time::Instant;
 use ff_decode::{AudioDecoder, VideoDecoder};
 use ff_encode::{AudioCodec, BitrateMode, HardwareEncoder, VideoCodec, VideoEncoder};
 use ff_filter::{FilterGraph, HwAccel};
+use ff_format::Timestamp;
 
 use crate::error::PipelineError;
 use crate::progress::{Progress, ProgressCallback};
@@ -85,33 +86,48 @@ impl Pipeline {
     /// Returns [`PipelineError`] on decode, filter, encode, or cancellation failures.
     pub fn run(self) -> Result<(), PipelineError> {
         // Invariants guaranteed by build(): inputs is non-empty, output is Some.
-        let input = &self.inputs[0];
+        let first_input = &self.inputs[0];
         let (out_path, enc_config) = self.output.ok_or(PipelineError::NoOutput)?;
         let mut filter = self.filter;
+        let num_inputs = self.inputs.len();
 
-        // Open video decoder and read source properties.
-        let mut vdec = VideoDecoder::open(input).build()?;
-        let total_frames = vdec.stream_info().frame_count();
+        // Open the first input to determine output dimensions.
+        let first_vdec = VideoDecoder::open(first_input).build()?;
         let (out_width, out_height) = enc_config
             .resolution
-            .unwrap_or_else(|| (vdec.width(), vdec.height()));
-        let fps = enc_config.framerate.unwrap_or_else(|| vdec.frame_rate());
+            .unwrap_or_else(|| (first_vdec.width(), first_vdec.height()));
+        let fps = enc_config
+            .framerate
+            .unwrap_or_else(|| first_vdec.frame_rate());
+
+        // total_frames is only meaningful for single-input pipelines.
+        let total_frames = if num_inputs == 1 {
+            first_vdec.stream_info().frame_count()
+        } else {
+            None
+        };
 
         log::info!(
-            "pipeline starting input={input} output={out_path} \
+            "pipeline starting inputs={num_inputs} output={out_path} \
              width={out_width} height={out_height} fps={fps} total_frames={total_frames:?}"
         );
 
-        // Try to open an audio decoder; silently skip if the stream is absent.
-        let mut adec_opt: Option<AudioDecoder> = match AudioDecoder::open(input).build() {
-            Ok(adec) => Some(adec),
+        // Probe audio from the first input to configure the encoder audio track.
+        let audio_config: Option<(u32, u32)> = match AudioDecoder::open(first_input).build() {
+            Ok(adec) => Some((
+                adec.stream_info().sample_rate(),
+                adec.stream_info().channels(),
+            )),
             Err(e) => {
-                log::warn!("audio stream unavailable, encoding video only path={input} reason={e}");
+                log::warn!(
+                    "audio stream unavailable, encoding video only \
+                     path={first_input} reason={e}"
+                );
                 None
             }
         };
 
-        // Build video encoder, adding audio track only when a decoder was opened.
+        // Build encoder, adding audio track only when the first input has audio.
         let hw = hwaccel_to_hardware_encoder(enc_config.hardware);
         let mut enc_builder = VideoEncoder::create(&out_path)
             .video(out_width, out_height, fps)
@@ -119,12 +135,9 @@ impl Pipeline {
             .bitrate_mode(enc_config.bitrate_mode)
             .hardware_encoder(hw);
 
-        if let Some(ref adec) = adec_opt {
+        if let Some((sample_rate, channels)) = audio_config {
             enc_builder = enc_builder
-                .audio(
-                    adec.stream_info().sample_rate(),
-                    adec.stream_info().channels(),
-                )
+                .audio(sample_rate, channels)
                 .audio_codec(enc_config.audio_codec);
         }
 
@@ -137,46 +150,98 @@ impl Pipeline {
         let start = Instant::now();
         let mut frames_processed: u64 = 0;
         let mut cancelled = false;
+        let frame_period_secs = if fps > 0.0 { 1.0 / fps } else { 0.0 };
 
-        // Video decode → optional filter → encode loop.
-        loop {
-            let Some(raw_frame) = vdec.decode_one()? else {
-                break;
-            };
+        // PTS offset in seconds: accumulates the duration of all processed inputs.
+        let mut pts_offset_secs: f64 = 0.0;
 
-            let frame = if let Some(ref mut fg) = filter {
-                fg.push_video(0, &raw_frame)?;
-                match fg.pull_video()? {
-                    Some(f) => f,
-                    None => continue, // filter is buffering; feed more input
-                }
+        // Reuse the already-opened first decoder; open fresh decoders for subsequent inputs.
+        let mut maybe_first_vdec = Some(first_vdec);
+
+        'inputs: for input in &self.inputs {
+            let mut vdec = if let Some(vd) = maybe_first_vdec.take() {
+                vd
             } else {
-                raw_frame
+                VideoDecoder::open(input).build()?
             };
 
-            encoder.push_video(&frame)?;
-            frames_processed += 1;
+            let mut last_frame_end_secs: f64 = pts_offset_secs;
 
-            if let Some(ref cb) = self.callback {
-                let progress = Progress {
-                    frames_processed,
-                    total_frames,
-                    elapsed: start.elapsed(),
-                };
-                if !cb(&progress) {
-                    log::info!(
-                        "pipeline cancelled by callback frames_processed={frames_processed}"
-                    );
-                    cancelled = true;
+            loop {
+                let Some(mut raw_frame) = vdec.decode_one()? else {
                     break;
+                };
+
+                // Rebase timestamp so this clip follows the previous one.
+                let ts = raw_frame.timestamp();
+                let new_pts_secs = pts_offset_secs + ts.as_secs_f64();
+                last_frame_end_secs = new_pts_secs + frame_period_secs;
+                raw_frame.set_timestamp(Timestamp::from_secs_f64(new_pts_secs, ts.time_base()));
+
+                let frame = if let Some(ref mut fg) = filter {
+                    fg.push_video(0, &raw_frame)?;
+                    match fg.pull_video()? {
+                        Some(f) => f,
+                        None => continue, // filter is buffering; feed more input
+                    }
+                } else {
+                    raw_frame
+                };
+
+                encoder.push_video(&frame)?;
+                frames_processed += 1;
+
+                if let Some(ref cb) = self.callback {
+                    let progress = Progress {
+                        frames_processed,
+                        total_frames,
+                        elapsed: start.elapsed(),
+                    };
+                    if !cb(&progress) {
+                        log::info!(
+                            "pipeline cancelled by callback \
+                             frames_processed={frames_processed}"
+                        );
+                        cancelled = true;
+                        break 'inputs;
+                    }
                 }
             }
+
+            // Advance PTS offset to the end of the last frame of this input.
+            pts_offset_secs = last_frame_end_secs;
+            log::debug!("input complete path={input} pts_offset_secs={pts_offset_secs:.3}");
         }
 
-        // Audio pass-through: decode and encode all audio frames.
-        if !cancelled && let Some(ref mut adec) = adec_opt {
-            while let Some(aframe) = adec.decode_one()? {
-                encoder.push_audio(&aframe)?;
+        // Audio pass: process each input sequentially, rebasing timestamps.
+        if !cancelled && audio_config.is_some() {
+            let mut audio_offset_secs: f64 = 0.0;
+            for input in &self.inputs {
+                match AudioDecoder::open(input).build() {
+                    Ok(mut adec) => {
+                        let mut last_audio_end_secs: f64 = audio_offset_secs;
+                        while let Some(mut aframe) = adec.decode_one()? {
+                            let ts = aframe.timestamp();
+                            let new_pts_secs = audio_offset_secs + ts.as_secs_f64();
+                            #[allow(clippy::cast_precision_loss)]
+                            let frame_dur_secs = if aframe.sample_rate() > 0 {
+                                aframe.samples() as f64 / f64::from(aframe.sample_rate())
+                            } else {
+                                0.0
+                            };
+                            last_audio_end_secs = new_pts_secs + frame_dur_secs;
+                            aframe.set_timestamp(Timestamp::from_secs_f64(
+                                new_pts_secs,
+                                ts.time_base(),
+                            ));
+                            encoder.push_audio(&aframe)?;
+                        }
+                        audio_offset_secs = last_audio_end_secs;
+                    }
+                    Err(e) => {
+                        log::warn!("audio stream unavailable path={input} reason={e}");
+                    }
+                }
             }
         }
 

@@ -190,3 +190,126 @@ fn transcode_with_scale_filter_should_produce_valid_output() {
         Err(e) => panic!("unexpected error: {e}"),
     }
 }
+
+#[test]
+fn transcode_two_inputs_should_produce_larger_output_than_single_input() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    let input_str = input.to_str().unwrap();
+
+    let output_single = test_output_path("pipeline_concat_single.mp4");
+    let output_double = test_output_path("pipeline_concat_double.mp4");
+    let _guard_single = FileGuard::new(output_single.clone());
+    let _guard_double = FileGuard::new(output_double.clone());
+
+    // Single-input baseline.
+    let single = Pipeline::builder()
+        .input(input_str)
+        .output(output_single.to_str().unwrap(), basic_config())
+        .build()
+        .unwrap();
+
+    // Two copies of the same input concatenated.
+    let double = Pipeline::builder()
+        .input(input_str)
+        .input(input_str)
+        .output(output_double.to_str().unwrap(), basic_config())
+        .build()
+        .unwrap();
+
+    let single_result = single.run();
+    let double_result = double.run();
+
+    match (single_result, double_result) {
+        (Ok(()), Ok(())) => {
+            let single_size = std::fs::metadata(&output_single).unwrap().len();
+            let double_size = std::fs::metadata(&output_double).unwrap().len();
+            assert!(
+                double_size > single_size,
+                "two-input output ({double_size} bytes) must be larger than \
+                 single-input output ({single_size} bytes)"
+            );
+        }
+        (Err(PipelineError::Encode(e)), _) | (_, Err(PipelineError::Encode(e))) => {
+            println!("Skipping: encoder unavailable: {e}");
+        }
+        (Err(PipelineError::Decode(e)), _) | (_, Err(PipelineError::Decode(e))) => {
+            println!("Skipping: decoder unavailable: {e}");
+        }
+        (Err(e), _) | (_, Err(e)) => panic!("unexpected error: {e}"),
+    }
+}
+
+#[test]
+fn transcode_multi_input_frames_processed_should_be_sum_of_single_runs() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    let input_str = input.to_str().unwrap();
+
+    // Count frames for a single-input run.
+    let output_single = test_output_path("pipeline_concat_frames_single.mp4");
+    let _guard_single = FileGuard::new(output_single.clone());
+    let single_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let sc = Arc::clone(&single_count);
+
+    let single = match Pipeline::builder()
+        .input(input_str)
+        .output(output_single.to_str().unwrap(), basic_config())
+        .on_progress(move |p| {
+            sc.store(p.frames_processed, std::sync::atomic::Ordering::Relaxed);
+            true
+        })
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    if let Err(e) = single.run() {
+        println!("Skipping single run: {e}");
+        return;
+    }
+    let frames_single = single_count.load(std::sync::atomic::Ordering::Relaxed);
+
+    // Count frames for a two-input run.
+    let output_double = test_output_path("pipeline_concat_frames_double.mp4");
+    let _guard_double = FileGuard::new(output_double.clone());
+    let double_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let dc = Arc::clone(&double_count);
+
+    let double = match Pipeline::builder()
+        .input(input_str)
+        .input(input_str)
+        .output(output_double.to_str().unwrap(), basic_config())
+        .on_progress(move |p| {
+            dc.store(p.frames_processed, std::sync::atomic::Ordering::Relaxed);
+            true
+        })
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    if let Err(e) = double.run() {
+        println!("Skipping double run: {e}");
+        return;
+    }
+    let frames_double = double_count.load(std::sync::atomic::Ordering::Relaxed);
+
+    assert_eq!(
+        frames_double,
+        frames_single * 2,
+        "two-input pipeline must process exactly 2× the frames of a single-input run"
+    );
+}
