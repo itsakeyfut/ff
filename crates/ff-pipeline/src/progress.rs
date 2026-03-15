@@ -89,4 +89,40 @@ mod tests {
         };
         assert!((p.percent().unwrap() - 100.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn percent_should_return_0_when_no_frames_processed() {
+        let p = Progress {
+            frames_processed: 0,
+            total_frames: Some(120),
+            elapsed: Duration::ZERO,
+        };
+        assert_eq!(p.percent(), Some(0.0));
+    }
+
+    #[test]
+    fn percent_should_exceed_100_when_processed_exceeds_total() {
+        // percent() makes no claim about clamping — callers are responsible.
+        let p = Progress {
+            frames_processed: 110,
+            total_frames: Some(100),
+            elapsed: Duration::from_secs(4),
+        };
+        assert!(p.percent().unwrap() > 100.0);
+    }
+
+    #[test]
+    fn callback_should_receive_progress_and_return_bool() {
+        let continue_cb: ProgressCallback = Box::new(|_p| true);
+        let cancel_cb: ProgressCallback = Box::new(|_p| false);
+
+        let p = Progress {
+            frames_processed: 1,
+            total_frames: Some(10),
+            elapsed: Duration::from_millis(33),
+        };
+
+        assert!(continue_cb(&p));
+        assert!(!cancel_cb(&p));
+    }
 }
