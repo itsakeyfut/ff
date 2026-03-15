@@ -52,5 +52,14 @@ impl Drop for FileGuard {
         if self.path.exists() {
             let _ = std::fs::remove_file(&self.path);
         }
+        // Remove empty ancestor directories (test-output/, then target/).
+        // remove_dir is a no-op when the directory is not empty, so this is
+        // safe when multiple tests run in parallel.
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::remove_dir(parent);
+            if let Some(grandparent) = parent.parent() {
+                let _ = std::fs::remove_dir(grandparent);
+            }
+        }
     }
 }
