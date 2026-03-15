@@ -6,7 +6,10 @@
 //! - [`PipelineBuilder`] — consuming builder that validates configuration
 //! - [`Pipeline`] — the configured pipeline, executed by calling [`run`](Pipeline::run)
 
-use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
+use std::time::Instant;
+
+use ff_decode::{AudioDecoder, VideoDecoder};
+use ff_encode::{AudioCodec, BitrateMode, HardwareEncoder, VideoCodec, VideoEncoder};
 use ff_filter::{FilterGraph, HwAccel};
 
 use crate::error::PipelineError;
@@ -49,7 +52,6 @@ pub struct Pipeline {
     inputs: Vec<String>,
     filter: Option<FilterGraph>,
     output: Option<(String, EncoderConfig)>,
-    #[allow(dead_code)]
     callback: Option<ProgressCallback>,
 }
 
@@ -82,14 +84,125 @@ impl Pipeline {
     ///
     /// Returns [`PipelineError`] on decode, filter, encode, or cancellation failures.
     pub fn run(self) -> Result<(), PipelineError> {
-        log::debug!(
-            "pipeline run called inputs={} has_filter={} has_output={}",
-            self.inputs.len(),
-            self.filter.is_some(),
-            self.output.is_some(),
+        // Invariants guaranteed by build(): inputs is non-empty, output is Some.
+        let input = &self.inputs[0];
+        let (out_path, enc_config) = self.output.ok_or(PipelineError::NoOutput)?;
+        let mut filter = self.filter;
+
+        // Open video decoder and read source properties.
+        let mut vdec = VideoDecoder::open(input).build()?;
+        let total_frames = vdec.stream_info().frame_count();
+        let (out_width, out_height) = enc_config
+            .resolution
+            .unwrap_or_else(|| (vdec.width(), vdec.height()));
+        let fps = enc_config.framerate.unwrap_or_else(|| vdec.frame_rate());
+
+        log::info!(
+            "pipeline starting input={input} output={out_path} \
+             width={out_width} height={out_height} fps={fps} total_frames={total_frames:?}"
         );
-        // TODO(#55): implement decode → filter → encode loop
-        Err(PipelineError::Cancelled)
+
+        // Try to open an audio decoder; silently skip if the stream is absent.
+        let mut adec_opt: Option<AudioDecoder> = match AudioDecoder::open(input).build() {
+            Ok(adec) => Some(adec),
+            Err(e) => {
+                log::warn!("audio stream unavailable, encoding video only path={input} reason={e}");
+                None
+            }
+        };
+
+        // Build video encoder, adding audio track only when a decoder was opened.
+        let hw = hwaccel_to_hardware_encoder(enc_config.hardware);
+        let mut enc_builder = VideoEncoder::create(&out_path)
+            .video(out_width, out_height, fps)
+            .video_codec(enc_config.video_codec)
+            .bitrate_mode(enc_config.bitrate_mode)
+            .hardware_encoder(hw);
+
+        if let Some(ref adec) = adec_opt {
+            enc_builder = enc_builder
+                .audio(
+                    adec.stream_info().sample_rate(),
+                    adec.stream_info().channels(),
+                )
+                .audio_codec(enc_config.audio_codec);
+        }
+
+        let mut encoder = enc_builder.build()?;
+        log::debug!(
+            "encoder opened codec={} hardware={hw:?}",
+            encoder.actual_video_codec()
+        );
+
+        let start = Instant::now();
+        let mut frames_processed: u64 = 0;
+        let mut cancelled = false;
+
+        // Video decode → optional filter → encode loop.
+        loop {
+            let Some(raw_frame) = vdec.decode_one()? else {
+                break;
+            };
+
+            let frame = if let Some(ref mut fg) = filter {
+                fg.push_video(0, &raw_frame)?;
+                match fg.pull_video()? {
+                    Some(f) => f,
+                    None => continue, // filter is buffering; feed more input
+                }
+            } else {
+                raw_frame
+            };
+
+            encoder.push_video(&frame)?;
+            frames_processed += 1;
+
+            if let Some(ref cb) = self.callback {
+                let progress = Progress {
+                    frames_processed,
+                    total_frames,
+                    elapsed: start.elapsed(),
+                };
+                if !cb(&progress) {
+                    log::info!(
+                        "pipeline cancelled by callback frames_processed={frames_processed}"
+                    );
+                    cancelled = true;
+                    break;
+                }
+            }
+        }
+
+        // Audio pass-through: decode and encode all audio frames.
+        if !cancelled && let Some(ref mut adec) = adec_opt {
+            while let Some(aframe) = adec.decode_one()? {
+                encoder.push_audio(&aframe)?;
+            }
+        }
+
+        // Flush encoder and write trailer regardless of cancellation.
+        encoder.finish()?;
+
+        let elapsed = start.elapsed();
+        log::info!("pipeline finished frames_processed={frames_processed} elapsed={elapsed:?}");
+
+        if cancelled {
+            return Err(PipelineError::Cancelled);
+        }
+        Ok(())
+    }
+}
+
+/// Converts a filter-graph hardware backend into an encoder hardware backend.
+///
+/// `HwAccel` (ff-filter) and `HardwareEncoder` (ff-encode) are separate types
+/// to avoid a cross-crate dependency.  This function maps between them.
+fn hwaccel_to_hardware_encoder(hw: Option<HwAccel>) -> HardwareEncoder {
+    match hw {
+        None => HardwareEncoder::None,
+        Some(HwAccel::Cuda) => HardwareEncoder::Nvenc,
+        Some(HwAccel::VideoToolbox) => HardwareEncoder::VideoToolbox,
+        Some(HwAccel::Vaapi) => HardwareEncoder::Vaapi,
     }
 }
 
