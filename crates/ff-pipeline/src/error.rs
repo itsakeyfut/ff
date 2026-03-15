@@ -57,3 +57,103 @@ pub enum PipelineError {
     #[error("pipeline cancelled by caller")]
     Cancelled,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::PipelineError;
+
+    // --- Display messages: unit variants ---
+
+    #[test]
+    fn no_input_should_display_correct_message() {
+        let err = PipelineError::NoInput;
+        assert_eq!(err.to_string(), "no input specified");
+    }
+
+    #[test]
+    fn no_output_should_display_correct_message() {
+        let err = PipelineError::NoOutput;
+        assert_eq!(err.to_string(), "no output specified");
+    }
+
+    #[test]
+    fn cancelled_should_display_correct_message() {
+        let err = PipelineError::Cancelled;
+        assert_eq!(err.to_string(), "pipeline cancelled by caller");
+    }
+
+    // --- Display messages: wrapping variants ---
+
+    #[test]
+    fn decode_should_prefix_inner_message() {
+        let err = PipelineError::Decode(ff_decode::DecodeError::EndOfStream);
+        assert_eq!(err.to_string(), "decode failed: End of stream");
+    }
+
+    #[test]
+    fn filter_should_prefix_inner_message() {
+        let err = PipelineError::Filter(ff_filter::FilterError::BuildFailed);
+        assert_eq!(
+            err.to_string(),
+            "filter failed: failed to build filter graph"
+        );
+    }
+
+    #[test]
+    fn encode_should_prefix_inner_message() {
+        let err = PipelineError::Encode(ff_encode::EncodeError::Cancelled);
+        assert_eq!(err.to_string(), "encode failed: Encoding cancelled by user");
+    }
+
+    // --- From conversions ---
+
+    #[test]
+    fn decode_error_should_convert_into_pipeline_error() {
+        let inner = ff_decode::DecodeError::EndOfStream;
+        let err: PipelineError = inner.into();
+        assert!(matches!(err, PipelineError::Decode(_)));
+    }
+
+    #[test]
+    fn filter_error_should_convert_into_pipeline_error() {
+        let inner = ff_filter::FilterError::BuildFailed;
+        let err: PipelineError = inner.into();
+        assert!(matches!(err, PipelineError::Filter(_)));
+    }
+
+    #[test]
+    fn encode_error_should_convert_into_pipeline_error() {
+        let inner = ff_encode::EncodeError::Cancelled;
+        let err: PipelineError = inner.into();
+        assert!(matches!(err, PipelineError::Encode(_)));
+    }
+
+    // --- std::error::Error::source() ---
+
+    #[test]
+    fn decode_should_expose_source() {
+        let err = PipelineError::Decode(ff_decode::DecodeError::EndOfStream);
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn filter_should_expose_source() {
+        let err = PipelineError::Filter(ff_filter::FilterError::BuildFailed);
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn encode_should_expose_source() {
+        let err = PipelineError::Encode(ff_encode::EncodeError::Cancelled);
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn unit_variants_should_have_no_source() {
+        assert!(PipelineError::NoInput.source().is_none());
+        assert!(PipelineError::NoOutput.source().is_none());
+        assert!(PipelineError::Cancelled.source().is_none());
+    }
+}
