@@ -94,6 +94,47 @@ fn transcode_cancelled_by_callback_should_return_cancelled() {
 }
 
 #[test]
+fn transcode_cancelled_should_leave_partial_output_on_disk() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    let output = test_output_path("pipeline_cancel_partial.mp4");
+    let _guard = FileGuard::new(output.clone());
+
+    let pipeline = match Pipeline::builder()
+        .input(input.to_str().unwrap())
+        .output(output.to_str().unwrap(), basic_config())
+        .on_progress(|_p| false) // cancel immediately
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Skipping: build failed: {e}");
+            return;
+        }
+    };
+
+    match pipeline.run() {
+        Err(PipelineError::Cancelled) => {
+            assert!(
+                output.exists(),
+                "partial output file must remain on disk after cancellation"
+            );
+            assert!(
+                std::fs::metadata(&output).unwrap().len() > 0,
+                "partial output file must be non-empty"
+            );
+        }
+        Err(PipelineError::Encode(e)) => println!("Skipping: encoder unavailable: {e}"),
+        Err(PipelineError::Decode(e)) => println!("Skipping: decoder unavailable: {e}"),
+        Ok(()) => panic!("expected Cancelled but got Ok"),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
+#[test]
 fn transcode_progress_callback_should_receive_increasing_frame_counts() {
     let input = test_video_path();
     if !input.exists() {
