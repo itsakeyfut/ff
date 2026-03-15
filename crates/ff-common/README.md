@@ -1,76 +1,29 @@
 # ff-common
 
-Common types and traits for the ff-* crate family.
+Shared buffer-pooling abstractions for the ff-* crate family.
 
 ## Overview
 
-`ff-common` provides shared abstractions used across all ff-* crates, particularly for memory management and buffer pooling. It has no external dependencies and serves as the pure-Rust foundation of the ff-* ecosystem.
+`ff-common` provides the `FramePool` trait and `PooledBuffer` type used internally across the `ff-*` crates. It has no external dependencies and does not link against FFmpeg.
 
-## Features
-
-- **Frame buffer pooling**: Reusable buffer allocation via `FramePool` trait
-- **Zero-copy design**: `PooledBuffer` returns memory to the pool automatically on drop
-- **Thread-safe**: `FramePool` requires `Send + Sync`
-- **No external dependencies**: Pure Rust, no FFmpeg linkage required
-
-## Minimum Supported Rust Version
-
-Rust 1.93.0 or later (edition 2024).
+`PooledBuffer` wraps an allocated block of memory and returns it to the originating pool automatically when dropped — no manual free call is needed. If no pool is associated, the memory is simply deallocated. `FramePool` is `Send + Sync`, so pools can be shared across threads without additional locking.
 
 ## Usage
 
-### Implementing a Custom Pool
-
-```rust
-use ff_common::{FramePool, PooledBuffer};
-use std::sync::{Arc, Mutex};
-
-#[derive(Debug)]
-struct SimplePool {
-    buffers: Mutex<Vec<Vec<u8>>>,
-}
-
-impl FramePool for SimplePool {
-    fn acquire(&self, size: usize) -> Option<PooledBuffer> {
-        let mut pool = self.buffers.lock().ok()?;
-        let buf = pool
-            .iter()
-            .position(|b| b.len() >= size)
-            .map(|i| pool.remove(i))
-            .unwrap_or_else(|| vec![0u8; size]);
-        Some(PooledBuffer::new(buf, Arc::downgrade(&Arc::new(self))))
-    }
-}
-```
-
-### Using PooledBuffer Standalone
+`ff-common` is an internal workspace crate. It is not intended for direct use in application code. The following example shows the `PooledBuffer::standalone` constructor, which allocates a buffer without a backing pool:
 
 ```rust
 use ff_common::PooledBuffer;
 
-// Allocate a standalone buffer (not pooled)
-let mut buf = PooledBuffer::standalone(vec![0u8; 1920 * 1080 * 4]);
-buf.data_mut().fill(0xff);
-assert_eq!(buf.len(), 1920 * 1080 * 4);
+// Allocate a 4096-byte buffer with no pool backing.
+// Memory is freed normally when `buf` is dropped.
+let buf = PooledBuffer::standalone(4096);
+assert_eq!(buf.len(), 4096);
 ```
 
-## Module Structure
+## MSRV
 
-```
-ff-common/src/
-├── lib.rs      # Crate root, re-exports
-└── pool.rs     # FramePool trait, PooledBuffer struct
-```
-
-## Related Crates
-
-This crate is part of the ff-* crate family:
-
-- **ff-format** - Type-safe pixel/sample formats, timestamps, stream info
-- **ff-probe** - Media metadata extraction
-- **ff-decode** - Video/audio decoding
-- **ff-encode** - Video/audio encoding
-- **ff-sys** - Low-level FFmpeg FFI bindings
+Rust 1.93.0 (edition 2024).
 
 ## License
 

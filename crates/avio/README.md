@@ -1,68 +1,63 @@
 # avio
 
-Safe, high-level audio/video/image processing for Rust — backend-agnostic multimedia toolkit.
+![Status](https://img.shields.io/badge/status-in%20development-yellow)
 
-![Coming Soon](https://img.shields.io/badge/status-coming%20soon-yellow)
-
-> **⚠️ Coming Soon — This crate is a placeholder and not yet fully implemented.**
-> The core crates (`ff-probe`, `ff-decode`, `ff-encode`) are under active development.
-
-## Overview
-
-`avio` is the facade crate for the ff-* crate family. It re-exports the public APIs of all member crates behind feature flags, so you can depend on a single crate and opt into only the functionality you need.
-
-Currently backed by FFmpeg, with planned support for GStreamer and other backends.
+`avio` is the unified facade for the `ff-*` crate family. Depend on a single crate and opt in to only the capabilities you need via feature flags. Currently a placeholder — the facade re-exports are under development.
 
 ## Feature Flags
 
-| Feature    | Crate         | Default |
-|------------|---------------|---------|
-| `probe`    | `ff-probe`    | yes     |
-| `decode`   | `ff-decode`   | yes     |
-| `encode`   | `ff-encode`   | yes     |
-| `filter`   | `ff-filter`   | no      |
-| `pipeline` | `ff-pipeline` | no      |
-| `stream`   | `ff-stream`   | no      |
+| Feature    | Enables                                   |
+|------------|-------------------------------------------|
+| `probe`    | `ff-probe` — read-only media metadata     |
+| `decode`   | `ff-decode` — video and audio decoding    |
+| `encode`   | `ff-encode` — video and audio encoding    |
+| `filter`   | `ff-filter` — filter graph operations     |
+| `pipeline` | `ff-pipeline` — decode → filter → encode  |
+| `stream`   | `ff-stream` — HLS / DASH streaming output |
 
 ## Planned Usage
 
-```toml
+```toml,ignore
 [dependencies]
-# Default features: probe + decode + encode
-avio = "0.5"
-
-# With filter graph and pipeline support
-avio = { version = "0.5", features = ["filter", "pipeline"] }
-
-# Full feature set
-avio = { version = "0.5", features = ["filter", "pipeline", "stream"] }
+avio = { version = "0.3", features = ["probe", "decode", "encode"] }
 ```
 
 ```rust,ignore
-use avio::prelude::*;
+// With the "probe" and "decode" features enabled:
+use avio::probe;
+use avio::decode::VideoDecoder;
+use avio::format::PixelFormat;
 
-let info = avio::probe::open("input.mp4")?;
+let info = probe::open("video.mp4")?;
 println!("duration: {:?}", info.duration());
+
+let mut decoder = VideoDecoder::open("video.mp4")?
+    .output_format(PixelFormat::Rgba)
+    .build()?;
+
+while let Some(frame) = decoder.decode_frame()? {
+    process(&frame);
+}
 ```
 
-## Minimum Supported Rust Version
+## Crate Family
 
-Rust 1.93.0 or later (edition 2024).
+| Crate         | Purpose                                        |
+|---------------|------------------------------------------------|
+| `ff-sys`      | Raw bindgen FFI — internal use only            |
+| `ff-common`   | Shared buffer-pooling abstractions             |
+| `ff-format`   | Pure-Rust type definitions (no FFmpeg linkage) |
+| `ff-probe`    | Read-only media metadata extraction            |
+| `ff-decode`   | Video and audio decoding                       |
+| `ff-encode`   | Video and audio encoding                       |
+| `ff-filter`   | Filter graph operations                        |
+| `ff-pipeline` | Decode → filter → encode pipeline              |
+| `ff-stream`   | HLS / DASH adaptive streaming output           |
+| `avio`        | Unified facade (this crate)                    |
 
-## The ff-* Crate Family
+## MSRV
 
-| Crate          | Description                              |
-|----------------|------------------------------------------|
-| `ff-sys`       | Raw FFmpeg FFI bindings (bindgen)        |
-| `ff-common`    | Shared pool abstractions                 |
-| `ff-format`    | Shared type system (codecs, frames, ...) |
-| `ff-probe`     | Metadata and chapter extraction          |
-| `ff-decode`    | Video/audio/image decoding               |
-| `ff-encode`    | Video/audio encoding                     |
-| `ff-filter`    | Filter graph (libavfilter)               |
-| `ff-pipeline`  | Unified decode-filter-encode pipeline    |
-| `ff-stream`    | HLS/DASH streaming output                |
-| `avio`         | Facade crate (this crate)                |
+Rust 1.93.0 (edition 2024).
 
 ## License
 

@@ -6,6 +6,14 @@ Safe, high-level audio/video/image processing for Rust — decode, encode, probe
 [![Docs.rs](https://docs.rs/ff-decode/badge.svg)](https://docs.rs/ff-decode)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+## Contributing
+
+All open issues are tracked in the master issue [#112](https://github.com/itsakeyfut/avio/issues/112). I am currently the sole maintainer and implementing everything myself, so contributions are not expected — but if you would like to help, check issue #112 to find the next item to work on and give it a try.
+
+Please assign me as a reviewer on your pull request. I will review it and provide feedback within one week.
+
+Thank you for any contribution you make.
+
 ## Overview
 
 `avio` is a family of Rust crates that provide safe, ergonomic multimedia processing. All public APIs are **safe** — unsafe internals are fully encapsulated so you never need to write `unsafe` code in your application.

@@ -1,134 +1,69 @@
 # ff-probe
 
-Safe, high-level media file metadata extraction — no `unsafe` code required.
+Read media file metadata with one function call. No knowledge of container formats or codec identifiers needed — you get back a structured `MediaInfo` with typed accessors for resolution, frame rate, sample rate, duration, and more.
 
-## Overview
+## Installation
 
-`ff-probe` provides functionality for extracting metadata from media files, including video streams, audio streams, and container information. All APIs are **safe** — FFmpeg internals are fully encapsulated so you never need to write `unsafe` code. It serves as the Rust equivalent of ffprobe with a clean, ergonomic API.
-
-## Features
-
-- **Container format detection**: MP4, MKV, AVI, MOV, WebM, and more
-- **Video stream analysis**: Codec, resolution, frame rate, pixel format
-- **Audio stream analysis**: Codec, sample rate, channels, sample format
-- **Color metadata**: Color space, range, and primaries for HDR workflows
-- **Bitrate extraction**: Container and stream-level bitrate information
-- **Metadata access**: Title, artist, album, and custom metadata tags
-
-## Minimum Supported Rust Version
-
-Rust 1.93.0 or later (edition 2024).
-
-## Module Structure
-
-```
-ff-probe/src/
-├── lib.rs      # Crate root, prelude, re-exports
-├── info.rs     # open() function, FFmpeg integration
-└── error.rs    # ProbeError
+```toml
+[dependencies]
+ff-probe = "0.3"
 ```
 
-## Usage
-
-### Quick Start
+## Quick Start
 
 ```rust
 use ff_probe::open;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), ff_probe::ProbeError> {
     let info = open("video.mp4")?;
 
-    println!("Format: {}", info.format());
-    println!("Duration: {:?}", info.duration());
-
     if let Some(video) = info.primary_video() {
-        println!("Video: {}x{} @ {:.2} fps",
-            video.width(),
-            video.height(),
-            video.fps()
-        );
+        println!("resolution: {}x{}", video.width, video.height);
+        println!("frame rate: {}", video.frame_rate);
+        println!("codec:      {:?}", video.codec);
     }
 
     if let Some(audio) = info.primary_audio() {
-        println!("Audio: {} Hz, {} channels",
-            audio.sample_rate(),
-            audio.channels()
-        );
+        println!("sample rate:  {} Hz", audio.sample_rate);
+        println!("channels:     {}", audio.channels);
+        println!("audio codec:  {:?}", audio.codec);
     }
 
+    println!("duration: {:?}", info.duration());
     Ok(())
 }
 ```
 
-### Detailed Information
+## What You Get Back
 
-```rust
-use ff_probe::{open, ColorSpace, ColorPrimaries};
+`MediaInfo` provides typed fields — no string parsing required:
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let info = open("video.mp4")?;
+| Field / Method         | Type                       | Description                            |
+|------------------------|----------------------------|----------------------------------------|
+| `info.duration()`      | `Option<Duration>`         | Total media duration                   |
+| `info.primary_video()` | `Option<&VideoStreamInfo>` | First video stream, if present         |
+| `info.primary_audio()` | `Option<&AudioStreamInfo>` | First audio stream, if present         |
+| `video.width`          | `u32`                      | Frame width in pixels                  |
+| `video.height`         | `u32`                      | Frame height in pixels                 |
+| `video.frame_rate`     | `Rational`                 | Frames per second as an exact fraction |
+| `video.codec`          | `VideoCodec`               | Typed codec enum, not a string         |
+| `video.pixel_format`   | `PixelFormat`              | Pixel format of the encoded stream     |
+| `audio.sample_rate`    | `u32`                      | Samples per second                     |
+| `audio.channels`       | `u32`                      | Channel count                          |
+| `audio.codec`          | `AudioCodec`               | Typed codec enum                       |
+| `audio.sample_format`  | `SampleFormat`             | Sample format of the encoded stream    |
 
-    // Enumerate all video streams
-    for (i, stream) in info.video_streams().iter().enumerate() {
-        println!("Video stream {}: {} {}x{}",
-            i, stream.codec_name(), stream.width(), stream.height());
-        println!("  Color space: {:?}", stream.color_space());
-        println!("  Color range: {:?}", stream.color_range());
+## Error Handling
 
-        // Check for HDR content
-        if stream.color_primaries() == ColorPrimaries::Bt2020 {
-            println!("  HDR content detected!");
-        }
+| Variant                    | When it occurs                             |
+|----------------------------|--------------------------------------------|
+| `ProbeError::FileNotFound` | The path does not exist or is not readable |
+| `ProbeError::CannotOpen`   | FFmpeg could not open the container        |
+| `ProbeError::InvalidMedia` | No valid streams found after demux         |
 
-        if let Some(bitrate) = stream.bitrate() {
-            println!("  Bitrate: {} kbps", bitrate / 1000);
-        }
-    }
+## MSRV
 
-    // Enumerate all audio streams
-    for (i, stream) in info.audio_streams().iter().enumerate() {
-        println!("Audio stream {}: {} {} Hz, {} ch",
-            i, stream.codec_name(), stream.sample_rate(), stream.channels());
-        if let Some(lang) = stream.language() {
-            println!("  Language: {}", lang);
-        }
-    }
-
-    // Access container metadata
-    if let Some(title) = info.title() {
-        println!("Title: {}", title);
-    }
-
-    Ok(())
-}
-```
-
-### Error Handling
-
-```rust
-use ff_probe::{open, ProbeError};
-
-let result = open("/nonexistent/path.mp4");
-
-match result {
-    Err(ProbeError::FileNotFound { path }) => {
-        println!("File not found: {}", path.display());
-    }
-    Err(ProbeError::CannotOpen { path, reason }) => {
-        println!("Cannot open {}: {}", path.display(), reason);
-    }
-    Err(ProbeError::InvalidMedia { path, reason }) => {
-        println!("Invalid media {}: {}", path.display(), reason);
-    }
-    Err(e) => println!("Other error: {}", e),
-    Ok(info) => println!("Opened: {}", info.format()),
-}
-```
-
-## Dependencies
-
-- `ff-format`: Common types for video/audio processing
-- `ff-sys`: FFmpeg FFI bindings
+Rust 1.93.0 (edition 2024).
 
 ## License
 

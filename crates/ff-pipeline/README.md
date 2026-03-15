@@ -1,53 +1,81 @@
 # ff-pipeline
 
-Unified decode-filter-encode pipeline — no `unsafe` code required.
+Wire decode, filter, and encode into a single configured pipeline. Instead of managing three separate contexts, set an input path, an output path with codec settings, and an optional filter chain — the builder validates the configuration before any processing begins.
 
-![Coming Soon](https://img.shields.io/badge/status-coming%20soon-yellow)
+## Installation
 
-> **⚠️ Coming Soon — This crate is a placeholder and not yet implemented.**
-> The API is under design. Do not use in production.
+```toml
+[dependencies]
+ff-pipeline = "0.3"
+```
 
-## Overview
+## Building a Pipeline
 
-`ff-pipeline` will provide a high-level `Pipeline` type that connects `ff-decode`, `ff-filter`, and `ff-encode` into a single, progress-aware transcode pipeline.
+```rust
+use ff_pipeline::{Pipeline, EncoderConfig};
+use ff_encode::{VideoCodec, AudioCodec, BitrateMode};
 
-## Design Principles
-
-All public APIs are **safe**. Users never need to write `unsafe` code. Unsafe FFmpeg internals are fully encapsulated within the underlying crates.
-
-## Planned Features
-
-- **Unified pipeline**: Connect decode → filter → encode in a single builder call
-- **Progress tracking**: `on_progress` callback with percent, elapsed, and ETA
-- **Cancellation**: Stop a running pipeline via the progress callback
-- **Multi-input**: Concatenate multiple input files
-- **Parallel thumbnails**: `ThumbnailPipeline` with optional `rayon` feature
-
-## Planned Usage
-
-```rust,ignore
-use ff_pipeline::Pipeline;
+let config = EncoderConfig {
+    video_codec:  VideoCodec::H264,
+    audio_codec:  AudioCodec::Aac,
+    bitrate_mode: BitrateMode::Cbr(4_000_000),
+    resolution:   Some((1280, 720)),
+    framerate:    None,
+    hardware:     None,
+};
 
 let pipeline = Pipeline::builder()
     .input("input.mp4")
-    .output("output.mp4", encoder_config)
-    .on_progress(|p| println!("{:.1}%", p.percent()))
+    .output("output.mp4", config)
+    .on_progress(|p| {
+        println!("frame={} elapsed={:.1}s", p.frames_processed, p.elapsed.as_secs_f64());
+        true // return false to cancel
+    })
     .build()?;
 
 pipeline.run()?;
 ```
 
-## Minimum Supported Rust Version
+## Configuration Validation
 
-Rust 1.93.0 or later (edition 2024).
+`build()` validates the full configuration before allocating any FFmpeg context:
 
-## Related Crates
+| Error variant            | Condition                                     |
+|--------------------------|-----------------------------------------------|
+| `PipelineError::NoInput` | No input path was provided to the builder     |
+| `PipelineError::NoOutput`| No output path or encoder config was provided |
 
-- **ff-decode** — Video/audio decoding
-- **ff-filter** — Filter graph operations
-- **ff-encode** — Video/audio encoding
-- **ff-stream** — HLS/DASH streaming output
-- **ff** — Facade crate (re-exports all)
+These errors are returned from `build()`, not from `run()`.
+
+## Progress and Cancellation
+
+The progress callback receives a `Progress` value on each encoded frame:
+
+| Field / Method       | Type              | Description                               |
+|----------------------|-------------------|-------------------------------------------|
+| `p.frames_processed` | `u64`             | Number of frames encoded so far           |
+| `p.total_frames`     | `Option<u64>`     | Total frames if known from container      |
+| `p.elapsed`          | `Duration`        | Wall-clock time since `run()` was called  |
+| `p.percent()`        | `Option<f64>`     | `(frames_processed / total_frames) * 100` |
+
+Return `false` from the callback to stop processing. The pipeline will drain in-flight frames and return `Err(PipelineError::Cancelled)`.
+
+> **Current status**: `Pipeline::run()` is a stub in this release. The builder, configuration types, and progress tracking types are complete and stable; the decode → filter → encode execution loop will be implemented in the next release.
+
+## Error Handling
+
+| Variant                    | When it occurs                                |
+|----------------------------|-----------------------------------------------|
+| `PipelineError::NoInput`   | Builder has no input path                     |
+| `PipelineError::NoOutput`  | Builder has no output path or encoder config  |
+| `PipelineError::Decode`    | Wrapped `DecodeError` from the decode stage   |
+| `PipelineError::Filter`    | Wrapped `FilterError` from the filter stage   |
+| `PipelineError::Encode`    | Wrapped `EncodeError` from the encode stage   |
+| `PipelineError::Cancelled` | Progress callback returned `false`            |
+
+## MSRV
+
+Rust 1.93.0 (edition 2024).
 
 ## License
 

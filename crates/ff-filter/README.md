@@ -1,51 +1,92 @@
 # ff-filter
 
-Safe, high-level video and audio filter graph operations — no `unsafe` code required.
+Apply video and audio transformations without writing FFmpeg filter-graph strings. Build a chain with method calls; the graph description is generated and validated internally.
 
-![Coming Soon](https://img.shields.io/badge/status-coming%20soon-yellow)
+## Installation
 
-> **⚠️ Coming Soon — This crate is a placeholder and not yet implemented.**
-> The API is under design. Do not use in production.
+```toml
+[dependencies]
+ff-filter = "0.3"
+```
 
-## Overview
+## Building a Filter Chain
 
-`ff-filter` will provide a type-safe Rust interface to FFmpeg's `libavfilter`, enabling filter graph construction and execution for video and audio processing pipelines.
-
-## Design Principles
-
-All public APIs are **safe**. Users never need to write `unsafe` code. Unsafe FFmpeg internals (`libavfilter`) are fully encapsulated within this crate, following the same pattern as `ff-decode` and `ff-encode`.
-
-## Planned Features
-
-- **Filter graph API**: Construct complex filter chains with a builder pattern
-- **Video filters**: trim, scale, crop, overlay, rotate, fade, color correction
-- **Audio filters**: volume, equalizer, noise reduction, channel mixing, resampling
-- **Hardware acceleration**: CUDA, OpenCL, Vulkan filter support
-- **Pipeline integration**: Seamless interop with `ff-decode` and `ff-encode`
-
-## Planned Usage
-
-```rust,ignore
+```rust
 use ff_filter::FilterGraph;
 
-// Trim from 10s to 30s, then scale to 720p
-let graph = FilterGraph::new()
-    .trim(10.0, 30.0)
-    .scale(1280, 720)
+let graph = FilterGraph::builder()
+    .trim(10.0, 30.0)   // keep seconds 10–30
+    .scale(1280, 720)   // resize to 720p
+    .fade_in(0.5)       // 0.5-second fade in
+    .fade_out(0.5)      // 0.5-second fade out at end
     .build()?;
 ```
 
-## Minimum Supported Rust Version
+`build()` validates the graph before any frames are processed. An `Err` is returned if the combination is unsupported, not at the first `push_video` call.
 
-Rust 1.93.0 or later (edition 2024).
+## Available Video Operations
 
-## Related Crates
+| Method                     | Effect                                               |
+|----------------------------|------------------------------------------------------|
+| `trim(start, end)`         | Discard frames outside the given time range (secs)   |
+| `scale(w, h)`              | Resize frames, preserving aspect ratio if w or h is 0|
+| `crop(x, y, w, h)`         | Extract a rectangular region                         |
+| `overlay(x, y)`            | Composite a second video stream at (x, y)            |
+| `fade_in(duration)`        | Fade from black over the given duration in seconds   |
+| `fade_out(duration)`       | Fade to black over the given duration in seconds     |
+| `rotate(degrees)`          | Rotate by an arbitrary angle; edges are filled       |
+| `tone_map(ToneMap::Hable)` | HDR-to-SDR tone mapping with the selected curve      |
 
-- **ff-probe** - Media metadata extraction
-- **ff-decode** - Video/audio decoding (input to filter graph)
-- **ff-encode** - Video/audio encoding (output from filter graph)
-- **ff-format** - Shared type definitions
-- **ff-sys** - Low-level FFmpeg FFI bindings
+## Available Audio Operations
+
+| Method                        | Effect                                     |
+|-------------------------------|--------------------------------------------|
+| `volume(gain_db)`             | Adjust loudness by the given number of dB  |
+| `equalizer(band_hz, gain_db)` | Boost or cut a frequency band              |
+| `amix(inputs)`                | Mix multiple audio streams into one        |
+
+## Hardware Acceleration
+
+```rust
+use ff_filter::{FilterGraph, HwAccel};
+
+let graph = FilterGraph::builder()
+    .scale(1920, 1080)
+    .hardware(HwAccel::Cuda)
+    .build()?;
+```
+
+If the requested device is unavailable, the graph falls back to CPU processing automatically.
+
+## Using the Filter Graph
+
+```rust
+// Push decoded frames in and pull transformed frames out.
+while let Some(input_frame) = decoder.decode_frame()? {
+    graph.push_video(input_frame)?;
+    while let Some(output_frame) = graph.pull_video()? {
+        encoder.push_video(&output_frame)?;
+    }
+}
+// Flush remaining frames from the graph.
+graph.flush()?;
+while let Some(output_frame) = graph.pull_video()? {
+    encoder.push_video(&output_frame)?;
+}
+```
+
+## Error Handling
+
+| Variant                     | When it occurs                                          |
+|-----------------------------|---------------------------------------------------------|
+| `FilterError::InvalidGraph` | Filter combination is unsupported or self-contradictory |
+| `FilterError::HardwareInit` | Requested HwAccel device could not be initialised       |
+| `FilterError::Push`         | FFmpeg returned an error while buffering a frame        |
+| `FilterError::Pull`         | FFmpeg returned an error while retrieving a frame       |
+
+## MSRV
+
+Rust 1.93.0 (edition 2024).
 
 ## License
 
