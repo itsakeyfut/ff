@@ -234,6 +234,16 @@ impl Pipeline {
                                 new_pts_secs,
                                 ts.time_base(),
                             ));
+
+                            let aframe = if let Some(ref mut fg) = filter {
+                                fg.push_audio(0, &aframe)?;
+                                match fg.pull_audio()? {
+                                    Some(f) => f,
+                                    None => continue,
+                                }
+                            } else {
+                                aframe
+                            };
                             encoder.push_audio(&aframe)?;
                         }
                         audio_offset_secs = last_audio_end_secs;
