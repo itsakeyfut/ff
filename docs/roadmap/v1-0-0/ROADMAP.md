@@ -2,7 +2,7 @@
 
 **Goal**: Semver-stable public API suitable for production use across all crates.
 
-**Prerequisite**: v0.5.0 complete.
+**Prerequisite**: v0.16.0 complete, with demonstrated real-world adoption (at least one publicly released application built on this library).
 
 ---
 
@@ -13,22 +13,6 @@
 - [ ] Semver stability guarantee documented for all crates
 - [ ] MSRV (Minimum Supported Rust Version) policy documented in `README.md`
 - [ ] Breaking change process defined in `CONTRIBUTING.md`
-
-### Documentation
-
-- [ ] `#![warn(missing_docs)]` enforced on all crates
-- [ ] All public items have doc comments
-- [ ] Production cookbook: 10+ end-to-end examples covering:
-  - Transcode a file
-  - Extract thumbnails
-  - Trim and scale with ff-filter
-  - Overlay two video streams
-  - 2-pass encode
-  - Read and write metadata + chapters
-  - Subtitle passthrough
-  - HLS output
-  - ABR ladder (multi-bitrate HLS)
-  - Full pipeline (decode → filter → encode)
 
 ### Security & Maintenance
 

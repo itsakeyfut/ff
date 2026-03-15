@@ -4,6 +4,7 @@
 # Internal design docs (not for public repo)
 /docs/crates/
 /docs/dev/
+/docs/roadmap/tasks/
 
 # Claude session file
 /SESSION.md
