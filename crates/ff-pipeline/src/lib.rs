@@ -1,21 +1,56 @@
-//! Unified decode-filter-encode pipeline for the ff-* crate family.
+//! # ff-pipeline
 //!
-//! # Status
+//! Unified decode → filter → encode pipeline for the ff-* crate family.
 //!
-//! **This crate is not yet implemented.** It is a placeholder for future development.
+//! This crate wires together `ff-decode`, `ff-filter`, and `ff-encode` into a
+//! single high-level API. All `unsafe` `FFmpeg` internals remain encapsulated in
+//! the underlying crates; users of `ff-pipeline` never need to write `unsafe` code.
 //!
-//! # Design Principles
+//! ## Features
 //!
-//! All public APIs in this crate are **safe**. Users never need to write `unsafe` code.
-//! Unsafe `FFmpeg` internals are encapsulated within the underlying ff-decode, ff-filter,
-//! and ff-encode crates.
+//! - **Single-call transcode**: open → filter → encode in one `Pipeline::run()`
+//! - **Progress callbacks**: real-time frame-count and elapsed-time updates
+//! - **Cancellation**: returning `false` from the progress callback aborts the pipeline
+//! - **Multi-input concatenation**: pass multiple input paths to concatenate clips
 //!
-//! # Planned Features
+//! ## Usage
 //!
-//! - Unified `Pipeline` type connecting decode → filter → encode in a single call
-//! - Progress tracking via callback (`on_progress`)
-//! - Cancellation support
-//! - Multi-input concatenation
-//! - Parallel thumbnail generation via optional `rayon` feature
+//! ```ignore
+//! use ff_pipeline::{Pipeline, EncoderConfig};
+//! use ff_encode::{VideoCodec, AudioCodec, BitrateMode};
+//!
+//! let config = EncoderConfig {
+//!     video_codec:  VideoCodec::H264,
+//!     audio_codec:  AudioCodec::Aac,
+//!     bitrate_mode: BitrateMode::Cbr(4_000_000),
+//!     resolution:   Some((1280, 720)),
+//!     framerate:    Some(30.0),
+//!     hardware:     None,
+//! };
+//!
+//! Pipeline::builder()
+//!     .input("input.mp4")
+//!     .output("output.mp4", config)
+//!     .on_progress(|p| {
+//!         println!("frame={} elapsed={:?}", p.frames_processed, p.elapsed);
+//!         true // return false to cancel
+//!     })
+//!     .build()?
+//!     .run()?;
+//! ```
+//!
+//! ## Module Structure
+//!
+//! - [`error`] — [`PipelineError`]
+//! - [`pipeline`] — [`Pipeline`], [`PipelineBuilder`], [`EncoderConfig`]
+//! - [`progress`] — [`Progress`], [`ProgressCallback`]
 
-// This crate is a placeholder. No public API is available yet.
+#![warn(missing_docs)]
+
+pub mod error;
+pub mod pipeline;
+pub mod progress;
+
+pub use error::PipelineError;
+pub use pipeline::{EncoderConfig, Pipeline, PipelineBuilder};
+pub use progress::{Progress, ProgressCallback};
