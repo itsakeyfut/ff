@@ -187,4 +187,35 @@ mod tests {
     fn encode_error_should_be_accessible() {
         let _: EncodeError = EncodeError::Cancelled;
     }
+
+    // ── filter feature ────────────────────────────────────────────────────────
+
+    #[cfg(feature = "filter")]
+    #[test]
+    fn filter_graph_builder_should_be_accessible() {
+        // FilterGraphBuilder::new() is the public entry point.
+        let _builder: FilterGraphBuilder = FilterGraphBuilder::new();
+    }
+
+    #[cfg(feature = "filter")]
+    #[test]
+    fn filter_tone_map_should_be_accessible() {
+        let _: ToneMap = ToneMap::Hable;
+        let _: ToneMap = ToneMap::Reinhard;
+        let _: ToneMap = ToneMap::Mobius;
+    }
+
+    #[cfg(feature = "filter")]
+    #[test]
+    fn filter_hw_accel_should_be_accessible() {
+        let _: HwAccel = HwAccel::Cuda;
+        let _: HwAccel = HwAccel::VideoToolbox;
+    }
+
+    #[cfg(feature = "filter")]
+    #[test]
+    fn filter_error_should_be_accessible() {
+        let _: FilterError = FilterError::BuildFailed;
+        let _: FilterError = FilterError::ProcessFailed;
+    }
 }
