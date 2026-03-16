@@ -44,13 +44,16 @@
 //! - [`error`] — [`PipelineError`]
 //! - [`pipeline`] — [`Pipeline`], [`PipelineBuilder`], [`EncoderConfig`]
 //! - [`progress`] — [`Progress`], [`ProgressCallback`]
+//! - [`thumbnail`] — [`ThumbnailPipeline`]
 
 #![warn(missing_docs)]
 
 pub mod error;
 pub mod pipeline;
 pub mod progress;
+pub mod thumbnail;
 
 pub use error::PipelineError;
 pub use pipeline::{EncoderConfig, Pipeline, PipelineBuilder};
 pub use progress::{Progress, ProgressCallback};
+pub use thumbnail::ThumbnailPipeline;
