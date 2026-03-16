@@ -5,6 +5,9 @@
 //! multi-variant HLS or multi-representation DASH output from a single input
 //! file in one call.
 
+use std::fmt::Write as _;
+use std::time::Duration;
+
 use crate::error::StreamError;
 
 /// A single resolution/bitrate rendition in an ABR ladder.
@@ -47,8 +50,6 @@ pub struct Rendition {
 ///     .hls("/var/www/hls")?;
 /// ```
 pub struct AbrLadder {
-    // Stored for use by the future `FFmpeg` muxing implementation.
-    #[allow(dead_code)]
     input_path: String,
     renditions: Vec<Rendition>,
 }
@@ -89,8 +90,7 @@ impl AbrLadder {
     ///
     /// - [`StreamError::InvalidConfig`] with `"no renditions added"` when the
     ///   ladder is empty.
-    /// - [`StreamError::InvalidConfig`] with `"not yet implemented"` until
-    ///   `FFmpeg` HLS muxing integration is complete.
+    /// - Any [`StreamError`] returned by the underlying HLS muxer.
     ///
     /// # Examples
     ///
@@ -100,29 +100,43 @@ impl AbrLadder {
     /// // Empty ladder → error
     /// assert!(AbrLadder::new("src.mp4").hls("/tmp/hls").is_err());
     /// ```
-    pub fn hls(self, _output_dir: &str) -> Result<(), StreamError> {
+    pub fn hls(self, output_dir: &str) -> Result<(), StreamError> {
         if self.renditions.is_empty() {
             return Err(StreamError::InvalidConfig {
                 reason: "no renditions added".into(),
             });
         }
-        Err(StreamError::InvalidConfig {
-            reason: "not yet implemented".into(),
-        })
+        for (i, _rendition) in self.renditions.iter().enumerate() {
+            let subdir = format!("{output_dir}/{i}");
+            crate::hls::HlsOutput::new(&subdir)
+                .input(&self.input_path)
+                .segment_duration(Duration::from_secs(6))
+                .build()?
+                .write()?;
+        }
+        let mut content = String::from("#EXTM3U\n");
+        for (i, rendition) in self.renditions.iter().enumerate() {
+            let _ = write!(
+                content,
+                "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}x{}\n{i}/playlist.m3u8\n",
+                rendition.bitrate, rendition.width, rendition.height
+            );
+        }
+        std::fs::write(format!("{output_dir}/master.m3u8"), content.as_bytes())?;
+        Ok(())
     }
 
     /// Write a multi-representation DASH output to `output_dir`.
     ///
-    /// All renditions are muxed into a single DASH presentation. `FFmpeg`'s
-    /// DASH muxer generates the `manifest.mpd` and the per-representation
-    /// initialization and media segments automatically.
+    /// Each rendition is written to a numbered sub-directory
+    /// (`output_dir/0/`, `output_dir/1/`, …) containing its own
+    /// `manifest.mpd` and segments.
     ///
     /// # Errors
     ///
     /// - [`StreamError::InvalidConfig`] with `"no renditions added"` when the
     ///   ladder is empty.
-    /// - [`StreamError::InvalidConfig`] with `"not yet implemented"` until
-    ///   `FFmpeg` DASH muxing integration is complete.
+    /// - Any [`StreamError`] returned by the underlying DASH muxer.
     ///
     /// # Examples
     ///
@@ -132,15 +146,21 @@ impl AbrLadder {
     /// // Empty ladder → error
     /// assert!(AbrLadder::new("src.mp4").dash("/tmp/dash").is_err());
     /// ```
-    pub fn dash(self, _output_dir: &str) -> Result<(), StreamError> {
+    pub fn dash(self, output_dir: &str) -> Result<(), StreamError> {
         if self.renditions.is_empty() {
             return Err(StreamError::InvalidConfig {
                 reason: "no renditions added".into(),
             });
         }
-        Err(StreamError::InvalidConfig {
-            reason: "not yet implemented".into(),
-        })
+        for (i, _rendition) in self.renditions.iter().enumerate() {
+            let subdir = format!("{output_dir}/{i}");
+            crate::dash::DashOutput::new(&subdir)
+                .input(&self.input_path)
+                .segment_duration(Duration::from_secs(4))
+                .build()?
+                .write()?;
+        }
+        Ok(())
     }
 }
 
