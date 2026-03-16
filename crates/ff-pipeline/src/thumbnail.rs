@@ -50,6 +50,11 @@ impl ThumbnailPipeline {
     /// Timestamps are processed in ascending order. If `timestamps` is empty,
     /// the file is never opened and `Ok(vec![])` is returned immediately.
     ///
+    /// When the `parallel` feature is enabled, each timestamp is decoded in its
+    /// own thread via `rayon`. Each thread opens an independent [`VideoDecoder`];
+    /// no decoder context is shared. The output order matches the ascending
+    /// timestamp order regardless of which thread finishes first.
+    ///
     /// # Errors
     ///
     /// Propagates [`PipelineError::Decode`] for any decoding or seek failure.
@@ -60,17 +65,43 @@ impl ThumbnailPipeline {
 
         self.timestamps.sort_by(f64::total_cmp);
 
-        let mut decoder = VideoDecoder::open(&self.path).build()?;
-        log::info!("thumbnail pipeline opened file path={}", self.path);
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
 
-        let mut frames = Vec::with_capacity(self.timestamps.len());
-        for ts in &self.timestamps {
-            decoder.seek(Duration::from_secs_f64(*ts), SeekMode::Keyframe)?;
-            let frame = decoder.decode_one()?.ok_or(DecodeError::EndOfStream)?;
-            frames.push(frame);
+            log::info!(
+                "thumbnail pipeline starting parallel extraction path={} count={}",
+                self.path,
+                self.timestamps.len()
+            );
+
+            // par_iter on a slice is an IndexedParallelIterator: collect() preserves
+            // the original index order, so the output is already timestamp-sorted.
+            self.timestamps
+                .par_iter()
+                .map(|ts| {
+                    let mut decoder = VideoDecoder::open(&self.path).build()?;
+                    decoder.seek(Duration::from_secs_f64(*ts), SeekMode::Keyframe)?;
+                    let frame = decoder.decode_one()?.ok_or(DecodeError::EndOfStream)?;
+                    Ok(frame)
+                })
+                .collect()
         }
 
-        Ok(frames)
+        #[cfg(not(feature = "parallel"))]
+        {
+            let mut decoder = VideoDecoder::open(&self.path).build()?;
+            log::info!("thumbnail pipeline opened file path={}", self.path);
+
+            let mut frames = Vec::with_capacity(self.timestamps.len());
+            for ts in &self.timestamps {
+                decoder.seek(Duration::from_secs_f64(*ts), SeekMode::Keyframe)?;
+                let frame = decoder.decode_one()?.ok_or(DecodeError::EndOfStream)?;
+                frames.push(frame);
+            }
+
+            Ok(frames)
+        }
     }
 }
 
@@ -92,6 +123,29 @@ mod tests {
 
     #[test]
     fn run_with_no_timestamps_should_return_empty_vec() {
+        let result = ThumbnailPipeline::new("nonexistent.mp4").run();
+        assert!(matches!(result, Ok(ref v) if v.is_empty()));
+    }
+
+    #[test]
+    fn timestamps_should_sort_ascending_before_run() {
+        let mut ts = vec![3.0_f64, 1.0, 2.0];
+        ts.sort_by(f64::total_cmp);
+        assert_eq!(ts, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn timestamps_nan_should_sort_after_finite_values() {
+        let mut ts = vec![2.0_f64, f64::NAN, 1.0];
+        ts.sort_by(f64::total_cmp);
+        assert_eq!(ts[0], 1.0);
+        assert_eq!(ts[1], 2.0);
+        assert!(ts[2].is_nan());
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn parallel_run_with_no_timestamps_should_return_empty_vec() {
         let result = ThumbnailPipeline::new("nonexistent.mp4").run();
         assert!(matches!(result, Ok(ref v) if v.is_empty()));
     }
