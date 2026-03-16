@@ -114,12 +114,18 @@ impl DashOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamError::InvalidConfig`] with `"not yet implemented"` until
-    /// `FFmpeg` DASH muxing integration is complete.
+    /// Returns [`StreamError::InvalidConfig`] when the builder is not fully
+    /// configured, or [`StreamError::Ffmpeg`] when an `FFmpeg` operation fails.
     pub fn write(self) -> Result<(), StreamError> {
-        Err(StreamError::InvalidConfig {
-            reason: "not yet implemented".into(),
-        })
+        let input_path = self.input_path.ok_or_else(|| StreamError::InvalidConfig {
+            reason: "input path missing after build (internal error)".into(),
+        })?;
+        let seg_secs = self.segment_duration.as_secs_f64();
+        log::info!(
+            "dash write starting input={input_path} output_dir={} segment_duration={seg_secs:.1}s",
+            self.output_dir
+        );
+        crate::dash_inner::write_dash(&input_path, &self.output_dir, seg_secs)
     }
 }
 
@@ -143,5 +149,11 @@ mod tests {
     fn build_with_valid_config_should_succeed() {
         let result = DashOutput::new("/tmp/dash").input("/src/video.mp4").build();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn write_without_build_should_return_invalid_config() {
+        let result = DashOutput::new("/tmp/dash").write();
+        assert!(matches!(result, Err(StreamError::InvalidConfig { .. })));
     }
 }

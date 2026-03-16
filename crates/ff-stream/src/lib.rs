@@ -72,6 +72,7 @@
 
 pub mod abr;
 pub mod dash;
+pub(crate) mod dash_inner;
 /// Unified error type for the `ff-stream` crate.
 pub mod error;
 pub mod hls;

@@ -11,80 +11,16 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
+mod fixtures;
+
 use ff_stream::{HlsOutput, StreamError};
+use fixtures::{DirGuard, create_test_video, tmp_dir};
 use std::path::PathBuf;
 use std::time::Duration;
 
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/// Create a unique temporary output directory under the crate's target/.
-fn tmp_dir(name: &str) -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let dir = PathBuf::from(format!("{manifest_dir}/target/test-output/{name}"));
-    std::fs::create_dir_all(&dir).ok();
-    dir
-}
-
-/// Guard that removes a directory tree when dropped.
-struct DirGuard(PathBuf);
-impl Drop for DirGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// Create a minimal synthetic video file at `path` using ff_encode.
-///
-/// Returns `false` and prints a skip message if the encoder is unavailable.
-fn create_test_video(path: &PathBuf) -> bool {
-    use ff_encode::{VideoCodec, VideoEncoder};
-    use ff_format::{PixelFormat, PooledBuffer, Timestamp, VideoFrame};
-
-    let mut encoder = match VideoEncoder::create(path.to_str().unwrap())
-        .video(320, 240, 25.0)
-        .video_codec(VideoCodec::Mpeg4)
-        .build()
-    {
-        Ok(enc) => enc,
-        Err(e) => {
-            println!("Skipping test: cannot create encoder: {e}");
-            return false;
-        }
-    };
-
-    // 50 frames = 2 s at 25 fps
-    for _ in 0..50 {
-        let y_size = 320 * 240;
-        let uv_size = (320 / 2) * (240 / 2);
-        let frame = VideoFrame::new(
-            vec![
-                PooledBuffer::standalone(vec![0u8; y_size]),
-                PooledBuffer::standalone(vec![128u8; uv_size]),
-                PooledBuffer::standalone(vec![128u8; uv_size]),
-            ],
-            vec![320, 160, 160],
-            320,
-            240,
-            PixelFormat::Yuv420p,
-            Timestamp::default(),
-            true,
-        )
-        .expect("frame creation failed");
-        if encoder.push_video(&frame).is_err() {
-            println!("Skipping test: frame push failed");
-            return false;
-        }
-    }
-
-    if encoder.finish().is_err() {
-        println!("Skipping test: encoder finish failed");
-        return false;
-    }
-
-    true
-}
 
 /// Runs the full HLS pipeline and returns the output dir + guard if successful.
 /// Returns `None` when encoder/decoder is unavailable (test should skip).
