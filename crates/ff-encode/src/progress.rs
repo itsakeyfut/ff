@@ -7,7 +7,7 @@ use std::time::Duration;
 /// Provides real-time information about the encoding process,
 /// including frames encoded, bytes written, and time estimates.
 #[derive(Debug, Clone)]
-pub struct Progress {
+pub struct EncodeProgress {
     /// Number of frames encoded so far
     pub frames_encoded: u64,
 
@@ -35,7 +35,7 @@ pub struct Progress {
     pub current_fps: f64,
 }
 
-impl Progress {
+impl EncodeProgress {
     /// Calculate progress percentage (0.0 - 100.0).
     ///
     /// Returns 0.0 if total frames is unknown.
@@ -52,7 +52,7 @@ impl Progress {
     }
 }
 
-/// Progress callback trait for monitoring encoding progress.
+/// EncodeProgress callback trait for monitoring encoding progress.
 ///
 /// Implement this trait to receive real-time encoding progress updates
 /// and optionally support encoding cancellation.
@@ -60,16 +60,16 @@ impl Progress {
 /// # Examples
 ///
 /// ```ignore
-/// use ff_encode::{Progress, ProgressCallback};
+/// use ff_encode::{EncodeProgress, EncodeProgressCallback};
 /// use std::sync::Arc;
 /// use std::sync::atomic::{AtomicBool, Ordering};
 ///
-/// struct MyProgressHandler {
+/// struct MyEncodeProgressHandler {
 ///     cancelled: Arc<AtomicBool>,
 /// }
 ///
-/// impl ProgressCallback for MyProgressHandler {
-///     fn on_progress(&mut self, progress: &Progress) {
+/// impl EncodeProgressCallback for MyEncodeProgressHandler {
+///     fn on_progress(&mut self, progress: &EncodeProgress) {
 ///         println!("Encoded {} frames at {:.1} fps",
 ///             progress.frames_encoded,
 ///             progress.current_fps
@@ -81,7 +81,7 @@ impl Progress {
 ///     }
 /// }
 /// ```
-pub trait ProgressCallback: Send {
+pub trait EncodeProgressCallback: Send {
     /// Called when encoding progress is updated.
     ///
     /// This method is called periodically during encoding to report progress.
@@ -90,7 +90,7 @@ pub trait ProgressCallback: Send {
     /// # Arguments
     ///
     /// * `progress` - Current encoding progress information
-    fn on_progress(&mut self, progress: &Progress);
+    fn on_progress(&mut self, progress: &EncodeProgress);
 
     /// Check if encoding should be cancelled.
     ///
@@ -109,15 +109,15 @@ pub trait ProgressCallback: Send {
     }
 }
 
-/// Implement ProgressCallback for closures.
+/// Implement EncodeProgressCallback for closures.
 ///
 /// This allows using simple closures as progress callbacks without
 /// needing to define a custom struct implementing the trait.
-impl<F> ProgressCallback for F
+impl<F> EncodeProgressCallback for F
 where
-    F: FnMut(&Progress) + Send,
+    F: FnMut(&EncodeProgress) + Send,
 {
-    fn on_progress(&mut self, progress: &Progress) {
+    fn on_progress(&mut self, progress: &EncodeProgress) {
         self(progress);
     }
 }
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_progress_percent() {
-        let progress = Progress {
+        let progress = EncodeProgress {
             frames_encoded: 50,
             total_frames: Some(100),
             bytes_written: 1_000_000,
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_progress_percent_unknown_total() {
-        let progress = Progress {
+        let progress = EncodeProgress {
             frames_encoded: 50,
             total_frames: None,
             bytes_written: 1_000_000,
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_progress_percent_zero_total() {
-        let progress = Progress {
+        let progress = EncodeProgress {
             frames_encoded: 0,
             total_frames: Some(0),
             bytes_written: 0,
@@ -174,12 +174,12 @@ mod tests {
     #[test]
     fn test_progress_callback_closure() {
         let mut called = false;
-        let mut callback = |progress: &Progress| {
+        let mut callback = |progress: &EncodeProgress| {
             called = true;
             assert_eq!(progress.frames_encoded, 42);
         };
 
-        let progress = Progress {
+        let progress = EncodeProgress {
             frames_encoded: 42,
             total_frames: Some(100),
             bytes_written: 500_000,
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn test_progress_callback_should_cancel_default() {
-        let callback = |_progress: &Progress| {};
+        let callback = |_progress: &EncodeProgress| {};
         assert!(!callback.should_cancel());
     }
 
@@ -209,8 +209,8 @@ mod tests {
             cancelled: Arc<AtomicBool>,
         }
 
-        impl ProgressCallback for TestCallback {
-            fn on_progress(&mut self, progress: &Progress) {
+        impl EncodeProgressCallback for TestCallback {
+            fn on_progress(&mut self, progress: &EncodeProgress) {
                 self.counter
                     .store(progress.frames_encoded, Ordering::Relaxed);
             }
@@ -228,7 +228,7 @@ mod tests {
             cancelled: cancelled.clone(),
         };
 
-        let progress = Progress {
+        let progress = EncodeProgress {
             frames_encoded: 100,
             total_frames: Some(200),
             bytes_written: 1_000_000,

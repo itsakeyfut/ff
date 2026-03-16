@@ -103,8 +103,8 @@
 //!     cancelled: Arc<AtomicBool>,
 //! }
 //!
-//! impl ProgressCallback for CancellableProgress {
-//!     fn on_progress(&mut self, progress: &Progress) {
+//! impl EncodeProgressCallback for CancellableProgress {
+//!     fn on_progress(&mut self, progress: &EncodeProgress) {
 //!         println!("Progress: {:.1}%", progress.percent());
 //!     }
 //!
@@ -211,5 +211,5 @@ pub use error::EncodeError;
 pub use hardware::HardwareEncoder;
 pub use image::{ImageEncoder, ImageEncoderBuilder};
 pub use preset::Preset;
-pub use progress::{Progress, ProgressCallback};
+pub use progress::{EncodeProgress, EncodeProgressCallback};
 pub use video::{VideoEncoder, VideoEncoderBuilder};

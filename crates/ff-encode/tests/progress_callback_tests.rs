@@ -9,7 +9,7 @@
 
 mod fixtures;
 
-use ff_encode::{Progress, ProgressCallback, VideoCodec, VideoEncoder};
+use ff_encode::{EncodeProgress, EncodeProgressCallback, VideoCodec, VideoEncoder};
 use fixtures::{FileGuard, assert_valid_output_file, create_black_frame, test_output_path};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,7 +29,7 @@ fn test_progress_callback_closure() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
-        .on_progress(move |progress: &Progress| {
+        .on_progress(move |progress: &EncodeProgress| {
             progress_count_clone.fetch_add(1, Ordering::Relaxed);
             println!(
                 "Progress: {} frames encoded at {:.1} fps",
@@ -71,8 +71,8 @@ struct TestProgressCallback {
     max_frames: u64,
 }
 
-impl ProgressCallback for TestProgressCallback {
-    fn on_progress(&mut self, progress: &Progress) {
+impl EncodeProgressCallback for TestProgressCallback {
+    fn on_progress(&mut self, progress: &EncodeProgress) {
         self.frames_seen
             .store(progress.frames_encoded, Ordering::Relaxed);
         println!(
@@ -136,8 +136,8 @@ struct CancellableCallback {
     cancelled: Arc<AtomicBool>,
 }
 
-impl ProgressCallback for CancellableCallback {
-    fn on_progress(&mut self, progress: &Progress) {
+impl EncodeProgressCallback for CancellableCallback {
+    fn on_progress(&mut self, progress: &EncodeProgress) {
         println!("Progress: {} frames", progress.frames_encoded);
     }
 
@@ -205,7 +205,7 @@ fn test_progress_information_accuracy() {
     let result = VideoEncoder::create(&output_path)
         .video(640, 480, 30.0)
         .video_codec(VideoCodec::Mpeg4)
-        .on_progress(move |progress: &Progress| {
+        .on_progress(move |progress: &EncodeProgress| {
             let mut last = last_progress_clone.lock().unwrap();
             *last = Some(progress.clone());
         })
