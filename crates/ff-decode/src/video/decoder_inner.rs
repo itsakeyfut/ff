@@ -40,7 +40,7 @@ use ff_sys::{
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
-use crate::pool::FramePool;
+use ff_common::FramePool;
 
 /// Tolerance in seconds for keyframe/backward seek modes.
 ///

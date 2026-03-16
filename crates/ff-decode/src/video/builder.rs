@@ -24,8 +24,8 @@ use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
-use crate::pool::FramePool;
 use crate::video::decoder_inner::VideoDecoderInner;
+use ff_common::FramePool;
 
 /// Internal configuration for the decoder.
 ///

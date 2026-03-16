@@ -7,4 +7,4 @@
 
 mod pool;
 
-pub use pool::{FramePool, PooledBuffer};
+pub use pool::{FramePool, PooledBuffer, SimpleFramePool, VecPool};
