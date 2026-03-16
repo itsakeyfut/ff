@@ -1,4 +1,7 @@
-/target/
+# Ignore build artifacts and lock files
+**/target/
+
+
 /Cargo.lock
 
 # Internal design docs (not for public repo)
