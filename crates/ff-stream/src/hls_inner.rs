@@ -71,6 +71,9 @@ pub(crate) fn write_hls(
     output_dir: &str,
     segment_duration_secs: f64,
     keyframe_interval: u32,
+    target_bitrate: i64,
+    target_width: i32,
+    target_height: i32,
 ) -> Result<(), StreamError> {
     std::fs::create_dir_all(output_dir)?;
     // SAFETY: All FFmpeg resources are allocated and freed within this call.
@@ -80,6 +83,9 @@ pub(crate) fn write_hls(
             output_dir,
             segment_duration_secs,
             keyframe_interval,
+            target_bitrate,
+            target_width,
+            target_height,
         )
     }
 }
@@ -93,6 +99,9 @@ unsafe fn write_hls_unsafe(
     output_dir: &str,
     segment_duration_secs: f64,
     keyframe_interval: u32,
+    target_bitrate: i64,
+    target_width: i32,
+    target_height: i32,
 ) -> Result<(), StreamError> {
     ff_sys::ensure_initialized();
 
@@ -129,8 +138,16 @@ unsafe fn write_hls_unsafe(
     // ── 3. Read video stream properties ──────────────────────────────────────
     let video_stream = *(*input_ctx).streams.add(video_stream_idx as usize);
     let video_codecpar = (*video_stream).codecpar;
-    let enc_width = (*video_codecpar).width;
-    let enc_height = (*video_codecpar).height;
+    let enc_width = if target_width > 0 {
+        target_width
+    } else {
+        (*video_codecpar).width
+    };
+    let enc_height = if target_height > 0 {
+        target_height
+    } else {
+        (*video_codecpar).height
+    };
     let video_fps = {
         let r = (*video_stream).avg_frame_rate;
         if r.den > 0 && r.num > 0 {
@@ -271,7 +288,11 @@ unsafe fn write_hls_unsafe(
     (*vid_enc_ctx).framerate.num = fps_int;
     (*vid_enc_ctx).framerate.den = 1;
     (*vid_enc_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
-    (*vid_enc_ctx).bit_rate = 2_000_000;
+    (*vid_enc_ctx).bit_rate = if target_bitrate > 0 {
+        target_bitrate
+    } else {
+        2_000_000
+    };
 
     ff_sys::avcodec::open2(vid_enc_ctx, vid_enc_codec, ptr::null_mut()).map_err(|e| {
         ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
@@ -398,7 +419,8 @@ unsafe fn write_hls_unsafe(
 
     log::info!(
         "hls output context ready width={enc_width} height={enc_height} fps={video_fps:.1} \
-         audio={}",
+         bit_rate={} audio={}",
+        (*vid_enc_ctx).bit_rate,
         audio_stream_idx >= 0
     );
 

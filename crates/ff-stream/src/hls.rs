@@ -32,6 +32,8 @@ pub struct HlsOutput {
     input_path: Option<String>,
     segment_duration: Duration,
     keyframe_interval: u32,
+    target_bitrate: Option<u64>,
+    target_video_size: Option<(u32, u32)>,
 }
 
 impl HlsOutput {
@@ -49,6 +51,8 @@ impl HlsOutput {
             input_path: None,
             segment_duration: Duration::from_secs(6),
             keyframe_interval: 48,
+            target_bitrate: None,
+            target_video_size: None,
         }
     }
 
@@ -70,6 +74,24 @@ impl HlsOutput {
     #[must_use]
     pub fn segment_duration(mut self, d: Duration) -> Self {
         self.segment_duration = d;
+        self
+    }
+
+    /// Override the target video bitrate in bits per second.
+    ///
+    /// When not set, the encoder uses a default of 2 Mbit/s.
+    #[must_use]
+    pub fn bitrate(mut self, bps: u64) -> Self {
+        self.target_bitrate = Some(bps);
+        self
+    }
+
+    /// Override the output video dimensions.
+    ///
+    /// When not set, the encoder uses the input stream's dimensions.
+    #[must_use]
+    pub fn video_size(mut self, width: u32, height: u32) -> Self {
+        self.target_video_size = Some((width, height));
         self
     }
 
@@ -115,10 +137,13 @@ impl HlsOutput {
             });
         }
         log::info!(
-            "hls output configured output_dir={} segment_duration={:.1}s keyframe_interval={}",
+            "hls output configured output_dir={} segment_duration={:.1}s keyframe_interval={} \
+             bitrate={:?} video_size={:?}",
             self.output_dir,
             self.segment_duration.as_secs_f64(),
             self.keyframe_interval,
+            self.target_bitrate,
+            self.target_video_size,
         );
         Ok(self)
     }
@@ -145,11 +170,18 @@ impl HlsOutput {
             self.output_dir,
             self.keyframe_interval
         );
+        let target_bitrate = self.target_bitrate.map_or(0i64, |b| b.cast_signed());
+        let (target_width, target_height) = self
+            .target_video_size
+            .map_or((0i32, 0i32), |(w, h)| (w.cast_signed(), h.cast_signed()));
         crate::hls_inner::write_hls(
             &input_path,
             &self.output_dir,
             seg_secs,
             self.keyframe_interval,
+            target_bitrate,
+            target_width,
+            target_height,
         )
     }
 }
@@ -206,5 +238,42 @@ mod tests {
         // input_path is None because build() was not called
         let result = HlsOutput::new("/tmp/hls").write();
         assert!(matches!(result, Err(StreamError::InvalidConfig { .. })));
+    }
+
+    #[test]
+    fn bitrate_should_store_bitrate() {
+        let h = HlsOutput::new("/tmp/hls").bitrate(3_000_000);
+        assert_eq!(h.target_bitrate, Some(3_000_000));
+    }
+
+    #[test]
+    fn video_size_should_store_dimensions() {
+        let h = HlsOutput::new("/tmp/hls").video_size(1280, 720);
+        assert_eq!(h.target_video_size, Some((1280, 720)));
+    }
+
+    #[test]
+    fn bitrate_default_should_be_none() {
+        let h = HlsOutput::new("/tmp/hls");
+        assert_eq!(h.target_bitrate, None);
+    }
+
+    #[test]
+    fn video_size_default_should_be_none() {
+        let h = HlsOutput::new("/tmp/hls");
+        assert_eq!(h.target_video_size, None);
+    }
+
+    #[test]
+    fn build_with_bitrate_and_video_size_should_succeed() {
+        let result = HlsOutput::new("/tmp/hls")
+            .input("/src/video.mp4")
+            .bitrate(4_000_000)
+            .video_size(1920, 1080)
+            .build();
+        assert!(result.is_ok());
+        let h = result.unwrap();
+        assert_eq!(h.target_bitrate, Some(4_000_000));
+        assert_eq!(h.target_video_size, Some((1920, 1080)));
     }
 }
