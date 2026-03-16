@@ -77,7 +77,7 @@
 //! ### Progress Callbacks
 //!
 //! ```ignore
-//! use ff_encode::{VideoEncoder, Progress};
+//! use ff_encode::{VideoEncoder, EncodeProgress};
 //!
 //! // Simple closure-based callback
 //! let mut encoder = VideoEncoder::create("output.mp4")?
@@ -95,7 +95,7 @@
 //! ### Progress Callbacks with Cancellation
 //!
 //! ```ignore
-//! use ff_encode::{VideoEncoder, ProgressCallback, Progress};
+//! use ff_encode::{VideoEncoder, EncodeProgressCallback, EncodeProgress};
 //! use std::sync::Arc;
 //! use std::sync::atomic::{AtomicBool, Ordering};
 //!
