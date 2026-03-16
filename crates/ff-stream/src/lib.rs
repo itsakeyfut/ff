@@ -1,19 +1,82 @@
-//! HLS and DASH adaptive streaming output for the ff-* crate family.
+//! # ff-stream
 //!
-//! # Status
+//! HLS and DASH adaptive streaming output - the Rust way.
 //!
-//! **This crate is not yet implemented.** It is a placeholder for future development.
+//! This crate provides segmented HLS and DASH output along with ABR (Adaptive
+//! Bitrate) ladder generation. It exposes a safe, ergonomic Builder API and
+//! completely hides `FFmpeg` muxer internals.
 //!
-//! # Design Principles
+//! ## Features
 //!
-//! All public APIs in this crate are **safe**. Users never need to write `unsafe` code.
-//! Unsafe `FFmpeg` internals are encapsulated within the underlying ff-encode crate.
+//! - **HLS Output**: Segmented HLS with configurable segment duration and keyframe interval
+//! - **DASH Output**: Segmented DASH with configurable segment duration
+//! - **ABR Ladder**: Multi-rendition HLS / DASH from a single input in one call
+//! - **Builder Pattern**: Consuming builders with validation in `build()`
 //!
-//! # Planned Features
+//! ## Usage
 //!
-//! - HLS output via `HlsOutput` with configurable segment duration
-//! - DASH output via `DashOutput`
-//! - ABR ladder generation via `AbrLadder` (multiple renditions in one pass)
-//! - Keyframe interval control for optimal segment boundaries
+//! ### HLS Output
+//!
+//! ```ignore
+//! use ff_stream::HlsOutput;
+//! use std::time::Duration;
+//!
+//! HlsOutput::new("/var/www/hls")
+//!     .input("source.mp4")
+//!     .segment_duration(Duration::from_secs(6))
+//!     .keyframe_interval(48)
+//!     .build()?
+//!     .write()?;
+//! ```
+//!
+//! ### DASH Output
+//!
+//! ```ignore
+//! use ff_stream::DashOutput;
+//! use std::time::Duration;
+//!
+//! DashOutput::new("/var/www/dash")
+//!     .input("source.mp4")
+//!     .segment_duration(Duration::from_secs(4))
+//!     .build()?
+//!     .write()?;
+//! ```
+//!
+//! ### ABR Ladder
+//!
+//! ```ignore
+//! use ff_stream::{AbrLadder, Rendition};
+//!
+//! AbrLadder::new("source.mp4")
+//!     .add_rendition(Rendition { width: 1920, height: 1080, bitrate: 6_000_000 })
+//!     .add_rendition(Rendition { width: 1280, height:  720, bitrate: 3_000_000 })
+//!     .add_rendition(Rendition { width:  854, height:  480, bitrate: 1_500_000 })
+//!     .hls("/var/www/hls")?;
+//! ```
+//!
+//! ## Module Structure
+//!
+//! - [`hls`] — [`HlsOutput`]: segmented HLS output builder
+//! - [`dash`] — [`DashOutput`]: segmented DASH output builder
+//! - [`abr`] — [`AbrLadder`] + [`Rendition`]: multi-rendition ABR ladder
+//! - [`error`] — [`StreamError`]: unified error type for this crate
+//!
+//! ## Status
+//!
+//! The public API is stable. The `write()` / `hls()` / `dash()` methods that
+//! perform actual `FFmpeg` muxing are stubs and will return
+//! [`StreamError::InvalidConfig`] with `"not yet implemented"` until the
+//! `FFmpeg` HLS/DASH integration is complete.
 
-// This crate is a placeholder. No public API is available yet.
+#![warn(missing_docs)]
+
+pub mod abr;
+pub mod dash;
+/// Unified error type for the `ff-stream` crate.
+pub mod error;
+pub mod hls;
+
+pub use abr::{AbrLadder, Rendition};
+pub use dash::DashOutput;
+pub use error::StreamError;
+pub use hls::HlsOutput;

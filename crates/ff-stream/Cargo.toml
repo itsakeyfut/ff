@@ -14,9 +14,13 @@ categories = ["multimedia::video", "multimedia::encoding"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-ff-common = { workspace = true }
-ff-format = { workspace = true }
-thiserror = { workspace = true }
+ff-common   = { workspace = true }
+ff-format   = { workspace = true }
+ff-encode   = { workspace = true }
+ff-decode   = { workspace = true }
+ff-pipeline = { workspace = true }
+thiserror   = { workspace = true }
+log         = { workspace = true }
 
 [lints]
 workspace = true
