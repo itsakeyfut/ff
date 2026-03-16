@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-03-16
+
+### Added
+
+#### ff-pipeline
+- `Pipeline::run()` for single-input transcode: decode → optional filter graph → encode with progress tracking ([#58](https://github.com/itsakeyfut/avio/issues/58))
+- Multi-input concatenation in `Pipeline::run()`: sequential inputs with PTS offset stitching ([#59](https://github.com/itsakeyfut/avio/issues/59))
+- Audio stream handling in `Pipeline::run()`: audio decoded and encoded in parallel with video; silently skipped when no audio stream is present ([#60](https://github.com/itsakeyfut/avio/issues/60))
+- Cancellation via `ProgressCallback`: returning `false` from the callback aborts the pipeline and returns `PipelineError::Cancelled` ([#61](https://github.com/itsakeyfut/avio/issues/61))
+- `ThumbnailPipeline`: extracts a `VideoFrame` at each caller-specified timestamp using `VideoDecoder::seek` + `decode_one` ([#62](https://github.com/itsakeyfut/avio/issues/62))
+- `parallel` Cargo feature for `ThumbnailPipeline`: when enabled, each timestamp is decoded in its own rayon thread; results are returned in ascending timestamp order ([#63](https://github.com/itsakeyfut/avio/issues/63))
+- Integration tests: single-input transcode verifying non-zero output duration and progress callback invocation ([#64](https://github.com/itsakeyfut/avio/issues/64))
+- Integration tests: multi-input concatenation verifying output duration ≈ sum of input durations ([#65](https://github.com/itsakeyfut/avio/issues/65))
+- Integration tests: cancellation after first progress callback ([#66](https://github.com/itsakeyfut/avio/issues/66))
+- Integration tests: `ThumbnailPipeline` frame count and dimension verification, sequential and parallel ([#67](https://github.com/itsakeyfut/avio/issues/67))
+
+---
+
 ## [0.3.0] - 2026-03-14
 
 ### Added
