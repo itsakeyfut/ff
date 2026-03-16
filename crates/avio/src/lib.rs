@@ -52,6 +52,10 @@ pub use ff_probe::{ProbeError, open};
 //
 // PooledBuffer and the frame/codec types are already re-exported from ff-format
 // above, so we omit them here to keep a single canonical source.
+// FramePool, SimpleFramePool, and VecPool come from ff-common (re-exported via
+// ff-decode). VecPool is the canonical concrete pool; SimpleFramePool is its alias.
+#[cfg(feature = "decode")]
+pub use ff_common::VecPool;
 #[cfg(feature = "decode")]
 pub use ff_decode::{
     AudioDecoder, AudioDecoderBuilder, AudioFrameIterator, DecodeError, FramePool, HardwareAccel,
@@ -165,6 +169,14 @@ mod tests {
     fn decode_hardware_accel_should_be_accessible() {
         let _: HardwareAccel = HardwareAccel::Auto;
         let _: HardwareAccel = HardwareAccel::None;
+    }
+
+    #[cfg(feature = "decode")]
+    #[test]
+    fn decode_vec_pool_should_be_accessible() {
+        let pool: std::sync::Arc<VecPool> = VecPool::new(8);
+        assert_eq!(pool.capacity(), 8);
+        assert_eq!(pool.available(), 0);
     }
 
     // ── encode feature ────────────────────────────────────────────────────────
