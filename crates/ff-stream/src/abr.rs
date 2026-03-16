@@ -106,11 +106,13 @@ impl AbrLadder {
                 reason: "no renditions added".into(),
             });
         }
-        for (i, _rendition) in self.renditions.iter().enumerate() {
+        for (i, rendition) in self.renditions.iter().enumerate() {
             let subdir = format!("{output_dir}/{i}");
             crate::hls::HlsOutput::new(&subdir)
                 .input(&self.input_path)
                 .segment_duration(Duration::from_secs(6))
+                .bitrate(rendition.bitrate)
+                .video_size(rendition.width, rendition.height)
                 .build()?
                 .write()?;
         }
