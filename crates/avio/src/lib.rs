@@ -89,3 +89,102 @@ pub use ff_pipeline::{
 // Enabling `stream` also enables `pipeline` (and transitively `filter`).
 #[cfg(feature = "stream")]
 pub use ff_stream::{AbrLadder, DashOutput, HlsOutput, Rendition, StreamError};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ff-format (always-on) ─────────────────────────────────────────────────
+
+    #[test]
+    fn format_reexports_should_be_accessible() {
+        let _: VideoCodec = VideoCodec::default();
+        let _: AudioCodec = AudioCodec::default();
+        let _: PixelFormat = PixelFormat::default();
+        let _: SampleFormat = SampleFormat::default();
+        let _: ChannelLayout = ChannelLayout::default();
+        let _: ColorSpace = ColorSpace::default();
+        let _: ColorRange = ColorRange::default();
+        let _: ColorPrimaries = ColorPrimaries::default();
+        let _: Rational = Rational::default();
+        let _: Timestamp = Timestamp::default();
+        let _: MediaInfo = MediaInfo::default();
+    }
+
+    // ── probe feature ─────────────────────────────────────────────────────────
+
+    #[cfg(feature = "probe")]
+    #[test]
+    fn probe_open_should_be_accessible() {
+        // open is a function — a non-existent path yields ProbeError
+        let result = open("/no/such/file.mp4");
+        assert!(matches!(result, Err(ProbeError::FileNotFound { .. })));
+    }
+
+    #[cfg(feature = "probe")]
+    #[test]
+    fn probe_error_should_be_accessible() {
+        let err = ProbeError::FileNotFound {
+            path: std::path::PathBuf::from("missing.mp4"),
+        };
+        assert!(err.to_string().contains("missing.mp4"));
+    }
+
+    // ── decode feature ────────────────────────────────────────────────────────
+
+    #[cfg(feature = "decode")]
+    #[test]
+    fn decode_builder_types_should_be_accessible() {
+        // Builder entry points are static methods on the decoder types.
+        // Calling them with a dummy path exercises name resolution without
+        // touching FFmpeg.
+        let _builder: VideoDecoderBuilder = VideoDecoder::open("/no/such/file.mp4");
+        let _builder: AudioDecoderBuilder = AudioDecoder::open("/no/such/file.mp4");
+        let _builder: ImageDecoderBuilder = ImageDecoder::open("/no/such/file.mp4");
+    }
+
+    #[cfg(feature = "decode")]
+    #[test]
+    fn decode_error_should_be_accessible() {
+        let _: DecodeError = DecodeError::EndOfStream;
+    }
+
+    #[cfg(feature = "decode")]
+    #[test]
+    fn decode_seek_mode_should_be_accessible() {
+        let _: SeekMode = SeekMode::Keyframe;
+        let _: SeekMode = SeekMode::Exact;
+        let _: SeekMode = SeekMode::Backward;
+    }
+
+    #[cfg(feature = "decode")]
+    #[test]
+    fn decode_hardware_accel_should_be_accessible() {
+        let _: HardwareAccel = HardwareAccel::Auto;
+        let _: HardwareAccel = HardwareAccel::None;
+    }
+
+    // ── encode feature ────────────────────────────────────────────────────────
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn encode_builder_types_should_be_accessible() {
+        // VideoEncoder::create / AudioEncoder::create are the public entry
+        // points that return their respective builder types.
+        let _builder: VideoEncoderBuilder = VideoEncoder::create("/tmp/out.mp4");
+        let _builder: AudioEncoderBuilder = AudioEncoder::create("/tmp/out.mp3");
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn encode_bitrate_mode_should_be_accessible() {
+        let _: BitrateMode = BitrateMode::Cbr(1_000_000);
+        let _: BitrateMode = BitrateMode::Crf(23);
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn encode_error_should_be_accessible() {
+        let _: EncodeError = EncodeError::Cancelled;
+    }
+}
