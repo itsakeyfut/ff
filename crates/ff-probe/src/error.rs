@@ -43,8 +43,13 @@ pub enum ProbeError {
     Io(#[from] std::io::Error),
 
     /// An `FFmpeg` error occurred.
-    #[error("FFmpeg error: {0}")]
-    Ffmpeg(String),
+    #[error("ffmpeg error: {message} (code={code})")]
+    Ffmpeg {
+        /// Raw `FFmpeg` error code (negative integer). `0` when no numeric code is available.
+        code: i32,
+        /// Human-readable error message from `av_strerror` or an internal description.
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -93,11 +98,15 @@ mod tests {
     }
 
     #[test]
-    fn test_ffmpeg_error() {
-        let err = ProbeError::Ffmpeg("codec not found".to_string());
+    fn ffmpeg_should_display_code_and_message() {
+        let err = ProbeError::Ffmpeg {
+            code: -2,
+            message: "codec not found".to_string(),
+        };
         let msg = err.to_string();
-        assert!(msg.contains("FFmpeg error"));
+        assert!(msg.contains("ffmpeg error"));
         assert!(msg.contains("codec not found"));
+        assert!(msg.contains("code=-2"));
     }
 
     #[test]

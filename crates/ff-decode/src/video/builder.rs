@@ -1153,7 +1153,7 @@ mod tests {
             // Should get either NoVideoStream or Ffmpeg error
             assert!(
                 matches!(e, DecodeError::NoVideoStream { .. })
-                    || matches!(e, DecodeError::Ffmpeg(_))
+                    || matches!(e, DecodeError::Ffmpeg { .. })
             );
         }
     }

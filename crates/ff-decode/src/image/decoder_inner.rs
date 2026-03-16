@@ -39,11 +39,9 @@ impl AvFormatContextGuard {
     unsafe fn new(path: &Path) -> Result<Self, DecodeError> {
         // SAFETY: Caller ensures FFmpeg is initialized and path is valid
         let format_ctx = unsafe {
-            ff_sys::avformat::open_input(path).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to open file: {}",
-                    ff_sys::av_error_string(e)
-                ))
+            ff_sys::avformat::open_input(path).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to open file: {}", ff_sys::av_error_string(e)),
             })?
         };
         Ok(Self(format_ctx))
@@ -78,8 +76,9 @@ impl AvCodecContextGuard {
     unsafe fn new(codec: *const ff_sys::AVCodec) -> Result<Self, DecodeError> {
         // SAFETY: Caller ensures codec pointer is valid
         let codec_ctx = unsafe {
-            ff_sys::avcodec::alloc_context3(codec).map_err(|e| {
-                DecodeError::Ffmpeg(format!("Failed to allocate codec context: {e}"))
+            ff_sys::avcodec::alloc_context3(codec).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to allocate codec context: {e}"),
             })?
         };
         Ok(Self(codec_ctx))
@@ -152,11 +151,9 @@ impl ImageDecoderInner {
         // 2. avformat_find_stream_info
         // SAFETY: format_ctx is valid and owned by the guard.
         unsafe {
-            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to find stream info: {}",
-                    ff_sys::av_error_string(e)
-                ))
+            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to find stream info: {}", ff_sys::av_error_string(e)),
             })?;
         }
 
@@ -190,10 +187,13 @@ impl ImageDecoderInner {
             let stream = (*format_ctx).streams.add(stream_index);
             let codecpar = (*(*stream)).codecpar;
             ff_sys::avcodec::parameters_to_context(codec_ctx, codecpar).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to copy codec parameters: {}",
-                    ff_sys::av_error_string(e)
-                ))
+                DecodeError::Ffmpeg {
+                    code: e,
+                    message: format!(
+                        "Failed to copy codec parameters: {}",
+                        ff_sys::av_error_string(e)
+                    ),
+                }
             })?;
         }
 
@@ -201,10 +201,10 @@ impl ImageDecoderInner {
         // SAFETY: codec_ctx and codec are valid; no hardware acceleration for images.
         unsafe {
             ff_sys::avcodec::open2(codec_ctx, codec, ptr::null_mut()).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to open codec: {}",
-                    ff_sys::av_error_string(e)
-                ))
+                DecodeError::Ffmpeg {
+                    code: e,
+                    message: format!("Failed to open codec: {}", ff_sys::av_error_string(e)),
+                }
             })?;
         }
 
@@ -212,12 +212,18 @@ impl ImageDecoderInner {
         // SAFETY: FFmpeg is initialized.
         let packet = unsafe { ff_sys::av_packet_alloc() };
         if packet.is_null() {
-            return Err(DecodeError::Ffmpeg("Failed to allocate packet".to_string()));
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "Failed to allocate packet".to_string(),
+            });
         }
         let frame = unsafe { ff_sys::av_frame_alloc() };
         if frame.is_null() {
             unsafe { ff_sys::av_packet_free(&mut (packet as *mut _)) };
-            return Err(DecodeError::Ffmpeg("Failed to allocate frame".to_string()));
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "Failed to allocate frame".to_string(),
+            });
         }
 
         Ok(Self {
@@ -253,10 +259,10 @@ impl ImageDecoderInner {
         // SAFETY: format_ctx and packet are valid.
         let ret = unsafe { ff_sys::av_read_frame(self.format_ctx, self.packet) };
         if ret < 0 {
-            return Err(DecodeError::Ffmpeg(format!(
-                "Failed to read frame: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(DecodeError::Ffmpeg {
+                code: ret,
+                message: format!("Failed to read frame: {}", ff_sys::av_error_string(ret)),
+            });
         }
 
         // 2. avcodec_send_packet
@@ -264,20 +270,26 @@ impl ImageDecoderInner {
         let ret = unsafe { ff_sys::avcodec_send_packet(self.codec_ctx, self.packet) };
         unsafe { ff_sys::av_packet_unref(self.packet) };
         if ret < 0 {
-            return Err(DecodeError::Ffmpeg(format!(
-                "Failed to send packet to decoder: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(DecodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Failed to send packet to decoder: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // 3. avcodec_receive_frame
         // SAFETY: codec_ctx and frame are valid.
         let ret = unsafe { ff_sys::avcodec_receive_frame(self.codec_ctx, self.frame) };
         if ret < 0 {
-            return Err(DecodeError::Ffmpeg(format!(
-                "Failed to receive decoded frame: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(DecodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Failed to receive decoded frame: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // 4. Convert to VideoFrame.
@@ -374,8 +386,12 @@ impl ImageDecoderInner {
             let (planes, strides) = Self::extract_planes_and_strides(frame, width, height, format)?;
 
             // Images are always key frames.
-            VideoFrame::new(planes, strides, width, height, format, timestamp, true)
-                .map_err(|e| DecodeError::Ffmpeg(format!("Failed to create VideoFrame: {e}")))
+            VideoFrame::new(planes, strides, width, height, format, timestamp, true).map_err(|e| {
+                DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Failed to create VideoFrame: {e}"),
+                }
+            })
         }
     }
 
@@ -408,9 +424,10 @@ impl ImageDecoderInner {
                     let mut buf = vec![0u8; row_w * h];
                     let src = (*frame).data[0];
                     if src.is_null() {
-                        return Err(DecodeError::Ffmpeg(
-                            "Null plane data for packed format".to_string(),
-                        ));
+                        return Err(DecodeError::Ffmpeg {
+                            code: 0,
+                            message: "Null plane data for packed format".to_string(),
+                        });
                     }
                     for row in 0..h {
                         ptr::copy_nonoverlapping(
@@ -429,9 +446,10 @@ impl ImageDecoderInner {
                     let mut buf = vec![0u8; row_w * h];
                     let src = (*frame).data[0];
                     if src.is_null() {
-                        return Err(DecodeError::Ffmpeg(
-                            "Null plane data for packed format".to_string(),
-                        ));
+                        return Err(DecodeError::Ffmpeg {
+                            code: 0,
+                            message: "Null plane data for packed format".to_string(),
+                        });
                     }
                     for row in 0..h {
                         ptr::copy_nonoverlapping(
@@ -448,7 +466,10 @@ impl ImageDecoderInner {
                     let mut buf = vec![0u8; w * h];
                     let src = (*frame).data[0];
                     if src.is_null() {
-                        return Err(DecodeError::Ffmpeg("Null plane data for Gray8".to_string()));
+                        return Err(DecodeError::Ffmpeg {
+                            code: 0,
+                            message: "Null plane data for Gray8".to_string(),
+                        });
                     }
                     for row in 0..h {
                         ptr::copy_nonoverlapping(
@@ -466,7 +487,10 @@ impl ImageDecoderInner {
                     let mut y_buf = vec![0u8; w * h];
                     let y_src = (*frame).data[0];
                     if y_src.is_null() {
-                        return Err(DecodeError::Ffmpeg("Null Y plane".to_string()));
+                        return Err(DecodeError::Ffmpeg {
+                            code: 0,
+                            message: "Null Y plane".to_string(),
+                        });
                     }
                     for row in 0..h {
                         ptr::copy_nonoverlapping(
@@ -558,9 +582,10 @@ impl ImageDecoderInner {
                     }
                 }
                 _ => {
-                    return Err(DecodeError::Ffmpeg(format!(
-                        "Unsupported pixel format for image decoding: {format:?}"
-                    )));
+                    return Err(DecodeError::Ffmpeg {
+                        code: 0,
+                        message: format!("Unsupported pixel format for image decoding: {format:?}"),
+                    });
                 }
             }
 

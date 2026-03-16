@@ -49,11 +49,9 @@ impl AvFormatContextGuard {
     unsafe fn new(path: &Path) -> Result<Self, DecodeError> {
         // SAFETY: Caller ensures FFmpeg is initialized and path is valid
         let format_ctx = unsafe {
-            ff_sys::avformat::open_input(path).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to open file: {}",
-                    ff_sys::av_error_string(e)
-                ))
+            ff_sys::avformat::open_input(path).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to open file: {}", ff_sys::av_error_string(e)),
             })?
         };
         Ok(Self(format_ctx))
@@ -95,8 +93,9 @@ impl AvCodecContextGuard {
     unsafe fn new(codec: *const ff_sys::AVCodec) -> Result<Self, DecodeError> {
         // SAFETY: Caller ensures codec pointer is valid
         let codec_ctx = unsafe {
-            ff_sys::avcodec::alloc_context3(codec).map_err(|e| {
-                DecodeError::Ffmpeg(format!("Failed to allocate codec context: {e}"))
+            ff_sys::avcodec::alloc_context3(codec).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to allocate codec context: {e}"),
             })?
         };
         Ok(Self(codec_ctx))
@@ -139,7 +138,10 @@ impl AvPacketGuard {
         // SAFETY: Caller ensures FFmpeg is initialized
         let packet = unsafe { ff_sys::av_packet_alloc() };
         if packet.is_null() {
-            return Err(DecodeError::Ffmpeg("Failed to allocate packet".to_string()));
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "Failed to allocate packet".to_string(),
+            });
         }
         Ok(Self(packet))
     }
@@ -176,7 +178,10 @@ impl AvFrameGuard {
         // SAFETY: Caller ensures FFmpeg is initialized
         let frame = unsafe { ff_sys::av_frame_alloc() };
         if frame.is_null() {
-            return Err(DecodeError::Ffmpeg("Failed to allocate frame".to_string()));
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "Failed to allocate frame".to_string(),
+            });
         }
         Ok(Self(frame))
     }
@@ -287,11 +292,9 @@ impl AudioDecoderInner {
         // Read stream information
         // SAFETY: format_ctx is valid and owned by guard
         unsafe {
-            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to find stream info: {}",
-                    ff_sys::av_error_string(e)
-                ))
+            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to find stream info: {}", ff_sys::av_error_string(e)),
             })?;
         }
 
@@ -325,10 +328,13 @@ impl AudioDecoderInner {
             let stream = (*format_ctx).streams.add(stream_index as usize);
             let codecpar = (*(*stream)).codecpar;
             ff_sys::avcodec::parameters_to_context(codec_ctx, codecpar).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to copy codec parameters: {}",
-                    ff_sys::av_error_string(e)
-                ))
+                DecodeError::Ffmpeg {
+                    code: e,
+                    message: format!(
+                        "Failed to copy codec parameters: {}",
+                        ff_sys::av_error_string(e)
+                    ),
+                }
             })?;
         }
 
@@ -336,10 +342,10 @@ impl AudioDecoderInner {
         // SAFETY: codec_ctx and codec are valid
         unsafe {
             ff_sys::avcodec::open2(codec_ctx, codec, ptr::null_mut()).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to open codec: {}",
-                    ff_sys::av_error_string(e)
-                ))
+                DecodeError::Ffmpeg {
+                    code: e,
+                    message: format!("Failed to open codec: {}", ff_sys::av_error_string(e)),
+                }
             })?;
         }
 
@@ -596,10 +602,13 @@ impl AudioDecoderInner {
                         self.eof = true;
                         continue;
                     } else if read_ret < 0 {
-                        return Err(DecodeError::Ffmpeg(format!(
-                            "Failed to read frame: {}",
-                            ff_sys::av_error_string(read_ret)
-                        )));
+                        return Err(DecodeError::Ffmpeg {
+                            code: read_ret,
+                            message: format!(
+                                "Failed to read frame: {}",
+                                ff_sys::av_error_string(read_ret)
+                            ),
+                        });
                     }
 
                     // Check if this packet belongs to the audio stream
@@ -609,10 +618,13 @@ impl AudioDecoderInner {
                         ff_sys::av_packet_unref(self.packet);
 
                         if send_ret < 0 && send_ret != ff_sys::error_codes::EAGAIN {
-                            return Err(DecodeError::Ffmpeg(format!(
-                                "Failed to send packet: {}",
-                                ff_sys::av_error_string(send_ret)
-                            )));
+                            return Err(DecodeError::Ffmpeg {
+                                code: send_ret,
+                                message: format!(
+                                    "Failed to send packet: {}",
+                                    ff_sys::av_error_string(send_ret)
+                                ),
+                            });
                         }
                     } else {
                         // Not our stream, unref and continue
@@ -706,10 +718,13 @@ impl AudioDecoderInner {
                 ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
                 ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
             }
-            return Err(DecodeError::Ffmpeg(format!(
-                "Failed to allocate SwrContext: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(DecodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Failed to allocate SwrContext: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // Wrap in RAII guard for automatic cleanup
@@ -724,10 +739,13 @@ impl AudioDecoderInner {
                 ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
                 ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
             }
-            return Err(DecodeError::Ffmpeg(format!(
-                "Failed to initialize SwrContext: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(DecodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Failed to initialize SwrContext: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // Calculate output sample count
@@ -740,9 +758,10 @@ impl AudioDecoderInner {
                 ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
                 ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
             }
-            return Err(DecodeError::Ffmpeg(
-                "Failed to calculate output sample count".to_string(),
-            ));
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "Failed to calculate output sample count".to_string(),
+            });
         }
 
         let out_samples = out_samples as usize;
@@ -801,10 +820,13 @@ impl AudioDecoderInner {
         }
 
         if converted_samples < 0 {
-            return Err(DecodeError::Ffmpeg(format!(
-                "Failed to convert samples: {}",
-                ff_sys::av_error_string(converted_samples)
-            )));
+            return Err(DecodeError::Ffmpeg {
+                code: converted_samples,
+                message: format!(
+                    "Failed to convert samples: {}",
+                    ff_sys::av_error_string(converted_samples)
+                ),
+            });
         }
 
         // Extract timestamp from original frame
@@ -847,7 +869,10 @@ impl AudioDecoderInner {
             dst_sample_fmt,
             timestamp,
         )
-        .map_err(|e| DecodeError::Ffmpeg(format!("Failed to create AudioFrame: {e}")))
+        .map_err(|e| DecodeError::Ffmpeg {
+            code: 0,
+            message: format!("Failed to create AudioFrame: {e}"),
+        })
     }
 
     /// Converts an AVFrame to an AudioFrame.
@@ -878,8 +903,12 @@ impl AudioDecoderInner {
             // Convert frame to planes
             let planes = Self::extract_planes(frame, nb_samples, channels, format)?;
 
-            AudioFrame::new(planes, nb_samples, channels, sample_rate, format, timestamp)
-                .map_err(|e| DecodeError::Ffmpeg(format!("Failed to create AudioFrame: {e}")))
+            AudioFrame::new(planes, nb_samples, channels, sample_rate, format, timestamp).map_err(
+                |e| DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Failed to create AudioFrame: {e}"),
+                },
+            )
         }
     }
 

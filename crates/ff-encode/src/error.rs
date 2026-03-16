@@ -60,8 +60,13 @@ pub enum EncodeError {
     },
 
     /// `FFmpeg` error
-    #[error("FFmpeg error: {0}")]
-    Ffmpeg(String),
+    #[error("ffmpeg error: {message} (code={code})")]
+    Ffmpeg {
+        /// Raw `FFmpeg` error code (negative integer). `0` when no numeric code is available.
+        code: i32,
+        /// Human-readable error message from `av_strerror` or an internal description.
+        message: String,
+    },
 
     /// IO error
     #[error("IO error: {0}")]
@@ -79,8 +84,10 @@ impl EncodeError {
     /// as it makes the conversion explicit and prevents accidental
     /// conversion of arbitrary i32 values.
     pub(crate) fn from_ffmpeg_error(errnum: i32) -> Self {
-        let error_msg = ff_sys::av_error_string(errnum);
-        EncodeError::Ffmpeg(format!("{} (code: {})", error_msg, errnum))
+        EncodeError::Ffmpeg {
+            code: errnum,
+            message: ff_sys::av_error_string(errnum),
+        }
     }
 }
 
@@ -89,29 +96,37 @@ mod tests {
     use super::EncodeError;
 
     #[test]
-    fn from_ffmpeg_error_returns_ffmpeg_variant() {
+    fn from_ffmpeg_error_should_return_ffmpeg_variant() {
         let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::EINVAL);
-        assert!(matches!(err, EncodeError::Ffmpeg(_)));
+        assert!(matches!(err, EncodeError::Ffmpeg { .. }));
     }
 
     #[test]
-    fn from_ffmpeg_error_message_contains_code() {
+    fn from_ffmpeg_error_should_carry_numeric_code() {
+        let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::EINVAL);
+        match err {
+            EncodeError::Ffmpeg { code, .. } => assert_eq!(code, ff_sys::error_codes::EINVAL),
+            _ => panic!("expected Ffmpeg variant"),
+        }
+    }
+
+    #[test]
+    fn from_ffmpeg_error_should_format_with_code_in_display() {
         let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::EINVAL);
         let msg = err.to_string();
-        assert!(msg.contains("code: -22"), "expected 'code: -22' in '{msg}'");
+        assert!(msg.contains("code=-22"), "expected 'code=-22' in '{msg}'");
     }
 
     #[test]
-    fn from_ffmpeg_error_message_nonempty() {
+    fn from_ffmpeg_error_message_should_be_nonempty() {
         let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::ENOMEM);
-        let msg = err.to_string();
-        assert!(!msg.is_empty());
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]
-    fn from_ffmpeg_error_eof() {
+    fn from_ffmpeg_error_eof_should_be_constructible() {
         let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::EOF);
-        assert!(matches!(err, EncodeError::Ffmpeg(_)));
+        assert!(matches!(err, EncodeError::Ffmpeg { .. }));
         assert!(!err.to_string().is_empty());
     }
 }

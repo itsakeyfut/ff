@@ -154,8 +154,10 @@ impl ImageDecoder {
     /// Returns [`DecodeError`] if the image cannot be decoded or was already
     /// decoded.
     pub fn decode(mut self) -> Result<VideoFrame, DecodeError> {
-        self.decode_one()?
-            .ok_or_else(|| DecodeError::Ffmpeg("Image already decoded".to_string()))
+        self.decode_one()?.ok_or_else(|| DecodeError::Ffmpeg {
+            code: 0,
+            message: "Image already decoded".to_string(),
+        })
     }
 }
 

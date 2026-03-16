@@ -291,10 +291,13 @@ impl VideoEncoderInner {
             );
 
             if ret < 0 || format_ctx.is_null() {
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Cannot create output context: {}",
-                    ff_sys::av_error_string(ret)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!(
+                        "Cannot create output context: {}",
+                        ff_sys::av_error_string(ret)
+                    ),
+                });
             }
 
             let mut encoder = Self {
@@ -380,10 +383,10 @@ impl VideoEncoderInner {
                 let ret = avformat_write_header(format_ctx, ptr::null_mut());
                 if ret < 0 {
                     encoder.cleanup();
-                    return Err(EncodeError::Ffmpeg(format!(
-                        "Cannot write header: {}",
-                        ff_sys::av_error_string(ret)
-                    )));
+                    return Err(EncodeError::Ffmpeg {
+                        code: ret,
+                        message: format!("Cannot write header: {}", ff_sys::av_error_string(ret)),
+                    });
                 }
             }
 
@@ -412,8 +415,11 @@ impl VideoEncoderInner {
         let encoder_name = self.select_video_encoder(codec, hardware_encoder)?;
         self.actual_video_codec = encoder_name.clone();
 
-        let c_encoder_name = CString::new(encoder_name.as_str())
-            .map_err(|_| EncodeError::Ffmpeg("Invalid encoder name".to_string()))?;
+        let c_encoder_name =
+            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid encoder name".to_string(),
+            })?;
 
         let codec_ptr =
             avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
@@ -448,8 +454,10 @@ impl VideoEncoderInner {
                 (*codec_ctx).rc_buffer_size = (*max * 2) as i32;
             }
             Some(BitrateMode::Crf(q)) => {
-                let crf_str = CString::new(q.to_string())
-                    .map_err(|_| EncodeError::Ffmpeg("Invalid CRF value".to_string()))?;
+                let crf_str = CString::new(q.to_string()).map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Invalid CRF value".to_string(),
+                })?;
                 // SAFETY: priv_data, option name, and value are all valid pointers
                 let ret = ff_sys::av_opt_set(
                     (*codec_ctx).priv_data,
@@ -473,8 +481,10 @@ impl VideoEncoderInner {
 
         // Set preset for x264/x265
         if encoder_name.contains("264") || encoder_name.contains("265") {
-            let preset_cstr = CString::new(preset)
-                .map_err(|_| EncodeError::Ffmpeg("Invalid preset value".to_string()))?;
+            let preset_cstr = CString::new(preset).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid preset value".to_string(),
+            })?;
             // SAFETY: priv_data, option name, and value are all valid pointers
             let ret = ff_sys::av_opt_set(
                 (*codec_ctx).priv_data,
@@ -505,7 +515,10 @@ impl VideoEncoderInner {
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
             avcodec::free_context(&mut codec_ctx as *mut *mut _);
-            return Err(EncodeError::Ffmpeg("Cannot create stream".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot create stream".to_string(),
+            });
         }
 
         (*stream).time_base = (*codec_ctx).time_base;
@@ -564,8 +577,10 @@ impl VideoEncoderInner {
         // Try each candidate
         for &name in &candidates {
             unsafe {
-                let c_name = CString::new(name)
-                    .map_err(|_| EncodeError::Ffmpeg("Invalid encoder name".to_string()))?;
+                let c_name = CString::new(name).map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Invalid encoder name".to_string(),
+                })?;
                 if avcodec::find_encoder_by_name(c_name.as_ptr()).is_some() {
                     return Ok(name.to_string());
                 }
@@ -702,8 +717,11 @@ impl VideoEncoderInner {
         let encoder_name = self.select_audio_encoder(codec)?;
         self.actual_audio_codec = encoder_name.clone();
 
-        let c_encoder_name = CString::new(encoder_name.as_str())
-            .map_err(|_| EncodeError::Ffmpeg("Invalid encoder name".to_string()))?;
+        let c_encoder_name =
+            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid encoder name".to_string(),
+            })?;
 
         let codec_ptr =
             avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
@@ -760,7 +778,10 @@ impl VideoEncoderInner {
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
             avcodec::free_context(&mut codec_ctx as *mut *mut _);
-            return Err(EncodeError::Ffmpeg("Cannot create stream".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot create stream".to_string(),
+            });
         }
 
         (*stream).time_base = (*codec_ctx).time_base;
@@ -804,8 +825,10 @@ impl VideoEncoderInner {
         // Try each candidate
         for &name in &candidates {
             unsafe {
-                let c_name = CString::new(name)
-                    .map_err(|_| EncodeError::Ffmpeg("Invalid encoder name".to_string()))?;
+                let c_name = CString::new(name).map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Invalid encoder name".to_string(),
+                })?;
                 if avcodec::find_encoder_by_name(c_name.as_ptr()).is_some() {
                     return Ok(name.to_string());
                 }
@@ -838,7 +861,10 @@ impl VideoEncoderInner {
             // Convert the incoming frame to YUV420P (the pass-1 codec's format).
             let mut av_frame = av_frame_alloc();
             if av_frame.is_null() {
-                return Err(EncodeError::Ffmpeg("Cannot allocate frame".to_string()));
+                return Err(EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Cannot allocate frame".to_string(),
+                });
             }
 
             let convert_result = self.convert_video_frame(frame, av_frame, pass1_ctx);
@@ -880,10 +906,13 @@ impl VideoEncoderInner {
             let send_result = avcodec::send_frame(pass1_ctx, av_frame);
             if let Err(e) = send_result {
                 av_frame_free(&mut av_frame as *mut *mut _);
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Failed to send frame to pass-1 encoder: {}",
-                    ff_sys::av_error_string(e)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: e,
+                    message: format!(
+                        "Failed to send frame to pass-1 encoder: {}",
+                        ff_sys::av_error_string(e)
+                    ),
+                });
             }
 
             let drain_result = self.drain_pass1_packets(pass1_ctx);
@@ -904,7 +933,10 @@ impl VideoEncoderInner {
         // Allocate AVFrame
         let mut av_frame = av_frame_alloc();
         if av_frame.is_null() {
-            return Err(EncodeError::Ffmpeg("Cannot allocate frame".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate frame".to_string(),
+            });
         }
 
         // Convert VideoFrame to AVFrame
@@ -921,10 +953,10 @@ impl VideoEncoderInner {
         let send_result = avcodec::send_frame(codec_ctx, av_frame);
         if let Err(e) = send_result {
             av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(EncodeError::Ffmpeg(format!(
-                "Failed to send frame: {}",
-                ff_sys::av_error_string(e)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to send frame: {}", ff_sys::av_error_string(e)),
+            });
         }
 
         // Receive packets
@@ -955,7 +987,10 @@ impl VideoEncoderInner {
     ) -> Result<(), EncodeError> {
         let mut packet = av_packet_alloc();
         if packet.is_null() {
-            return Err(EncodeError::Ffmpeg("Cannot allocate packet".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate packet".to_string(),
+            });
         }
 
         loop {
@@ -969,10 +1004,13 @@ impl VideoEncoderInner {
                 }
                 Err(e) => {
                     av_packet_free(&mut packet as *mut *mut _);
-                    return Err(EncodeError::Ffmpeg(format!(
-                        "Error receiving packet from pass-1 encoder: {}",
-                        ff_sys::av_error_string(e)
-                    )));
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Error receiving packet from pass-1 encoder: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    });
                 }
             }
         }
@@ -1070,10 +1108,13 @@ impl VideoEncoderInner {
         // Allocate frame buffer
         let ret = ff_sys::av_frame_get_buffer(dst, 0);
         if ret < 0 {
-            return Err(EncodeError::Ffmpeg(format!(
-                "Cannot allocate frame buffer: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Cannot allocate frame buffer: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // Copy each plane directly
@@ -1083,9 +1124,13 @@ impl VideoEncoderInner {
             }
 
             // Bounds check for strides array
-            let src_stride =
-                src.strides().get(i).copied().ok_or_else(|| {
-                    EncodeError::Ffmpeg(format!("Missing stride for plane {}", i))
+            let src_stride = src
+                .strides()
+                .get(i)
+                .copied()
+                .ok_or_else(|| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Missing stride for plane {}", i),
                 })?;
 
             let dst_stride = (*dst).linesize[i] as usize;
@@ -1137,10 +1182,13 @@ impl VideoEncoderInner {
         // Allocate frame buffer
         let ret = ff_sys::av_frame_get_buffer(dst, 0);
         if ret < 0 {
-            return Err(EncodeError::Ffmpeg(format!(
-                "Cannot allocate frame buffer: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Cannot allocate frame buffer: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // Prepare source data pointers and strides
@@ -1155,9 +1203,10 @@ impl VideoEncoderInner {
         }
 
         // Perform scaling/conversion
-        let sws_ctx = self
-            .sws_ctx
-            .ok_or_else(|| EncodeError::Ffmpeg("Scaling context not initialized".to_string()))?;
+        let sws_ctx = self.sws_ctx.ok_or_else(|| EncodeError::Ffmpeg {
+            code: 0,
+            message: "Scaling context not initialized".to_string(),
+        })?;
 
         swscale::scale(
             sws_ctx,
@@ -1232,7 +1281,10 @@ impl VideoEncoderInner {
 
         let mut packet = av_packet_alloc();
         if packet.is_null() {
-            return Err(EncodeError::Ffmpeg("Cannot allocate packet".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate packet".to_string(),
+            });
         }
 
         loop {
@@ -1246,10 +1298,10 @@ impl VideoEncoderInner {
                 }
                 Err(e) => {
                     av_packet_free(&mut packet as *mut *mut _);
-                    return Err(EncodeError::Ffmpeg(format!(
-                        "Error receiving packet: {}",
-                        ff_sys::av_error_string(e)
-                    )));
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!("Error receiving packet: {}", ff_sys::av_error_string(e)),
+                    });
                 }
             }
 
@@ -1289,7 +1341,10 @@ impl VideoEncoderInner {
         // Allocate AVFrame
         let mut av_frame = av_frame_alloc();
         if av_frame.is_null() {
-            return Err(EncodeError::Ffmpeg("Cannot allocate frame".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate frame".to_string(),
+            });
         }
 
         // Convert AudioFrame to AVFrame
@@ -1306,10 +1361,10 @@ impl VideoEncoderInner {
         let send_result = avcodec::send_frame(codec_ctx, av_frame);
         if let Err(e) = send_result {
             av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(EncodeError::Ffmpeg(format!(
-                "Failed to send audio frame: {}",
-                ff_sys::av_error_string(e)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
+            });
         }
 
         // Receive packets
@@ -1372,8 +1427,9 @@ impl VideoEncoderInner {
                 self.swr_ctx = Some(swr_ctx);
             }
 
-            let swr_ctx = self.swr_ctx.ok_or_else(|| {
-                EncodeError::Ffmpeg("Resampling context not initialized".to_string())
+            let swr_ctx = self.swr_ctx.ok_or_else(|| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Resampling context not initialized".to_string(),
             })?;
 
             // Estimate output sample count
@@ -1395,10 +1451,13 @@ impl VideoEncoderInner {
             // Allocate frame buffer
             let ret = ff_sys::av_frame_get_buffer(dst, 0);
             if ret < 0 {
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Cannot allocate audio frame buffer: {}",
-                    ff_sys::av_error_string(ret)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!(
+                        "Cannot allocate audio frame buffer: {}",
+                        ff_sys::av_error_string(ret)
+                    ),
+                });
             }
 
             // Prepare input pointers
@@ -1434,10 +1493,13 @@ impl VideoEncoderInner {
             // Allocate frame buffer
             let ret = ff_sys::av_frame_get_buffer(dst, 0);
             if ret < 0 {
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Cannot allocate audio frame buffer: {}",
-                    ff_sys::av_error_string(ret)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!(
+                        "Cannot allocate audio frame buffer: {}",
+                        ff_sys::av_error_string(ret)
+                    ),
+                });
             }
 
             // Copy audio data
@@ -1471,7 +1533,10 @@ impl VideoEncoderInner {
 
         let mut packet = av_packet_alloc();
         if packet.is_null() {
-            return Err(EncodeError::Ffmpeg("Cannot allocate packet".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate packet".to_string(),
+            });
         }
 
         loop {
@@ -1485,10 +1550,13 @@ impl VideoEncoderInner {
                 }
                 Err(e) => {
                     av_packet_free(&mut packet as *mut *mut _);
-                    return Err(EncodeError::Ffmpeg(format!(
-                        "Error receiving audio packet: {}",
-                        ff_sys::av_error_string(e)
-                    )));
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Error receiving audio packet: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    });
                 }
             }
 
@@ -1541,10 +1609,10 @@ impl VideoEncoderInner {
         // Write trailer
         let ret = av_write_trailer(self.format_ctx);
         if ret < 0 {
-            return Err(EncodeError::Ffmpeg(format!(
-                "Cannot write trailer: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: ret,
+                message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
+            });
         }
 
         Ok(())
@@ -1575,10 +1643,10 @@ impl VideoEncoderInner {
         if let Err(e) = avcodec::send_frame(pass1_ctx, ptr::null())
             && e != ff_sys::error_codes::EOF
         {
-            return Err(EncodeError::Ffmpeg(format!(
-                "pass1 flush send_frame: {}",
-                ff_sys::av_error_string(e)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: e,
+                message: format!("pass1 flush send_frame: {}", ff_sys::av_error_string(e)),
+            });
         }
         self.drain_pass1_packets(pass1_ctx)?;
 
@@ -1627,10 +1695,13 @@ impl VideoEncoderInner {
         Self::apply_chapters(self.format_ctx, &config.chapters);
         let ret = avformat_write_header(self.format_ctx, ptr::null_mut());
         if ret < 0 {
-            return Err(EncodeError::Ffmpeg(format!(
-                "Cannot write header in pass 2: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Cannot write header in pass 2: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // ── Step 6: Re-encode all buffered frames ────────────────────────────
@@ -1646,10 +1717,10 @@ impl VideoEncoderInner {
             if let Err(e) = avcodec::send_frame(codec_ctx, ptr::null())
                 && e != ff_sys::error_codes::EOF
             {
-                return Err(EncodeError::Ffmpeg(format!(
-                    "pass2 flush send_frame: {}",
-                    ff_sys::av_error_string(e)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: e,
+                    message: format!("pass2 flush send_frame: {}", ff_sys::av_error_string(e)),
+                });
             }
             self.receive_packets()?;
         }
@@ -1659,10 +1730,10 @@ impl VideoEncoderInner {
 
         let ret = av_write_trailer(self.format_ctx);
         if ret < 0 {
-            return Err(EncodeError::Ffmpeg(format!(
-                "Cannot write trailer: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: ret,
+                message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
+            });
         }
 
         Ok(())
@@ -1689,8 +1760,11 @@ impl VideoEncoderInner {
         let fps = config.video_fps.unwrap_or(30.0);
         let encoder_name = self.actual_video_codec.clone();
 
-        let c_encoder_name = CString::new(encoder_name.as_str())
-            .map_err(|_| EncodeError::Ffmpeg("Invalid encoder name for pass 2".to_string()))?;
+        let c_encoder_name =
+            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid encoder name for pass 2".to_string(),
+            })?;
 
         let codec_ptr =
             avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
@@ -1723,8 +1797,10 @@ impl VideoEncoderInner {
                 (*codec_ctx).rc_buffer_size = (*max * 2) as i32;
             }
             Some(BitrateMode::Crf(q)) => {
-                let crf_str = CString::new(q.to_string())
-                    .map_err(|_| EncodeError::Ffmpeg("Invalid CRF value".to_string()))?;
+                let crf_str = CString::new(q.to_string()).map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Invalid CRF value".to_string(),
+                })?;
                 // SAFETY: priv_data, option name, and value are all valid pointers.
                 let ret = ff_sys::av_opt_set(
                     (*codec_ctx).priv_data,
@@ -1746,8 +1822,11 @@ impl VideoEncoderInner {
         }
 
         if encoder_name.contains("264") || encoder_name.contains("265") {
-            let preset_cstr = CString::new(config.preset.as_str())
-                .map_err(|_| EncodeError::Ffmpeg("Invalid preset value".to_string()))?;
+            let preset_cstr =
+                CString::new(config.preset.as_str()).map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Invalid preset value".to_string(),
+                })?;
             // SAFETY: priv_data, option name, and value are all valid pointers.
             let ret = ff_sys::av_opt_set(
                 (*codec_ctx).priv_data,
@@ -1771,8 +1850,10 @@ impl VideoEncoderInner {
         // Point stats_in to our owned CString (kept alive in self.stats_in_cstr
         // until cleanup() nulls the pointer and drops it).
         if !stats.is_empty() {
-            let stats_cstr = CString::new(stats)
-                .map_err(|_| EncodeError::Ffmpeg("Invalid stats string from pass 1".to_string()))?;
+            let stats_cstr = CString::new(stats).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid stats string from pass 1".to_string(),
+            })?;
             // SAFETY: stats_cstr.as_ptr() is valid for the lifetime of stats_cstr,
             // which is stored in self.stats_in_cstr and dropped only after the codec
             // context is freed in cleanup().
@@ -1793,10 +1874,13 @@ impl VideoEncoderInner {
             (*codec_ctx).stats_in = ptr::null_mut();
             self.stats_in_cstr = None;
             avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut()).map_err(|e| {
-                EncodeError::Ffmpeg(format!(
-                    "pass2 avcodec_open2 fallback: {}",
-                    ff_sys::av_error_string(e)
-                ))
+                EncodeError::Ffmpeg {
+                    code: e,
+                    message: format!(
+                        "pass2 avcodec_open2 fallback: {}",
+                        ff_sys::av_error_string(e)
+                    ),
+                }
             })?;
         }
         log::info!(
@@ -1825,9 +1909,10 @@ impl VideoEncoderInner {
 
         let mut av_frame = av_frame_alloc();
         if av_frame.is_null() {
-            return Err(EncodeError::Ffmpeg(
-                "Cannot allocate frame for pass 2".to_string(),
-            ));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate frame for pass 2".to_string(),
+            });
         }
 
         // Set frame format — always YUV420P (converted during pass 1).
@@ -1839,10 +1924,13 @@ impl VideoEncoderInner {
         let ret = ff_sys::av_frame_get_buffer(av_frame, 0);
         if ret < 0 {
             av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(EncodeError::Ffmpeg(format!(
-                "Cannot allocate pass-2 frame buffer: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Cannot allocate pass-2 frame buffer: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // Copy the buffered YUV420P data into the AVFrame.
@@ -1883,10 +1971,13 @@ impl VideoEncoderInner {
         let send_result = avcodec::send_frame(codec_ctx, av_frame);
         if let Err(e) = send_result {
             av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(EncodeError::Ffmpeg(format!(
-                "Failed to send frame to pass-2 encoder: {}",
-                ff_sys::av_error_string(e)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: e,
+                message: format!(
+                    "Failed to send frame to pass-2 encoder: {}",
+                    ff_sys::av_error_string(e)
+                ),
+            });
         }
 
         let receive_result = self.receive_packets();
@@ -2051,9 +2142,10 @@ impl VideoEncoderInner {
         if pkt.is_null() {
             let mut src_ctx_ptr = src_ctx;
             ff_sys::avformat::close_input(&mut src_ctx_ptr);
-            return Err(EncodeError::Ffmpeg(
-                "subtitle_passthrough: av_packet_alloc failed".to_string(),
-            ));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "subtitle_passthrough: av_packet_alloc failed".to_string(),
+            });
         }
 
         loop {

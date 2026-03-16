@@ -111,8 +111,13 @@ pub enum DecodeError {
     ///
     /// This wraps errors from the underlying `FFmpeg` library that don't
     /// fit into other categories.
-    #[error("FFmpeg error: {0}")]
-    Ffmpeg(String),
+    #[error("ffmpeg error: {message} (code={code})")]
+    Ffmpeg {
+        /// Raw `FFmpeg` error code (negative integer). `0` when no numeric code is available.
+        code: i32,
+        /// Human-readable error message from `av_strerror` or an internal description.
+        message: String,
+    },
 
     /// I/O error during file operations.
     ///
@@ -206,19 +211,25 @@ impl DecodeError {
     ///
     /// # Arguments
     ///
-    /// * `message` - The `FFmpeg` error message.
+    /// * `code` - The raw `FFmpeg` error code (negative integer). Pass `0` when no
+    ///   numeric code is available.
+    /// * `message` - Human-readable description of the error.
     ///
     /// # Examples
     ///
     /// ```
     /// use ff_decode::DecodeError;
     ///
-    /// let error = DecodeError::ffmpeg("AVERROR_INVALIDDATA");
-    /// assert!(error.to_string().contains("AVERROR_INVALIDDATA"));
+    /// let error = DecodeError::ffmpeg(-22, "Invalid data found when processing input");
+    /// assert!(error.to_string().contains("Invalid data"));
+    /// assert!(error.to_string().contains("code=-22"));
     /// ```
     #[must_use]
-    pub fn ffmpeg(message: impl Into<String>) -> Self {
-        Self::Ffmpeg(message.into())
+    pub fn ffmpeg(code: i32, message: impl Into<String>) -> Self {
+        Self::Ffmpeg {
+            code,
+            message: message.into(),
+        }
     }
 
     /// Returns `true` if this error indicates end of stream.
@@ -360,13 +371,27 @@ mod tests {
 
     #[test]
     fn test_ffmpeg_constructor() {
-        let error = DecodeError::ffmpeg("AVERROR_INVALIDDATA");
+        let error = DecodeError::ffmpeg(-22, "AVERROR_INVALIDDATA");
         match error {
-            DecodeError::Ffmpeg(msg) => {
-                assert_eq!(msg, "AVERROR_INVALIDDATA");
+            DecodeError::Ffmpeg { code, message } => {
+                assert_eq!(code, -22);
+                assert_eq!(message, "AVERROR_INVALIDDATA");
             }
             _ => panic!("Wrong error type"),
         }
+    }
+
+    #[test]
+    fn ffmpeg_should_format_with_code_and_message() {
+        let error = DecodeError::ffmpeg(-22, "Invalid data");
+        assert!(error.to_string().contains("code=-22"));
+        assert!(error.to_string().contains("Invalid data"));
+    }
+
+    #[test]
+    fn ffmpeg_with_zero_code_should_be_constructible() {
+        let error = DecodeError::ffmpeg(0, "allocation failed");
+        assert!(matches!(error, DecodeError::Ffmpeg { code: 0, .. }));
     }
 
     #[test]

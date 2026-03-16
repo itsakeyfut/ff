@@ -61,11 +61,9 @@ impl AvFormatContextGuard {
     unsafe fn new(path: &Path) -> Result<Self, DecodeError> {
         // SAFETY: Caller ensures FFmpeg is initialized and path is valid
         let format_ctx = unsafe {
-            ff_sys::avformat::open_input(path).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to open file: {}",
-                    ff_sys::av_error_string(e)
-                ))
+            ff_sys::avformat::open_input(path).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to open file: {}", ff_sys::av_error_string(e)),
             })?
         };
         Ok(Self(format_ctx))
@@ -107,8 +105,9 @@ impl AvCodecContextGuard {
     unsafe fn new(codec: *const ff_sys::AVCodec) -> Result<Self, DecodeError> {
         // SAFETY: Caller ensures codec pointer is valid
         let codec_ctx = unsafe {
-            ff_sys::avcodec::alloc_context3(codec).map_err(|e| {
-                DecodeError::Ffmpeg(format!("Failed to allocate codec context: {e}"))
+            ff_sys::avcodec::alloc_context3(codec).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to allocate codec context: {e}"),
             })?
         };
         Ok(Self(codec_ctx))
@@ -151,7 +150,10 @@ impl AvPacketGuard {
         // SAFETY: Caller ensures FFmpeg is initialized
         let packet = unsafe { ff_sys::av_packet_alloc() };
         if packet.is_null() {
-            return Err(DecodeError::Ffmpeg("Failed to allocate packet".to_string()));
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "Failed to allocate packet".to_string(),
+            });
         }
         Ok(Self(packet))
     }
@@ -194,7 +196,10 @@ impl AvFrameGuard {
         // SAFETY: Caller ensures FFmpeg is initialized
         let frame = unsafe { ff_sys::av_frame_alloc() };
         if frame.is_null() {
-            return Err(DecodeError::Ffmpeg("Failed to allocate frame".to_string()));
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "Failed to allocate frame".to_string(),
+            });
         }
         Ok(Self(frame))
     }
@@ -430,9 +435,10 @@ impl VideoDecoderInner {
         // SAFETY: FFmpeg is initialized
         let sw_frame = unsafe { ff_sys::av_frame_alloc() };
         if sw_frame.is_null() {
-            return Err(DecodeError::Ffmpeg(
-                "Failed to allocate software frame for hardware transfer".to_string(),
-            ));
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "Failed to allocate software frame for hardware transfer".to_string(),
+            });
         }
 
         // Transfer data from hardware frame to software frame
@@ -448,10 +454,13 @@ impl VideoDecoderInner {
             unsafe {
                 ff_sys::av_frame_free(&mut (sw_frame as *mut _));
             }
-            return Err(DecodeError::Ffmpeg(format!(
-                "Failed to transfer hardware frame to CPU memory: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(DecodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Failed to transfer hardware frame to CPU memory: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // Copy metadata (pts, duration, etc.) from hardware frame to software frame
@@ -508,11 +517,9 @@ impl VideoDecoderInner {
         // Read stream information
         // SAFETY: format_ctx is valid and owned by guard
         unsafe {
-            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to find stream info: {}",
-                    ff_sys::av_error_string(e)
-                ))
+            ff_sys::avformat::find_stream_info(format_ctx).map_err(|e| DecodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to find stream info: {}", ff_sys::av_error_string(e)),
             })?;
         }
 
@@ -546,10 +553,13 @@ impl VideoDecoderInner {
             let stream = (*format_ctx).streams.add(stream_index as usize);
             let codecpar = (*(*stream)).codecpar;
             ff_sys::avcodec::parameters_to_context(codec_ctx, codecpar).map_err(|e| {
-                DecodeError::Ffmpeg(format!(
-                    "Failed to copy codec parameters: {}",
-                    ff_sys::av_error_string(e)
-                ))
+                DecodeError::Ffmpeg {
+                    code: e,
+                    message: format!(
+                        "Failed to copy codec parameters: {}",
+                        ff_sys::av_error_string(e)
+                    ),
+                }
             })?;
 
             // Set thread count
@@ -574,10 +584,10 @@ impl VideoDecoderInner {
                 if let Some(hw_ctx) = hw_device_ctx {
                     ff_sys::av_buffer_unref(&mut (hw_ctx as *mut _));
                 }
-                DecodeError::Ffmpeg(format!(
-                    "Failed to open codec: {}",
-                    ff_sys::av_error_string(e)
-                ))
+                DecodeError::Ffmpeg {
+                    code: e,
+                    message: format!("Failed to open codec: {}", ff_sys::av_error_string(e)),
+                }
             })?;
         }
 
@@ -873,10 +883,13 @@ impl VideoDecoderInner {
                         self.eof = true;
                         continue;
                     } else if read_ret < 0 {
-                        return Err(DecodeError::Ffmpeg(format!(
-                            "Failed to read frame: {}",
-                            ff_sys::av_error_string(read_ret)
-                        )));
+                        return Err(DecodeError::Ffmpeg {
+                            code: read_ret,
+                            message: format!(
+                                "Failed to read frame: {}",
+                                ff_sys::av_error_string(read_ret)
+                            ),
+                        });
                     }
 
                     // Check if this packet belongs to the video stream
@@ -886,10 +899,13 @@ impl VideoDecoderInner {
                         ff_sys::av_packet_unref(self.packet);
 
                         if send_ret < 0 && send_ret != ff_sys::error_codes::EAGAIN {
-                            return Err(DecodeError::Ffmpeg(format!(
-                                "Failed to send packet: {}",
-                                ff_sys::av_error_string(send_ret)
-                            )));
+                            return Err(DecodeError::Ffmpeg {
+                                code: send_ret,
+                                message: format!(
+                                    "Failed to send packet: {}",
+                                    ff_sys::av_error_string(send_ret)
+                                ),
+                            });
                         }
                     } else {
                         // Not our stream, unref and continue
@@ -956,15 +972,19 @@ impl VideoDecoderInner {
                     dst_format,
                     ff_sys::swscale::scale_flags::BILINEAR,
                 )
-                .map_err(|e| DecodeError::Ffmpeg(format!("Failed to create sws context: {e}")))?;
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Failed to create sws context: {e}"),
+                })?;
 
                 self.sws_ctx = Some(ctx);
             }
 
             let Some(sws_ctx) = self.sws_ctx else {
-                return Err(DecodeError::Ffmpeg(
-                    "SwsContext not initialized".to_string(),
-                ));
+                return Err(DecodeError::Ffmpeg {
+                    code: 0,
+                    message: "SwsContext not initialized".to_string(),
+                });
             };
 
             // Allocate destination frame (with RAII guard)
@@ -978,10 +998,13 @@ impl VideoDecoderInner {
             // Allocate buffer for destination frame
             let buffer_ret = ff_sys::av_frame_get_buffer(dst_frame, 0);
             if buffer_ret < 0 {
-                return Err(DecodeError::Ffmpeg(format!(
-                    "Failed to allocate frame buffer: {}",
-                    ff_sys::av_error_string(buffer_ret)
-                )));
+                return Err(DecodeError::Ffmpeg {
+                    code: buffer_ret,
+                    message: format!(
+                        "Failed to allocate frame buffer: {}",
+                        ff_sys::av_error_string(buffer_ret)
+                    ),
+                });
             }
 
             // Perform conversion
@@ -994,7 +1017,10 @@ impl VideoDecoderInner {
                 (*dst_frame).data.as_ptr() as *const *mut u8,
                 (*dst_frame).linesize.as_ptr(),
             )
-            .map_err(|e| DecodeError::Ffmpeg(format!("Failed to scale frame: {e}")))?;
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: 0,
+                message: format!("Failed to scale frame: {e}"),
+            })?;
 
             // Copy timestamp
             (*dst_frame).pts = (*self.frame).pts;
@@ -1036,8 +1062,12 @@ impl VideoDecoderInner {
             let (planes, strides) =
                 self.extract_planes_and_strides(frame, width, height, format)?;
 
-            VideoFrame::new(planes, strides, width, height, format, timestamp, false)
-                .map_err(|e| DecodeError::Ffmpeg(format!("Failed to create VideoFrame: {e}")))
+            VideoFrame::new(planes, strides, width, height, format, timestamp, false).map_err(|e| {
+                DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Failed to create VideoFrame: {e}"),
+                }
+            })
         }
     }
 
@@ -1247,9 +1277,10 @@ impl VideoDecoderInner {
                     strides.push(uv_stride);
                 }
                 _ => {
-                    return Err(DecodeError::Ffmpeg(format!(
-                        "Unsupported pixel format: {format:?}"
-                    )));
+                    return Err(DecodeError::Ffmpeg {
+                        code: 0,
+                        message: format!("Unsupported pixel format: {format:?}"),
+                    });
                 }
             }
 
@@ -1635,8 +1666,9 @@ impl VideoDecoderInner {
                         av_format,
                         ff_sys::swscale::scale_flags::BILINEAR,
                     )
-                    .map_err(|e| {
-                        DecodeError::Ffmpeg(format!("Failed to create scaling context: {e}"))
+                    .map_err(|e| DecodeError::Ffmpeg {
+                        code: 0,
+                        message: format!("Failed to create scaling context: {e}"),
                     })?;
 
                     // Don't cache yet - will cache after successful scaling
@@ -1653,8 +1685,9 @@ impl VideoDecoderInner {
                     av_format,
                     ff_sys::swscale::scale_flags::BILINEAR,
                 )
-                .map_err(|e| {
-                    DecodeError::Ffmpeg(format!("Failed to create scaling context: {e}"))
+                .map_err(|e| DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Failed to create scaling context: {e}"),
                 })?;
 
                 // Don't cache yet - will cache after successful scaling
@@ -1696,10 +1729,13 @@ impl VideoDecoderInner {
                 if !is_cached {
                     ff_sys::swscale::free_context(sws_ctx);
                 }
-                return Err(DecodeError::Ffmpeg(format!(
-                    "Failed to allocate destination frame buffer: {}",
-                    ff_sys::av_error_string(buffer_ret)
-                )));
+                return Err(DecodeError::Ffmpeg {
+                    code: buffer_ret,
+                    message: format!(
+                        "Failed to allocate destination frame buffer: {}",
+                        ff_sys::av_error_string(buffer_ret)
+                    ),
+                });
             }
 
             // Perform scaling
@@ -1718,7 +1754,10 @@ impl VideoDecoderInner {
                 if !is_cached {
                     ff_sys::swscale::free_context(sws_ctx);
                 }
-                return Err(DecodeError::Ffmpeg(format!("Failed to scale frame: {e}")));
+                return Err(DecodeError::Ffmpeg {
+                    code: 0,
+                    message: format!("Failed to scale frame: {e}"),
+                });
             }
 
             // Scaling successful - cache the context if it's new
