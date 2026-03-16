@@ -7,6 +7,7 @@
 
 mod fixtures;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
@@ -281,6 +282,63 @@ fn transcode_two_inputs_should_produce_larger_output_than_single_input() {
             println!("Skipping: decoder unavailable: {e}");
         }
         (Err(e), _) | (_, Err(e)) => panic!("unexpected error: {e}"),
+    }
+}
+
+#[test]
+fn transcode_single_input_should_produce_nonzero_duration_and_call_progress() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    let output = test_output_path("pipeline_duration_progress.mp4");
+    let _guard = FileGuard::new(output.clone());
+
+    let call_count = Arc::new(AtomicU64::new(0));
+    let call_count_clone = Arc::clone(&call_count);
+
+    let pipeline = match Pipeline::builder()
+        .input(input.to_str().unwrap())
+        .output(output.to_str().unwrap(), basic_config())
+        .on_progress(move |_p| {
+            call_count_clone.fetch_add(1, Ordering::Relaxed);
+            true
+        })
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Skipping: build failed: {e}");
+            return;
+        }
+    };
+
+    match pipeline.run() {
+        Ok(()) => {
+            assert!(output.exists(), "output file must exist after run");
+
+            let info = match ff_probe::open(&output) {
+                Ok(i) => i,
+                Err(e) => {
+                    println!("Skipping duration check: probe failed: {e}");
+                    return;
+                }
+            };
+            assert!(
+                info.duration() > std::time::Duration::ZERO,
+                "output must have non-zero duration, got {:?}",
+                info.duration()
+            );
+
+            assert!(
+                call_count.load(Ordering::Relaxed) >= 1,
+                "progress callback must be called at least once"
+            );
+        }
+        Err(PipelineError::Encode(e)) => println!("Skipping: encoder unavailable: {e}"),
+        Err(PipelineError::Decode(e)) => println!("Skipping: decoder unavailable: {e}"),
+        Err(e) => panic!("unexpected error: {e}"),
     }
 }
 

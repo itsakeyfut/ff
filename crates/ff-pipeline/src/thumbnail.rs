@@ -129,14 +129,15 @@ mod tests {
 
     #[test]
     fn timestamps_should_sort_ascending_before_run() {
-        let mut ts = vec![3.0_f64, 1.0, 2.0];
+        let mut ts = [3.0_f64, 1.0, 2.0];
         ts.sort_by(f64::total_cmp);
-        assert_eq!(ts, vec![1.0, 2.0, 3.0]);
+        assert_eq!(ts, [1.0, 2.0, 3.0]);
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn timestamps_nan_should_sort_after_finite_values() {
-        let mut ts = vec![2.0_f64, f64::NAN, 1.0];
+        let mut ts = [2.0_f64, f64::NAN, 1.0];
         ts.sort_by(f64::total_cmp);
         assert_eq!(ts[0], 1.0);
         assert_eq!(ts[1], 2.0);
