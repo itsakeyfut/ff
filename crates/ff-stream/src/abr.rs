@@ -154,15 +154,18 @@ impl AbrLadder {
                 reason: "no renditions added".into(),
             });
         }
-        for (i, _rendition) in self.renditions.iter().enumerate() {
-            let subdir = format!("{output_dir}/{i}");
-            crate::dash::DashOutput::new(&subdir)
-                .input(&self.input_path)
-                .segment_duration(Duration::from_secs(4))
-                .build()?
-                .write()?;
-        }
-        Ok(())
+        let rendition_params: Vec<(i64, i32, i32)> = self
+            .renditions
+            .iter()
+            .map(|r| {
+                (
+                    r.bitrate.cast_signed(),
+                    r.width.cast_signed(),
+                    r.height.cast_signed(),
+                )
+            })
+            .collect();
+        crate::dash_inner::write_dash_abr(&self.input_path, output_dir, 4.0, &rendition_params)
     }
 }
 
