@@ -251,4 +251,59 @@ mod tests {
         let _: FilterError = FilterError::BuildFailed;
         let _: FilterError = FilterError::ProcessFailed;
     }
+
+    // ── pipeline feature ──────────────────────────────────────────────────────
+
+    #[cfg(feature = "pipeline")]
+    #[test]
+    fn pipeline_builder_should_be_accessible() {
+        // Pipeline::builder() is the public entry point; verify name resolution.
+        let _builder: PipelineBuilder = Pipeline::builder();
+    }
+
+    #[cfg(feature = "pipeline")]
+    #[test]
+    fn pipeline_error_should_be_accessible() {
+        let _: PipelineError = PipelineError::NoInput;
+        let _: PipelineError = PipelineError::NoOutput;
+        let _: PipelineError = PipelineError::Cancelled;
+    }
+
+    #[cfg(feature = "pipeline")]
+    #[test]
+    fn pipeline_progress_should_be_accessible() {
+        let p = Progress {
+            frames_processed: 10,
+            total_frames: Some(100),
+            elapsed: std::time::Duration::from_secs(1),
+        };
+        assert_eq!(p.percent(), Some(10.0));
+    }
+
+    #[cfg(feature = "pipeline")]
+    #[test]
+    fn pipeline_progress_callback_should_be_accessible() {
+        // ProgressCallback is Box<dyn Fn(&Progress) -> bool + Send>.
+        let _cb: ProgressCallback = Box::new(|_: &Progress| true);
+    }
+
+    #[cfg(feature = "pipeline")]
+    #[test]
+    fn pipeline_thumbnail_pipeline_should_be_accessible() {
+        // ThumbnailPipeline::new constructs without opening a file.
+        let _t: ThumbnailPipeline = ThumbnailPipeline::new("/no/such/file.mp4");
+    }
+
+    #[cfg(all(feature = "pipeline", feature = "encode"))]
+    #[test]
+    fn pipeline_encoder_config_should_be_accessible() {
+        let _config = EncoderConfig {
+            video_codec: VideoCodec::H264,
+            audio_codec: AudioCodec::Aac,
+            bitrate_mode: BitrateMode::Cbr(4_000_000),
+            resolution: None,
+            framerate: None,
+            hardware: None,
+        };
+    }
 }
