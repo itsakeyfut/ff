@@ -274,6 +274,7 @@ unsafe fn write_dash_unsafe(
         (*(*vid_out_stream).codecpar).width = (*vid_enc_ctx).width;
         (*(*vid_out_stream).codecpar).height = (*vid_enc_ctx).height;
         (*(*vid_out_stream).codecpar).format = (*vid_enc_ctx).pix_fmt;
+        (*(*vid_out_stream).codecpar).bit_rate = (*vid_enc_ctx).bit_rate;
     }
 
     // ── 10. Open AAC audio encoder and add audio stream (optional) ────────────

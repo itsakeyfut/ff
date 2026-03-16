@@ -105,3 +105,46 @@ fn manifest_should_contain_required_dash_tags() {
         "missing AdaptationSet in manifest"
     );
 }
+
+#[test]
+fn representation_should_match_encoder_dimensions() {
+    let Some((out_dir, _guard)) = run_dash_write("dash_repr_test", 1) else {
+        return;
+    };
+    let content = std::fs::read_to_string(out_dir.join("manifest.mpd")).unwrap();
+    assert!(
+        content.contains("Representation"),
+        "missing Representation element"
+    );
+    assert!(
+        content.contains("width=\"320\""),
+        "Representation missing width=\"320\""
+    );
+    assert!(
+        content.contains("height=\"240\""),
+        "Representation missing height=\"240\""
+    );
+}
+
+#[test]
+fn manifest_should_contain_single_adaptation_set() {
+    let Some((out_dir, _guard)) = run_dash_write("dash_single_as_test", 1) else {
+        return;
+    };
+    let content = std::fs::read_to_string(out_dir.join("manifest.mpd")).unwrap();
+    let count = content.matches("<AdaptationSet").count();
+    assert_eq!(count, 1, "expected exactly 1 AdaptationSet, got {count}");
+}
+
+#[test]
+fn init_segment_should_be_present() {
+    let Some((out_dir, _guard)) = run_dash_write("dash_init_test", 1) else {
+        return;
+    };
+    let init = out_dir.join("init-stream0.m4s");
+    assert!(init.exists(), "init-stream0.m4s should exist");
+    assert!(
+        std::fs::metadata(&init).unwrap().len() > 0,
+        "init-stream0.m4s should be non-empty"
+    );
+}
