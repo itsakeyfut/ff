@@ -75,6 +75,7 @@ pub mod dash;
 /// Unified error type for the `ff-stream` crate.
 pub mod error;
 pub mod hls;
+pub(crate) mod hls_inner;
 
 pub use abr::{AbrLadder, Rendition};
 pub use dash::DashOutput;

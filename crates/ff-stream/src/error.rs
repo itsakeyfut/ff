@@ -41,6 +41,20 @@ pub enum StreamError {
         /// Human-readable description of the configuration problem.
         reason: String,
     },
+
+    /// An `FFmpeg` runtime error occurred during muxing or transcoding.
+    ///
+    /// `code` is the raw `FFmpeg` negative error value returned by the failing
+    /// function (e.g. `AVERROR(EINVAL)`).  `message` is the human-readable
+    /// string produced by `av_strerror`.  Exposing the numeric code lets
+    /// engineers cross-reference `FFmpeg` documentation and source directly.
+    #[error("ffmpeg error: {message} (code={code})")]
+    Ffmpeg {
+        /// Raw `FFmpeg` error code (negative integer).
+        code: i32,
+        /// Human-readable description of the `FFmpeg` error.
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -75,5 +89,16 @@ mod tests {
         let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
         let err: StreamError = io.into();
         assert!(err.to_string().contains("access denied"), "got: {err}");
+    }
+
+    #[test]
+    fn ffmpeg_error_should_display_code_and_message() {
+        let err = StreamError::Ffmpeg {
+            code: -22,
+            message: "Cannot open codec".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Cannot open codec"), "got: {msg}");
+        assert!(msg.contains("code=-22"), "got: {msg}");
     }
 }
