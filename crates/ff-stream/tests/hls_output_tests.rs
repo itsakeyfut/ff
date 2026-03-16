@@ -111,8 +111,8 @@ fn write_should_produce_playlist_and_segments() {
         .write();
 
     match result {
-        Err(StreamError::Ffmpeg { reason }) => {
-            println!("Skipping: HLS write failed (no suitable encoder): {reason}");
+        Err(StreamError::Ffmpeg { code, message }) => {
+            println!("Skipping: HLS write failed (no suitable encoder): {message} (code={code})");
             return;
         }
         Err(e) => panic!("Unexpected error: {e}"),

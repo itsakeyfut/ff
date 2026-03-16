@@ -44,12 +44,16 @@ pub enum StreamError {
 
     /// An `FFmpeg` runtime error occurred during muxing or transcoding.
     ///
-    /// This variant wraps `FFmpeg` error codes converted to human-readable strings
-    /// via `av_strerror`.
-    #[error("ffmpeg error: {reason}")]
+    /// `code` is the raw `FFmpeg` negative error value returned by the failing
+    /// function (e.g. `AVERROR(EINVAL)`).  `message` is the human-readable
+    /// string produced by `av_strerror`.  Exposing the numeric code lets
+    /// engineers cross-reference `FFmpeg` documentation and source directly.
+    #[error("ffmpeg error: {message} (code={code})")]
     Ffmpeg {
+        /// Raw `FFmpeg` error code (negative integer).
+        code: i32,
         /// Human-readable description of the `FFmpeg` error.
-        reason: String,
+        message: String,
     },
 }
 
@@ -88,11 +92,13 @@ mod tests {
     }
 
     #[test]
-    fn ffmpeg_error_should_display_reason() {
+    fn ffmpeg_error_should_display_code_and_message() {
         let err = StreamError::Ffmpeg {
-            reason: "Cannot open codec".into(),
+            code: -22,
+            message: "Cannot open codec".into(),
         };
         let msg = err.to_string();
         assert!(msg.contains("Cannot open codec"), "got: {msg}");
+        assert!(msg.contains("code=-22"), "got: {msg}");
     }
 }

@@ -44,13 +44,15 @@ const AV_PICTURE_TYPE_I: i32 = 1;
 
 fn ffmpeg_err(code: i32) -> StreamError {
     StreamError::Ffmpeg {
-        reason: ff_sys::av_error_string(code),
+        code,
+        message: ff_sys::av_error_string(code),
     }
 }
 
 fn ffmpeg_err_msg(msg: &str) -> StreamError {
     StreamError::Ffmpeg {
-        reason: msg.to_owned(),
+        code: 0,
+        message: msg.to_owned(),
     }
 }
 
