@@ -10,7 +10,7 @@ use ff_format::{AudioFrame, VideoFrame};
 
 use super::encoder_inner::{VideoEncoderConfig, VideoEncoderInner, preset_to_string};
 use crate::{
-    AudioCodec, Container, EncodeError, HardwareEncoder, Preset, ProgressCallback, VideoCodec,
+    AudioCodec, Container, EncodeError, EncodeProgressCallback, HardwareEncoder, Preset, VideoCodec,
 };
 
 /// Builder for constructing a [`VideoEncoder`].
@@ -43,7 +43,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) audio_channels: Option<u32>,
     pub(crate) audio_codec: AudioCodec,
     pub(crate) audio_bitrate: Option<u64>,
-    pub(crate) progress_callback: Option<Box<dyn ProgressCallback>>,
+    pub(crate) progress_callback: Option<Box<dyn EncodeProgressCallback>>,
     pub(crate) two_pass: bool,
     pub(crate) metadata: Vec<(String, String)>,
     pub(crate) chapters: Vec<ff_format::chapter::ChapterInfo>,
@@ -180,15 +180,15 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn on_progress<F>(mut self, callback: F) -> Self
     where
-        F: FnMut(&crate::Progress) + Send + 'static,
+        F: FnMut(&crate::EncodeProgress) + Send + 'static,
     {
         self.progress_callback = Some(Box::new(callback));
         self
     }
 
-    /// Set a [`ProgressCallback`] trait object (supports cancellation).
+    /// Set a [`EncodeProgressCallback`] trait object (supports cancellation).
     #[must_use]
-    pub fn progress_callback<C: ProgressCallback + 'static>(mut self, callback: C) -> Self {
+    pub fn progress_callback<C: EncodeProgressCallback + 'static>(mut self, callback: C) -> Self {
         self.progress_callback = Some(Box::new(callback));
         self
     }
@@ -369,7 +369,7 @@ pub struct VideoEncoder {
     inner: Option<VideoEncoderInner>,
     _config: VideoEncoderConfig,
     start_time: Instant,
-    progress_callback: Option<Box<dyn crate::ProgressCallback>>,
+    progress_callback: Option<Box<dyn crate::EncodeProgressCallback>>,
 }
 
 impl VideoEncoder {
@@ -551,7 +551,7 @@ impl VideoEncoder {
         Ok(())
     }
 
-    fn create_progress_info(&self) -> crate::Progress {
+    fn create_progress_info(&self) -> crate::EncodeProgress {
         let elapsed = self.start_time.elapsed();
         let (frames_encoded, bytes_written) = self
             .inner
@@ -574,7 +574,7 @@ impl VideoEncoder {
         } else {
             0
         };
-        crate::Progress {
+        crate::EncodeProgress {
             frames_encoded,
             total_frames: None,
             bytes_written,
