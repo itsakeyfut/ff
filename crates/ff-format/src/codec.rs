@@ -47,6 +47,8 @@ pub enum VideoCodec {
     Av1,
     /// Apple's professional editing codec
     ProRes,
+    /// Avid DNxHD/DNxHR — professional editing codec for post-production
+    DnxHd,
     /// MPEG-4 Part 2 - older codec, legacy support
     Mpeg4,
     /// MPEG-2 Video - DVD and broadcast standard
@@ -77,6 +79,7 @@ impl VideoCodec {
             Self::Vp9 => "vp9",
             Self::Av1 => "av1",
             Self::ProRes => "prores",
+            Self::DnxHd => "dnxhd",
             Self::Mpeg4 => "mpeg4",
             Self::Mpeg2 => "mpeg2video",
             Self::Mjpeg => "mjpeg",
@@ -103,6 +106,7 @@ impl VideoCodec {
             Self::Vp9 => "VP9",
             Self::Av1 => "AV1",
             Self::ProRes => "Apple ProRes",
+            Self::DnxHd => "Avid DNxHD/DNxHR",
             Self::Mpeg4 => "MPEG-4 Part 2",
             Self::Mpeg2 => "MPEG-2",
             Self::Mjpeg => "Motion JPEG",
@@ -168,7 +172,7 @@ impl VideoCodec {
     /// ```
     #[must_use]
     pub const fn is_professional(&self) -> bool {
-        matches!(self, Self::ProRes)
+        matches!(self, Self::ProRes | Self::DnxHd)
     }
 
     /// Returns `true` if this codec supports hardware acceleration on most platforms.
@@ -520,6 +524,7 @@ mod tests {
             assert_eq!(VideoCodec::Vp9.name(), "vp9");
             assert_eq!(VideoCodec::Av1.name(), "av1");
             assert_eq!(VideoCodec::ProRes.name(), "prores");
+            assert_eq!(VideoCodec::DnxHd.name(), "dnxhd");
             assert_eq!(VideoCodec::Mpeg4.name(), "mpeg4");
             assert_eq!(VideoCodec::Mpeg2.name(), "mpeg2video");
             assert_eq!(VideoCodec::Mjpeg.name(), "mjpeg");
@@ -560,8 +565,29 @@ mod tests {
         #[test]
         fn test_is_professional() {
             assert!(VideoCodec::ProRes.is_professional());
+            assert!(VideoCodec::DnxHd.is_professional());
             assert!(!VideoCodec::H264.is_professional());
             assert!(!VideoCodec::Unknown.is_professional());
+        }
+
+        #[test]
+        fn dnxhd_should_have_correct_name_and_display_name() {
+            assert_eq!(VideoCodec::DnxHd.name(), "dnxhd");
+            assert_eq!(VideoCodec::DnxHd.display_name(), "Avid DNxHD/DNxHR");
+        }
+
+        #[test]
+        fn dnxhd_should_be_professional() {
+            assert!(VideoCodec::DnxHd.is_professional());
+            assert!(!VideoCodec::DnxHd.is_h264_family());
+            assert!(!VideoCodec::DnxHd.is_h265_family());
+            assert!(!VideoCodec::DnxHd.is_vp_family());
+            assert!(!VideoCodec::DnxHd.is_unknown());
+        }
+
+        #[test]
+        fn dnxhd_should_not_have_hardware_support() {
+            assert!(!VideoCodec::DnxHd.has_hardware_support());
         }
 
         #[test]
