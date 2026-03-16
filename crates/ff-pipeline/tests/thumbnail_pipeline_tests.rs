@@ -10,6 +10,51 @@ mod fixtures;
 use ff_pipeline::{PipelineError, ThumbnailPipeline};
 use fixtures::test_video_path;
 
+/// Extracts 3 frames and verifies count + dimensions match the source video.
+/// Shared by the sequential and parallel variants of the dimension test.
+fn assert_thumbnails_have_expected_dimensions(path: &str) {
+    let source_info = match ff_probe::open(path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping dimension check: probe failed: {e}");
+            return;
+        }
+    };
+    let (expected_w, expected_h) = match source_info.primary_video() {
+        Some(v) => (v.width(), v.height()),
+        None => {
+            println!("Skipping dimension check: no video stream found");
+            return;
+        }
+    };
+
+    let result = ThumbnailPipeline::new(path)
+        .timestamps(vec![0.0, 1.0, 2.0])
+        .run();
+
+    match result {
+        Ok(frames) => {
+            assert_eq!(frames.len(), 3, "expected 3 frames");
+            for (i, frame) in frames.iter().enumerate() {
+                assert_eq!(
+                    frame.width(),
+                    expected_w,
+                    "frame {i} width mismatch: got {} expected {expected_w}",
+                    frame.width()
+                );
+                assert_eq!(
+                    frame.height(),
+                    expected_h,
+                    "frame {i} height mismatch: got {} expected {expected_h}",
+                    frame.height()
+                );
+            }
+        }
+        Err(PipelineError::Decode(e)) => println!("Skipping: decoder unavailable: {e}"),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
 #[test]
 fn thumbnail_at_valid_timestamp_should_return_single_frame() {
     let input = test_video_path();
@@ -98,6 +143,27 @@ fn parallel_thumbnails_should_return_one_frame_per_timestamp() {
         Err(PipelineError::Decode(e)) => println!("Skipping: decoder unavailable: {e}"),
         Err(e) => panic!("unexpected error: {e}"),
     }
+}
+
+#[test]
+fn thumbnails_at_three_timestamps_should_have_source_dimensions() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    assert_thumbnails_have_expected_dimensions(input.to_str().unwrap());
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn parallel_thumbnails_at_three_timestamps_should_have_source_dimensions() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    assert_thumbnails_have_expected_dimensions(input.to_str().unwrap());
 }
 
 #[cfg(feature = "parallel")]
