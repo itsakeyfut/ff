@@ -205,7 +205,7 @@ mod video;
 
 pub use audio::{AudioEncoder, AudioEncoderBuilder};
 pub use bitrate::{BitrateMode, CRF_MAX};
-pub use codec::{AudioCodec, VideoCodec};
+pub use codec::{AudioCodec, VideoCodec, VideoCodecEncodeExt};
 pub use container::Container;
 pub use error::EncodeError;
 pub use hardware::HardwareEncoder;
