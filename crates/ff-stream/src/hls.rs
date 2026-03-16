@@ -130,12 +130,27 @@ impl HlsOutput {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamError::InvalidConfig`] with `"not yet implemented"` until
-    /// `FFmpeg` HLS muxing integration is complete.
+    /// - [`StreamError::InvalidConfig`] when called without first calling
+    ///   [`build`](Self::build) (i.e. `input_path` is `None`).
+    /// - [`StreamError::Io`] when the output directory cannot be created.
+    /// - [`StreamError::Ffmpeg`] when the `FFmpeg` HLS muxer fails.
     pub fn write(self) -> Result<(), StreamError> {
-        Err(StreamError::InvalidConfig {
-            reason: "not yet implemented".into(),
-        })
+        let input_path = self.input_path.ok_or_else(|| StreamError::InvalidConfig {
+            reason: "input path missing after build (internal error)".into(),
+        })?;
+        let seg_secs = self.segment_duration.as_secs_f64();
+        log::info!(
+            "hls write starting input={input_path} output_dir={} \
+             segment_duration={seg_secs:.1}s keyframe_interval={}",
+            self.output_dir,
+            self.keyframe_interval
+        );
+        crate::hls_inner::write_hls(
+            &input_path,
+            &self.output_dir,
+            seg_secs,
+            self.keyframe_interval,
+        )
     }
 }
 
@@ -184,5 +199,12 @@ mod tests {
     fn build_with_valid_config_should_succeed() {
         let result = HlsOutput::new("/tmp/hls").input("/src/video.mp4").build();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn write_without_build_should_return_invalid_config() {
+        // input_path is None because build() was not called
+        let result = HlsOutput::new("/tmp/hls").write();
+        assert!(matches!(result, Err(StreamError::InvalidConfig { .. })));
     }
 }

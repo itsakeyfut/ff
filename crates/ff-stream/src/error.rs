@@ -41,6 +41,16 @@ pub enum StreamError {
         /// Human-readable description of the configuration problem.
         reason: String,
     },
+
+    /// An `FFmpeg` runtime error occurred during muxing or transcoding.
+    ///
+    /// This variant wraps `FFmpeg` error codes converted to human-readable strings
+    /// via `av_strerror`.
+    #[error("ffmpeg error: {reason}")]
+    Ffmpeg {
+        /// Human-readable description of the `FFmpeg` error.
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -75,5 +85,14 @@ mod tests {
         let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
         let err: StreamError = io.into();
         assert!(err.to_string().contains("access denied"), "got: {err}");
+    }
+
+    #[test]
+    fn ffmpeg_error_should_display_reason() {
+        let err = StreamError::Ffmpeg {
+            reason: "Cannot open codec".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Cannot open codec"), "got: {msg}");
     }
 }
