@@ -11,6 +11,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-03-16
+
+### Added
+
+#### ff-stream (new crate)
+- `StreamError` enum with `InvalidConfig`, `Io`, `Encode`, and `Ffmpeg { code, message }` variants ([#69](https://github.com/itsakeyfut/avio/issues/69))
+- `HlsOutput` consuming builder: configures and writes an HLS segmented stream via the FFmpeg HLS muxer, producing `playlist.m3u8` and numbered `.ts` segments ([#70](https://github.com/itsakeyfut/avio/issues/70), [#71](https://github.com/itsakeyfut/avio/issues/71))
+- `DashOutput` consuming builder: configures and writes a DASH segmented stream via the FFmpeg DASH muxer, producing `manifest.mpd` and `.m4s` segments ([#72](https://github.com/itsakeyfut/avio/issues/72), [#73](https://github.com/itsakeyfut/avio/issues/73))
+- `Rendition` struct describing a single resolution/bitrate quality level ([#74](https://github.com/itsakeyfut/avio/issues/74))
+- `AbrLadder` builder: multi-rendition HLS output via `hls()` (produces master playlist + per-rendition subdirectories) and multi-representation DASH output via `dash()` (single `manifest.mpd` with multiple `Representation` elements) ([#75](https://github.com/itsakeyfut/avio/issues/75), [#76](https://github.com/itsakeyfut/avio/issues/76), [#77](https://github.com/itsakeyfut/avio/issues/77))
+- Integration tests: `HlsOutput::write()` verifying playlist tags, segment naming, and target duration ([#84](https://github.com/itsakeyfut/avio/issues/84))
+- Integration tests: `AbrLadder::hls()` verifying master playlist, per-rendition playlists, and `.ts` segments; `AbrLadder::dash()` verifying single-manifest DASH output ([#85](https://github.com/itsakeyfut/avio/issues/85))
+
+#### avio (new crate)
+- Facade crate that re-exports the public APIs of all `ff-*` crates behind feature flags (`probe`, `decode`, `encode`, `filter`, `pipeline`, `stream`) ([#78](https://github.com/itsakeyfut/avio/issues/78)–[#82](https://github.com/itsakeyfut/avio/issues/82))
+- Integration tests verifying the facade compiles and resolves symbols for each feature combination ([#86](https://github.com/itsakeyfut/avio/issues/86))
+
+#### ff-common
+- `VecPool`: canonical `Arc`-based frame buffer pool backed by a `Mutex<Vec<Vec<u8>>>`; exposes `capacity()` and `available()` ([#502](https://github.com/itsakeyfut/avio/issues/502))
+- `SimpleFramePool` type alias for `VecPool` for backwards compatibility
+
+#### ff-format
+- `DnxHd` variant added to `VideoCodec` ([#497](https://github.com/itsakeyfut/avio/issues/497))
+
+### Changed
+
+#### ff-encode
+- `Progress` renamed to `EncodeProgress`; `ProgressCallback` renamed to `EncodeProgressCallback` to avoid collision with `ff-pipeline`'s `Progress`/`ProgressCallback` ([#500](https://github.com/itsakeyfut/avio/issues/500))
+- `VideoCodec` and `AudioCodec` are no longer defined in `ff-encode`; they are re-exported from `ff-format` ([#498](https://github.com/itsakeyfut/avio/issues/498))
+
+#### ff-pipeline
+- `EncoderConfig` fields `video_codec` and `audio_codec` now use the canonical `ff-format` types ([#499](https://github.com/itsakeyfut/avio/issues/499))
+
+#### ff-decode
+- `SimpleFramePool` moved from `ff-decode` to `ff-common`; `ff-decode` re-exports it for backwards compatibility ([#502](https://github.com/itsakeyfut/avio/issues/502))
+
+### Fixed
+
+#### All crates
+- `Ffmpeg` error variant unified to `Ffmpeg { code: i32, message: String }` (struct variant) across `ff-probe`, `ff-decode`, `ff-encode`, `ff-filter`, `ff-pipeline`, and `ff-stream` ([#486](https://github.com/itsakeyfut/avio/issues/486))
+
+---
+
 ## [0.4.0] - 2026-03-16
 
 ### Added
