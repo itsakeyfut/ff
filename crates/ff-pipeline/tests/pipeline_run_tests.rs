@@ -412,3 +412,115 @@ fn transcode_multi_input_frames_processed_should_be_sum_of_single_runs() {
         "two-input pipeline must process exactly 2× the frames of a single-input run"
     );
 }
+
+#[test]
+fn transcode_cancelled_after_first_callback_should_return_cancelled() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    let output = test_output_path("pipeline_cancel_after_first.mp4");
+    let _guard = FileGuard::new(output.clone());
+
+    let call_count = Arc::new(AtomicU64::new(0));
+    let call_count_clone = Arc::clone(&call_count);
+
+    let pipeline = match Pipeline::builder()
+        .input(input.to_str().unwrap())
+        .output(output.to_str().unwrap(), basic_config())
+        .on_progress(move |_p| {
+            // Allow the first call (return true), cancel on the second.
+            call_count_clone.fetch_add(1, Ordering::Relaxed) == 0
+        })
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Skipping: build failed: {e}");
+            return;
+        }
+    };
+
+    match pipeline.run() {
+        Err(PipelineError::Cancelled) => {
+            assert!(
+                call_count.load(Ordering::Relaxed) >= 2,
+                "callback must have been invoked at least twice before cancellation"
+            );
+        }
+        Err(PipelineError::Encode(e)) => println!("Skipping: encoder unavailable: {e}"),
+        Err(PipelineError::Decode(e)) => println!("Skipping: decoder unavailable: {e}"),
+        Ok(()) => panic!("expected Cancelled but got Ok"),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
+#[test]
+fn concat_two_inputs_should_produce_output_with_approx_sum_duration() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    let input_str = input.to_str().unwrap();
+
+    // Probe the input to determine its duration.
+    let input_info = match ff_probe::open(&input) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: failed to probe input: {e}");
+            return;
+        }
+    };
+    let input_duration = input_info.duration();
+    if input_duration == std::time::Duration::ZERO {
+        println!("Skipping: input has zero duration");
+        return;
+    }
+
+    let output = test_output_path("pipeline_concat_duration.mp4");
+    let _guard = FileGuard::new(output.clone());
+
+    let pipeline = match Pipeline::builder()
+        .input(input_str)
+        .input(input_str)
+        .output(output.to_str().unwrap(), basic_config())
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Skipping: build failed: {e}");
+            return;
+        }
+    };
+
+    match pipeline.run() {
+        Ok(()) => {
+            let output_info = match ff_probe::open(&output) {
+                Ok(i) => i,
+                Err(e) => {
+                    println!("Skipping duration check: probe failed: {e}");
+                    return;
+                }
+            };
+            let output_duration = output_info.duration();
+            let expected = input_duration * 2;
+            // Allow ±20% to account for encoding/muxing overhead.
+            let tolerance = input_duration.mul_f64(0.4);
+            assert!(
+                output_duration >= expected.saturating_sub(tolerance),
+                "output duration {output_duration:?} shorter than expected \
+                 ~{expected:?} (tolerance ±{tolerance:?})"
+            );
+            assert!(
+                output_duration <= expected + tolerance,
+                "output duration {output_duration:?} longer than expected \
+                 ~{expected:?} (tolerance ±{tolerance:?})"
+            );
+        }
+        Err(PipelineError::Encode(e)) => println!("Skipping: encoder unavailable: {e}"),
+        Err(PipelineError::Decode(e)) => println!("Skipping: decoder unavailable: {e}"),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
