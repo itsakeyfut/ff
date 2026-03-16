@@ -84,10 +84,13 @@ impl AudioEncoderInner {
             );
 
             if ret < 0 || format_ctx.is_null() {
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Cannot create output context: {}",
-                    ff_sys::av_error_string(ret)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!(
+                        "Cannot create output context: {}",
+                        ff_sys::av_error_string(ret)
+                    ),
+                });
             }
 
             let mut encoder = Self {
@@ -118,10 +121,10 @@ impl AudioEncoderInner {
             let ret = avformat_write_header(format_ctx, ptr::null_mut());
             if ret < 0 {
                 encoder.cleanup();
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Cannot write header: {}",
-                    ff_sys::av_error_string(ret)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!("Cannot write header: {}", ff_sys::av_error_string(ret)),
+                });
             }
 
             Ok(encoder)
@@ -137,8 +140,11 @@ impl AudioEncoderInner {
         let encoder_name = self.select_audio_encoder(config.codec)?;
         self.actual_codec = encoder_name.clone();
 
-        let c_encoder_name = CString::new(encoder_name.as_str())
-            .map_err(|_| EncodeError::Ffmpeg("Invalid encoder name".to_string()))?;
+        let c_encoder_name =
+            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid encoder name".to_string(),
+            })?;
 
         let codec_ptr =
             avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
@@ -198,7 +204,10 @@ impl AudioEncoderInner {
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
             avcodec::free_context(&mut codec_ctx as *mut *mut _);
-            return Err(EncodeError::Ffmpeg("Cannot create stream".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot create stream".to_string(),
+            });
         }
 
         (*stream).time_base = (*codec_ctx).time_base;
@@ -242,8 +251,10 @@ impl AudioEncoderInner {
         // Try each candidate
         for &name in &candidates {
             unsafe {
-                let c_name = CString::new(name)
-                    .map_err(|_| EncodeError::Ffmpeg("Invalid encoder name".to_string()))?;
+                let c_name = CString::new(name).map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Invalid encoder name".to_string(),
+                })?;
                 if avcodec::find_encoder_by_name(c_name.as_ptr()).is_some() {
                     return Ok(name.to_string());
                 }
@@ -265,7 +276,10 @@ impl AudioEncoderInner {
         // Allocate AVFrame
         let mut av_frame = av_frame_alloc();
         if av_frame.is_null() {
-            return Err(EncodeError::Ffmpeg("Cannot allocate frame".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate frame".to_string(),
+            });
         }
 
         // Convert AudioFrame to AVFrame
@@ -282,10 +296,10 @@ impl AudioEncoderInner {
         let send_result = avcodec::send_frame(codec_ctx, av_frame);
         if let Err(e) = send_result {
             av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(EncodeError::Ffmpeg(format!(
-                "Failed to send audio frame: {}",
-                ff_sys::av_error_string(e)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: e,
+                message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
+            });
         }
 
         // Receive packets
@@ -346,8 +360,9 @@ impl AudioEncoderInner {
                 self.swr_ctx = Some(swr_ctx);
             }
 
-            let swr_ctx = self.swr_ctx.ok_or_else(|| {
-                EncodeError::Ffmpeg("Resampling context not initialized".to_string())
+            let swr_ctx = self.swr_ctx.ok_or_else(|| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Resampling context not initialized".to_string(),
             })?;
 
             // Estimate output sample count
@@ -369,10 +384,13 @@ impl AudioEncoderInner {
             // Allocate frame buffer
             let ret = ff_sys::av_frame_get_buffer(dst, 0);
             if ret < 0 {
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Cannot allocate audio frame buffer: {}",
-                    ff_sys::av_error_string(ret)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!(
+                        "Cannot allocate audio frame buffer: {}",
+                        ff_sys::av_error_string(ret)
+                    ),
+                });
             }
 
             // Prepare input pointers
@@ -408,10 +426,13 @@ impl AudioEncoderInner {
             // Allocate frame buffer
             let ret = ff_sys::av_frame_get_buffer(dst, 0);
             if ret < 0 {
-                return Err(EncodeError::Ffmpeg(format!(
-                    "Cannot allocate audio frame buffer: {}",
-                    ff_sys::av_error_string(ret)
-                )));
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!(
+                        "Cannot allocate audio frame buffer: {}",
+                        ff_sys::av_error_string(ret)
+                    ),
+                });
             }
 
             // Copy audio data
@@ -443,7 +464,10 @@ impl AudioEncoderInner {
 
         let mut packet = av_packet_alloc();
         if packet.is_null() {
-            return Err(EncodeError::Ffmpeg("Cannot allocate packet".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate packet".to_string(),
+            });
         }
 
         loop {
@@ -457,10 +481,13 @@ impl AudioEncoderInner {
                 }
                 Err(e) => {
                     av_packet_free(&mut packet as *mut *mut _);
-                    return Err(EncodeError::Ffmpeg(format!(
-                        "Error receiving audio packet: {}",
-                        ff_sys::av_error_string(e)
-                    )));
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Error receiving audio packet: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    });
                 }
             }
 
@@ -498,10 +525,10 @@ impl AudioEncoderInner {
         // Write trailer
         let ret = av_write_trailer(self.format_ctx);
         if ret < 0 {
-            return Err(EncodeError::Ffmpeg(format!(
-                "Cannot write trailer: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: ret,
+                message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
+            });
         }
 
         Ok(())

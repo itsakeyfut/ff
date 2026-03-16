@@ -127,18 +127,22 @@ impl ImageEncoderInner {
             c_path.as_ptr(),
         );
         if ret < 0 || inner.format_ctx.is_null() {
-            return Err(EncodeError::Ffmpeg(format!(
-                "Cannot create output context: {}",
-                ff_sys::av_error_string(ret)
-            )));
+            return Err(EncodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Cannot create output context: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
         }
 
         // ── Step 2: Video stream ──────────────────────────────────────────────
         let stream = avformat_new_stream(inner.format_ctx, ptr::null());
         if stream.is_null() {
-            return Err(EncodeError::Ffmpeg(
-                "Cannot create output stream".to_string(),
-            ));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot create output stream".to_string(),
+            });
         }
 
         // ── Step 3: Find encoder ──────────────────────────────────────────────
@@ -187,9 +191,10 @@ impl ImageEncoderInner {
         // ── Step 10: Allocate destination frame ───────────────────────────────
         inner.dst_frame = av_frame_alloc();
         if inner.dst_frame.is_null() {
-            return Err(EncodeError::Ffmpeg(
-                "Cannot allocate destination frame".to_string(),
-            ));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate destination frame".to_string(),
+            });
         }
         (*inner.dst_frame).format = pix_fmt;
         (*inner.dst_frame).width = dst_width as i32;
@@ -203,7 +208,10 @@ impl ImageEncoderInner {
         // ── Step 11: Allocate packet ──────────────────────────────────────────
         inner.packet = av_packet_alloc();
         if inner.packet.is_null() {
-            return Err(EncodeError::Ffmpeg("Cannot allocate packet".to_string()));
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot allocate packet".to_string(),
+            });
         }
 
         Ok(inner)
