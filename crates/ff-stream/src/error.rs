@@ -55,4 +55,25 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("missing input path"), "got: {msg}");
     }
+
+    #[test]
+    fn io_error_should_convert_via_from() {
+        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
+        let err: StreamError = io.into();
+        assert!(matches!(err, StreamError::Io(_)));
+    }
+
+    #[test]
+    fn encode_error_should_convert_via_from() {
+        let enc = ff_encode::EncodeError::Cancelled;
+        let err: StreamError = enc.into();
+        assert!(matches!(err, StreamError::Encode(_)));
+    }
+
+    #[test]
+    fn display_io_should_contain_message() {
+        let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let err: StreamError = io.into();
+        assert!(err.to_string().contains("access denied"), "got: {err}");
+    }
 }
