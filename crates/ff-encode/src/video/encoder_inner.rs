@@ -13,15 +13,18 @@ use crate::{AudioCodec, EncodeError, VideoCodec};
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
     AV_TIME_BASE, AVChannelLayout, AVChapter, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
-    AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_FLAC,
-    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP3,
-    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
-    AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP9,
-    AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc, av_frame_free,
-    av_interleaved_write_frame, av_mallocz, av_packet_alloc, av_packet_free, av_packet_unref,
-    av_write_trailer, avcodec, avformat_alloc_output_context2, avformat_free_context,
-    avformat_new_stream, avformat_write_header, swresample, swscale,
+    AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1,
+    AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3,
+    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
+    AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
+    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
+    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS,
+    AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AVFormatContext, AVFrame,
+    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext,
+    SwsContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_mallocz,
+    av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer, avcodec,
+    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
+    avformat_write_header, swresample, swscale,
 };
 use std::ffi::CString;
 use std::ptr;
@@ -552,6 +555,10 @@ impl VideoEncoderInner {
             VideoCodec::ProRes => vec!["prores_ks", "prores"],
             VideoCodec::DnxHd => vec!["dnxhd"],
             VideoCodec::Mpeg4 => vec!["mpeg4"],
+            VideoCodec::Vp8 => vec!["libvpx"],
+            VideoCodec::Mpeg2 => vec!["mpeg2video"],
+            VideoCodec::Mjpeg => vec!["mjpeg"],
+            _ => vec![],
         };
 
         // Try each candidate
@@ -733,6 +740,11 @@ impl VideoEncoderInner {
                 AudioCodec::Flac => 0, // Lossless
                 AudioCodec::Pcm => 0,  // Uncompressed
                 AudioCodec::Vorbis => 192_000,
+                AudioCodec::Ac3 => 192_000,
+                AudioCodec::Eac3 => 192_000,
+                AudioCodec::Dts => 0,  // Lossless/variable
+                AudioCodec::Alac => 0, // Lossless
+                _ => 192_000,
             };
         }
 
@@ -782,6 +794,11 @@ impl VideoEncoderInner {
             AudioCodec::Flac => vec!["flac"],
             AudioCodec::Pcm => vec!["pcm_s16le"],
             AudioCodec::Vorbis => vec!["libvorbis", "vorbis"],
+            AudioCodec::Ac3 => vec!["ac3"],
+            AudioCodec::Eac3 => vec!["eac3"],
+            AudioCodec::Dts => vec![],
+            AudioCodec::Alac => vec!["alac"],
+            _ => vec![],
         };
 
         // Try each candidate
@@ -2152,6 +2169,10 @@ fn codec_to_id(codec: VideoCodec) -> AVCodecID {
         VideoCodec::ProRes => AVCodecID_AV_CODEC_ID_PRORES,
         VideoCodec::DnxHd => AVCodecID_AV_CODEC_ID_DNXHD,
         VideoCodec::Mpeg4 => AVCodecID_AV_CODEC_ID_MPEG4,
+        VideoCodec::Vp8 => AVCodecID_AV_CODEC_ID_VP8,
+        VideoCodec::Mpeg2 => AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
+        VideoCodec::Mjpeg => AVCodecID_AV_CODEC_ID_MJPEG,
+        _ => AVCodecID_AV_CODEC_ID_NONE,
     }
 }
 
@@ -2177,6 +2198,11 @@ fn audio_codec_to_id(codec: AudioCodec) -> AVCodecID {
         AudioCodec::Flac => AVCodecID_AV_CODEC_ID_FLAC,
         AudioCodec::Pcm => AVCodecID_AV_CODEC_ID_PCM_S16LE,
         AudioCodec::Vorbis => AVCodecID_AV_CODEC_ID_VORBIS,
+        AudioCodec::Ac3 => AVCodecID_AV_CODEC_ID_AC3,
+        AudioCodec::Eac3 => AVCodecID_AV_CODEC_ID_EAC3,
+        AudioCodec::Dts => AVCodecID_AV_CODEC_ID_DTS,
+        AudioCodec::Alac => AVCodecID_AV_CODEC_ID_ALAC,
+        _ => AVCodecID_AV_CODEC_ID_NONE,
     }
 }
 
