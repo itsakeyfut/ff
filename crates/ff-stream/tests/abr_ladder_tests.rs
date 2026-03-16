@@ -163,3 +163,23 @@ fn dash_manifest_should_contain_representation_elements() {
         "manifest.mpd should contain Representation elements"
     );
 }
+
+#[test]
+fn each_variant_subdirectory_should_contain_ts_segments() {
+    let Some((out_dir, _guard)) = run_abr_hls("abr_hls_segments_test") else {
+        return;
+    };
+
+    for i in 0..2 {
+        let subdir = out_dir.join(i.to_string());
+        let segments: Vec<_> = std::fs::read_dir(&subdir)
+            .unwrap_or_else(|e| panic!("cannot read subdir {i}: {e}"))
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".ts"))
+            .collect();
+        assert!(
+            !segments.is_empty(),
+            "rendition subdir {i}/ should contain at least one .ts segment"
+        );
+    }
+}
