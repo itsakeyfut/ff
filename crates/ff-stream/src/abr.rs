@@ -20,6 +20,7 @@ use crate::error::StreamError;
 /// let r = Rendition { width: 1280, height: 720, bitrate: 3_000_000 };
 /// assert_eq!(r.width, 1280);
 /// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rendition {
     /// Output width in pixels.
     pub width: u32,
@@ -146,6 +147,74 @@ impl AbrLadder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendition_should_store_all_fields() {
+        let r = Rendition {
+            width: 1920,
+            height: 1080,
+            bitrate: 6_000_000,
+        };
+        assert_eq!(r.width, 1920);
+        assert_eq!(r.height, 1080);
+        assert_eq!(r.bitrate, 6_000_000);
+    }
+
+    #[test]
+    fn rendition_should_be_equal_when_fields_match() {
+        let a = Rendition {
+            width: 854,
+            height: 480,
+            bitrate: 1_500_000,
+        };
+        let b = Rendition {
+            width: 854,
+            height: 480,
+            bitrate: 1_500_000,
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn rendition_should_not_be_equal_when_fields_differ() {
+        let a = Rendition {
+            width: 1280,
+            height: 720,
+            bitrate: 3_000_000,
+        };
+        let b = Rendition {
+            width: 1280,
+            height: 720,
+            bitrate: 2_000_000,
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn rendition_should_implement_debug() {
+        let r = Rendition {
+            width: 640,
+            height: 360,
+            bitrate: 800_000,
+        };
+        let s = format!("{r:?}");
+        assert!(s.contains("640"));
+        assert!(s.contains("360"));
+        assert!(s.contains("800000"));
+    }
+
+    #[test]
+    fn rendition_should_be_copyable() {
+        let original = Rendition {
+            width: 1280,
+            height: 720,
+            bitrate: 3_000_000,
+        };
+        let copy = original;
+        assert_eq!(copy.width, original.width);
+        assert_eq!(copy.height, original.height);
+        assert_eq!(copy.bitrate, original.bitrate);
+    }
 
     #[test]
     fn new_should_store_input_path() {
