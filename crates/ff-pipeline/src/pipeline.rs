@@ -9,9 +9,9 @@
 use std::time::Instant;
 
 use ff_decode::{AudioDecoder, VideoDecoder};
-use ff_encode::{AudioCodec, BitrateMode, HardwareEncoder, VideoCodec, VideoEncoder};
+use ff_encode::{BitrateMode, HardwareEncoder, VideoEncoder};
 use ff_filter::{FilterGraph, HwAccel};
-use ff_format::Timestamp;
+use ff_format::{AudioCodec, Timestamp, VideoCodec};
 
 use crate::error::PipelineError;
 use crate::progress::{Progress, ProgressCallback};
@@ -63,7 +63,8 @@ impl Pipeline {
     ///
     /// ```ignore
     /// use ff_pipeline::{Pipeline, EncoderConfig};
-    /// use ff_encode::{VideoCodec, AudioCodec, BitrateMode};
+    /// use ff_format::{VideoCodec, AudioCodec};
+    /// use ff_encode::BitrateMode;
     ///
     /// let pipeline = Pipeline::builder()
     ///     .input("input.mp4")
@@ -371,7 +372,8 @@ impl Default for PipelineBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
+    use ff_encode::BitrateMode;
+    use ff_format::{AudioCodec, VideoCodec};
 
     fn dummy_config() -> EncoderConfig {
         EncoderConfig {
