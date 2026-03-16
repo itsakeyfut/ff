@@ -135,22 +135,31 @@ fn master_playlist_should_contain_bandwidth_and_resolution() {
 }
 
 #[test]
-fn dash_should_produce_per_rendition_manifests() {
-    let Some((out_dir, _guard)) = run_abr_dash("abr_dash_manifests_test") else {
+fn dash_should_produce_single_manifest() {
+    let Some((out_dir, _guard)) = run_abr_dash("abr_dash_single_manifest_test") else {
         return;
     };
 
-    let manifest0 = out_dir.join("0/manifest.mpd");
-    assert!(manifest0.exists(), "0/manifest.mpd should exist");
+    let manifest = out_dir.join("manifest.mpd");
     assert!(
-        std::fs::metadata(&manifest0).unwrap().len() > 0,
-        "0/manifest.mpd should be non-empty"
+        manifest.exists(),
+        "manifest.mpd should exist at output root"
     );
-
-    let manifest1 = out_dir.join("1/manifest.mpd");
-    assert!(manifest1.exists(), "1/manifest.mpd should exist");
     assert!(
-        std::fs::metadata(&manifest1).unwrap().len() > 0,
-        "1/manifest.mpd should be non-empty"
+        std::fs::metadata(&manifest).unwrap().len() > 0,
+        "manifest.mpd should be non-empty"
+    );
+}
+
+#[test]
+fn dash_manifest_should_contain_representation_elements() {
+    let Some((out_dir, _guard)) = run_abr_dash("abr_dash_representations_test") else {
+        return;
+    };
+
+    let content = std::fs::read_to_string(out_dir.join("manifest.mpd")).unwrap();
+    assert!(
+        content.contains("Representation"),
+        "manifest.mpd should contain Representation elements"
     );
 }

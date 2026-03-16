@@ -19,6 +19,8 @@
 #![allow(clippy::borrow_as_ptr)]
 // `&mut foo as *mut *mut _` is the standard way to pass double-pointers in FFmpeg
 #![allow(clippy::ref_as_ptr)]
+// ABR ladder uses multiple per-rendition fields
+#![allow(clippy::struct_field_names)]
 
 use std::ffi::CString;
 use std::path::Path;
@@ -807,4 +809,648 @@ unsafe fn free_frames(
     if !aud_enc.is_null() {
         av_frame_free(&mut aud_enc as *mut *mut _);
     }
+}
+
+// ============================================================================
+// ABR multi-representation DASH output
+// ============================================================================
+
+/// Per-rendition encoder state for the ABR DASH mux loop.
+struct RenditionState {
+    vid_enc_ctx: *mut AVCodecContext,
+    vid_out_stream_idx: i32,
+    enc_width: i32,
+    enc_height: i32,
+    sws_ctx: *mut SwsContext,
+    last_src_fmt: Option<AVPixelFormat>,
+    last_src_w: Option<i32>,
+    last_src_h: Option<i32>,
+}
+
+/// Free all encoder contexts and `SwsContext`s in `states`.
+///
+/// Safe to call at any point after the Vec starts being populated.
+unsafe fn cleanup_renditions(states: &mut Vec<RenditionState>) {
+    for state in states.iter_mut() {
+        if !state.vid_enc_ctx.is_null() {
+            ff_sys::avcodec::free_context(&mut state.vid_enc_ctx as *mut *mut _);
+        }
+        if !state.sws_ctx.is_null() {
+            ff_sys::swscale::free_context(state.sws_ctx);
+            state.sws_ctx = ptr::null_mut();
+        }
+    }
+    states.clear();
+}
+
+/// Write a single DASH manifest with one `Representation` per rendition.
+///
+/// Creates `output_dir/manifest.mpd` and associated segment files.
+///
+/// # Errors
+///
+/// Returns [`StreamError::Ffmpeg`] when any `FFmpeg` operation fails, or
+/// [`StreamError::Io`] when directory creation fails.
+pub(crate) fn write_dash_abr(
+    input_path: &str,
+    output_dir: &str,
+    segment_duration_secs: f64,
+    renditions: &[(i64, i32, i32)], // (bitrate_bps, width, height)
+) -> Result<(), StreamError> {
+    std::fs::create_dir_all(output_dir)?;
+    // SAFETY: All FFmpeg resources are allocated and freed within this call.
+    unsafe { write_dash_abr_unsafe(input_path, output_dir, segment_duration_secs, renditions) }
+}
+
+unsafe fn write_dash_abr_unsafe(
+    input_path: &str,
+    output_dir: &str,
+    segment_duration_secs: f64,
+    renditions: &[(i64, i32, i32)],
+) -> Result<(), StreamError> {
+    ff_sys::ensure_initialized();
+
+    // ── 1. Open input ─────────────────────────────────────────────────────────
+    let mut input_ctx =
+        ff_sys::avformat::open_input(std::path::Path::new(input_path)).map_err(ffmpeg_err)?;
+
+    ff_sys::avformat::find_stream_info(input_ctx).map_err(|e| {
+        ff_sys::avformat::close_input(&mut input_ctx);
+        ffmpeg_err(e)
+    })?;
+
+    // ── 2. Locate video and audio streams ─────────────────────────────────────
+    let nb_streams = (*input_ctx).nb_streams as usize;
+    let mut video_stream_idx: i32 = -1;
+    let mut audio_stream_idx: i32 = -1;
+
+    for i in 0..nb_streams {
+        let stream = *(*input_ctx).streams.add(i);
+        let codec_type = (*(*stream).codecpar).codec_type;
+        if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO && video_stream_idx < 0 {
+            video_stream_idx = i as i32;
+        } else if codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO && audio_stream_idx < 0 {
+            audio_stream_idx = i as i32;
+        }
+    }
+
+    if video_stream_idx < 0 {
+        ff_sys::avformat::close_input(&mut input_ctx);
+        return Err(StreamError::InvalidConfig {
+            reason: "input file contains no video stream".into(),
+        });
+    }
+
+    // ── 3. Read video stream properties ──────────────────────────────────────
+    let video_stream = *(*input_ctx).streams.add(video_stream_idx as usize);
+    let video_codecpar = (*video_stream).codecpar;
+    let video_fps = {
+        let r = (*video_stream).avg_frame_rate;
+        if r.den > 0 && r.num > 0 {
+            r.num as f64 / r.den as f64
+        } else {
+            30.0
+        }
+    };
+    let fps_int = video_fps.round().max(1.0) as i32;
+    let keyframe_interval = (segment_duration_secs * fps_int as f64).round().max(1.0) as u32;
+
+    // ── 4. Open input video decoder ────────────────────────────────────────────
+    let vid_codec_id = (*video_codecpar).codec_id;
+    let vid_decoder = ff_sys::avcodec::find_decoder(vid_codec_id)
+        .ok_or_else(|| ffmpeg_err_msg("no video decoder available for input stream"))?;
+
+    let mut vid_dec_ctx = ff_sys::avcodec::alloc_context3(vid_decoder).map_err(ffmpeg_err)?;
+
+    ff_sys::avcodec::parameters_to_context(vid_dec_ctx, video_codecpar).map_err(|e| {
+        ff_sys::avcodec::free_context(&mut vid_dec_ctx as *mut *mut _);
+        ff_sys::avformat::close_input(&mut input_ctx);
+        ffmpeg_err(e)
+    })?;
+
+    ff_sys::avcodec::open2(vid_dec_ctx, vid_decoder, ptr::null_mut()).map_err(|e| {
+        ff_sys::avcodec::free_context(&mut vid_dec_ctx as *mut *mut _);
+        ff_sys::avformat::close_input(&mut input_ctx);
+        ffmpeg_err(e)
+    })?;
+
+    // ── 5. Open input audio decoder (optional) ────────────────────────────────
+    let mut aud_dec_ctx: *mut AVCodecContext = ptr::null_mut();
+    let mut aud_sample_rate: i32 = 44100;
+    let mut aud_nb_channels: i32 = 2;
+
+    if audio_stream_idx >= 0 {
+        let audio_stream = *(*input_ctx).streams.add(audio_stream_idx as usize);
+        let audio_codecpar = (*audio_stream).codecpar;
+        let aud_codec_id = (*audio_codecpar).codec_id;
+
+        if let Some(aud_decoder) = ff_sys::avcodec::find_decoder(aud_codec_id) {
+            if let Ok(ctx) = ff_sys::avcodec::alloc_context3(aud_decoder) {
+                aud_dec_ctx = ctx;
+                if ff_sys::avcodec::parameters_to_context(aud_dec_ctx, audio_codecpar).is_ok()
+                    && ff_sys::avcodec::open2(aud_dec_ctx, aud_decoder, ptr::null_mut()).is_ok()
+                {
+                    aud_sample_rate = (*aud_dec_ctx).sample_rate;
+                    aud_nb_channels = (*aud_dec_ctx).ch_layout.nb_channels;
+                    log::info!(
+                        "dash abr audio decoder opened sample_rate={aud_sample_rate} \
+                         channels={aud_nb_channels}"
+                    );
+                } else {
+                    ff_sys::avcodec::free_context(&mut aud_dec_ctx as *mut *mut _);
+                    aud_dec_ctx = ptr::null_mut();
+                    audio_stream_idx = -1;
+                    log::warn!("dash abr audio decoder open failed, skipping audio");
+                }
+            } else {
+                audio_stream_idx = -1;
+                log::warn!("dash abr audio decoder alloc failed, skipping audio");
+            }
+        } else {
+            audio_stream_idx = -1;
+            log::warn!("dash abr no audio decoder found, skipping audio");
+        }
+    }
+
+    // ── 6. Allocate DASH output context ───────────────────────────────────────
+    let manifest_path = format!("{output_dir}/manifest.mpd");
+    let c_manifest = CString::new(manifest_path.as_str())
+        .map_err(|_| ffmpeg_err_msg("manifest path contains null byte"))?;
+    let c_dash = c"dash";
+
+    let mut out_ctx: *mut AVFormatContext = ptr::null_mut();
+    let ret = avformat_alloc_output_context2(
+        &mut out_ctx,
+        ptr::null_mut(),
+        c_dash.as_ptr(),
+        c_manifest.as_ptr(),
+    );
+    if ret < 0 || out_ctx.is_null() {
+        cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+        return Err(ffmpeg_err(ret));
+    }
+
+    // ── 7. Set DASH muxer options ──────────────────────────────────────────────
+    let seg_duration_str = format!("{}", segment_duration_secs as u32);
+    if let Ok(c_seg_dur) = CString::new(seg_duration_str.as_str()) {
+        let ret = av_opt_set(
+            (*out_ctx).priv_data,
+            c"seg_duration".as_ptr(),
+            c_seg_dur.as_ptr(),
+            0,
+        );
+        if ret < 0 {
+            log::warn!(
+                "dash abr seg_duration option not supported, using default \
+                 requested={seg_duration_str} error={}",
+                ff_sys::av_error_string(ret)
+            );
+        }
+    }
+
+    // ── 8. Select H.264 encoder (shared across all renditions) ────────────────
+    let Some(vid_enc_codec) = select_h264_encoder() else {
+        cleanup_output_ctx(out_ctx);
+        cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+        return Err(ffmpeg_err_msg(
+            "no H.264 encoder available (tried h264_nvenc, h264_qsv, h264_amf, \
+             h264_videotoolbox, libx264, mpeg4)",
+        ));
+    };
+
+    // ── 9. Create one encoder + output stream per rendition ───────────────────
+    let mut rendition_states: Vec<RenditionState> = Vec::with_capacity(renditions.len());
+
+    for &(target_bitrate, target_width, target_height) in renditions {
+        let mut enc_ctx = match ff_sys::avcodec::alloc_context3(vid_enc_codec).map_err(ffmpeg_err) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                cleanup_renditions(&mut rendition_states);
+                cleanup_output_ctx(out_ctx);
+                cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+                return Err(e);
+            }
+        };
+
+        (*enc_ctx).width = target_width;
+        (*enc_ctx).height = target_height;
+        (*enc_ctx).time_base.num = 1;
+        (*enc_ctx).time_base.den = fps_int;
+        (*enc_ctx).framerate.num = fps_int;
+        (*enc_ctx).framerate.den = 1;
+        (*enc_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+        (*enc_ctx).bit_rate = target_bitrate;
+
+        if let Err(e) =
+            ff_sys::avcodec::open2(enc_ctx, vid_enc_codec, ptr::null_mut()).map_err(ffmpeg_err)
+        {
+            ff_sys::avcodec::free_context(&mut enc_ctx as *mut *mut _);
+            cleanup_renditions(&mut rendition_states);
+            cleanup_output_ctx(out_ctx);
+            cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+            return Err(e);
+        }
+
+        let out_stream = avformat_new_stream(out_ctx, vid_enc_codec);
+        if out_stream.is_null() {
+            ff_sys::avcodec::free_context(&mut enc_ctx as *mut *mut _);
+            cleanup_renditions(&mut rendition_states);
+            cleanup_output_ctx(out_ctx);
+            cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+            return Err(ffmpeg_err_msg(
+                "cannot create video output stream for rendition",
+            ));
+        }
+        (*out_stream).time_base = (*enc_ctx).time_base;
+        let stream_idx = ((*out_ctx).nb_streams - 1) as i32;
+
+        if !(*out_stream).codecpar.is_null() {
+            (*(*out_stream).codecpar).codec_id = (*enc_ctx).codec_id;
+            (*(*out_stream).codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
+            (*(*out_stream).codecpar).width = (*enc_ctx).width;
+            (*(*out_stream).codecpar).height = (*enc_ctx).height;
+            (*(*out_stream).codecpar).format = (*enc_ctx).pix_fmt;
+            (*(*out_stream).codecpar).bit_rate = (*enc_ctx).bit_rate;
+        }
+
+        log::info!(
+            "dash abr rendition added width={target_width} height={target_height} \
+             bit_rate={target_bitrate} stream_idx={stream_idx}"
+        );
+
+        rendition_states.push(RenditionState {
+            vid_enc_ctx: enc_ctx,
+            vid_out_stream_idx: stream_idx,
+            enc_width: target_width,
+            enc_height: target_height,
+            sws_ctx: ptr::null_mut(),
+            last_src_fmt: None,
+            last_src_w: None,
+            last_src_h: None,
+        });
+    }
+
+    // ── 10. Open AAC audio encoder and add audio stream (optional) ────────────
+    let mut aud_enc_ctx: *mut AVCodecContext = ptr::null_mut();
+    let mut aud_out_stream_idx: i32 = -1;
+    let mut swr_ctx: *mut ff_sys::SwrContext = ptr::null_mut();
+
+    if audio_stream_idx >= 0 {
+        match open_aac_encoder(aud_sample_rate, aud_nb_channels) {
+            Ok(ctx) => {
+                aud_enc_ctx = ctx;
+                let aud_out_stream = avformat_new_stream(out_ctx, ptr::null());
+                if aud_out_stream.is_null() {
+                    ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
+                    log::warn!("dash abr cannot create audio output stream, skipping audio");
+                    audio_stream_idx = -1;
+                } else {
+                    (*aud_out_stream).time_base.num = 1;
+                    (*aud_out_stream).time_base.den = aud_sample_rate;
+                    aud_out_stream_idx = ((*out_ctx).nb_streams - 1) as i32;
+
+                    if !(*aud_out_stream).codecpar.is_null() {
+                        (*(*aud_out_stream).codecpar).codec_id = (*aud_enc_ctx).codec_id;
+                        (*(*aud_out_stream).codecpar).codec_type =
+                            ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO;
+                        (*(*aud_out_stream).codecpar).sample_rate = (*aud_enc_ctx).sample_rate;
+                        (*(*aud_out_stream).codecpar).format = (*aud_enc_ctx).sample_fmt;
+                        let _ = ff_sys::swresample::channel_layout::copy(
+                            &mut (*(*aud_out_stream).codecpar).ch_layout,
+                            &(*aud_enc_ctx).ch_layout,
+                        );
+                    }
+
+                    let enc_ch_layout = &(*aud_enc_ctx).ch_layout;
+                    let enc_sample_fmt = (*aud_enc_ctx).sample_fmt;
+                    let enc_sample_rate = (*aud_enc_ctx).sample_rate;
+                    let dec_ch_layout = &(*aud_dec_ctx).ch_layout;
+                    let dec_sample_fmt = (*aud_dec_ctx).sample_fmt;
+                    let dec_sample_rate = (*aud_dec_ctx).sample_rate;
+
+                    if let Ok(ctx) = ff_sys::swresample::alloc_set_opts2(
+                        enc_ch_layout,
+                        enc_sample_fmt,
+                        enc_sample_rate,
+                        dec_ch_layout,
+                        dec_sample_fmt,
+                        dec_sample_rate,
+                    ) {
+                        if ff_sys::swresample::init(ctx).is_ok() {
+                            swr_ctx = ctx;
+                        } else {
+                            let mut swr_tmp = ctx;
+                            ff_sys::swresample::free(&mut swr_tmp);
+                            ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
+                            log::warn!("dash abr swr init failed, skipping audio");
+                            audio_stream_idx = -1;
+                        }
+                    } else {
+                        ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
+                        log::warn!("dash abr swr alloc failed, skipping audio");
+                        audio_stream_idx = -1;
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("dash abr aac encoder unavailable: {e}, skipping audio");
+                audio_stream_idx = -1;
+            }
+        }
+    }
+
+    // ── 11. Open output file and write header ─────────────────────────────────
+    let pb = ff_sys::avformat::open_output(
+        std::path::Path::new(&manifest_path),
+        ff_sys::avformat::avio_flags::WRITE,
+    )
+    .map_err(|e| {
+        cleanup_encoders(aud_enc_ctx, ptr::null_mut(), swr_ctx);
+        cleanup_renditions(&mut rendition_states);
+        cleanup_output_ctx(out_ctx);
+        cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+        ffmpeg_err(e)
+    })?;
+    (*out_ctx).pb = pb;
+
+    let ret = avformat_write_header(out_ctx, ptr::null_mut());
+    if ret < 0 {
+        ff_sys::avformat::close_output(&mut (*out_ctx).pb);
+        cleanup_encoders(aud_enc_ctx, ptr::null_mut(), swr_ctx);
+        cleanup_renditions(&mut rendition_states);
+        cleanup_output_ctx(out_ctx);
+        cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+        return Err(ffmpeg_err(ret));
+    }
+
+    // Close pb so the DASH muxer can manage its own avio handles for segment
+    // files without hitting a locked-file error on Windows.
+    ff_sys::avformat::close_output(&mut (*out_ctx).pb);
+
+    log::info!(
+        "dash abr output ready renditions={} fps={video_fps:.1} audio={}",
+        rendition_states.len(),
+        audio_stream_idx >= 0
+    );
+
+    // ── 12. Allocate frame and packet buffers ─────────────────────────────────
+    let mut pkt = av_packet_alloc();
+    if pkt.is_null() {
+        av_write_trailer(out_ctx);
+        cleanup_encoders(aud_enc_ctx, ptr::null_mut(), swr_ctx);
+        cleanup_renditions(&mut rendition_states);
+        cleanup_output_ctx(out_ctx);
+        cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+        return Err(ffmpeg_err_msg("cannot allocate packet"));
+    }
+
+    let vid_dec_frame = av_frame_alloc();
+    let vid_enc_frame = av_frame_alloc();
+    let aud_dec_frame = av_frame_alloc();
+    let aud_enc_frame = av_frame_alloc();
+
+    if vid_dec_frame.is_null()
+        || vid_enc_frame.is_null()
+        || aud_dec_frame.is_null()
+        || aud_enc_frame.is_null()
+    {
+        free_frames(vid_dec_frame, vid_enc_frame, aud_dec_frame, aud_enc_frame);
+        av_packet_free(&mut pkt);
+        av_write_trailer(out_ctx);
+        cleanup_encoders(aud_enc_ctx, ptr::null_mut(), swr_ctx);
+        cleanup_renditions(&mut rendition_states);
+        cleanup_output_ctx(out_ctx);
+        cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+        return Err(ffmpeg_err_msg("cannot allocate frame"));
+    }
+
+    // ── 13. Decode–encode loop ────────────────────────────────────────────────
+    let mut video_frame_count: u64 = 0;
+    let mut audio_sample_count: i64 = 0;
+
+    loop {
+        match ff_sys::avformat::read_frame(input_ctx, pkt) {
+            Err(e) if e == ff_sys::error_codes::EOF => break,
+            Err(_) => {
+                av_packet_unref(pkt);
+                continue;
+            }
+            Ok(()) => {}
+        }
+
+        let stream_idx = (*pkt).stream_index;
+
+        if stream_idx == video_stream_idx {
+            // ── Video path ────────────────────────────────────────────────────
+            if ff_sys::avcodec::send_packet(vid_dec_ctx, pkt).is_err() {
+                av_packet_unref(pkt);
+                continue;
+            }
+            av_packet_unref(pkt);
+
+            loop {
+                match ff_sys::avcodec::receive_frame(vid_dec_ctx, vid_dec_frame) {
+                    Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
+                        break;
+                    }
+                    Err(_) => break,
+                    Ok(()) => {}
+                }
+
+                let pict_type = if video_frame_count.is_multiple_of(u64::from(keyframe_interval)) {
+                    AVPictureType_AV_PICTURE_TYPE_I
+                } else {
+                    AVPictureType_AV_PICTURE_TYPE_NONE
+                };
+                (*vid_dec_frame).pict_type = pict_type;
+
+                let src_fmt = (*vid_dec_frame).format;
+                let src_w = (*vid_dec_frame).width;
+                let src_h = (*vid_dec_frame).height;
+
+                for state in &mut rendition_states {
+                    // Recreate SwsContext when source properties change
+                    if state.last_src_fmt != Some(src_fmt)
+                        || state.last_src_w != Some(src_w)
+                        || state.last_src_h != Some(src_h)
+                    {
+                        if !state.sws_ctx.is_null() {
+                            ff_sys::swscale::free_context(state.sws_ctx);
+                            state.sws_ctx = ptr::null_mut();
+                        }
+                        if let Ok(ctx) = ff_sys::swscale::get_context(
+                            src_w,
+                            src_h,
+                            src_fmt,
+                            state.enc_width,
+                            state.enc_height,
+                            AVPixelFormat_AV_PIX_FMT_YUV420P,
+                            ff_sys::swscale::scale_flags::BILINEAR,
+                        ) {
+                            state.sws_ctx = ctx;
+                            state.last_src_fmt = Some(src_fmt);
+                            state.last_src_w = Some(src_w);
+                            state.last_src_h = Some(src_h);
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    (*vid_enc_frame).format = AVPixelFormat_AV_PIX_FMT_YUV420P;
+                    (*vid_enc_frame).width = state.enc_width;
+                    (*vid_enc_frame).height = state.enc_height;
+                    (*vid_enc_frame).pts = video_frame_count as i64;
+
+                    if av_frame_get_buffer(vid_enc_frame, 0) < 0 {
+                        continue;
+                    }
+
+                    let scale_ok = ff_sys::swscale::scale(
+                        state.sws_ctx,
+                        (*vid_dec_frame).data.as_ptr() as *const *const u8,
+                        (*vid_dec_frame).linesize.as_ptr(),
+                        0,
+                        src_h,
+                        (*vid_enc_frame).data.as_mut_ptr().cast_const(),
+                        (*vid_enc_frame).linesize.as_mut_ptr(),
+                    );
+
+                    if scale_ok.is_ok()
+                        && ff_sys::avcodec::send_frame(state.vid_enc_ctx, vid_enc_frame).is_ok()
+                    {
+                        drain_encoder(state.vid_enc_ctx, out_ctx, state.vid_out_stream_idx);
+                    }
+
+                    av_frame_unref(vid_enc_frame);
+                }
+
+                av_frame_unref(vid_dec_frame);
+                video_frame_count += 1;
+            }
+        } else if stream_idx == audio_stream_idx && !aud_dec_ctx.is_null() {
+            // ── Audio path ────────────────────────────────────────────────────
+            if ff_sys::avcodec::send_packet(aud_dec_ctx, pkt).is_err() {
+                av_packet_unref(pkt);
+                continue;
+            }
+            av_packet_unref(pkt);
+
+            loop {
+                match ff_sys::avcodec::receive_frame(aud_dec_ctx, aud_dec_frame) {
+                    Err(e) if e == ff_sys::error_codes::EAGAIN || e == ff_sys::error_codes::EOF => {
+                        break;
+                    }
+                    Err(_) => break,
+                    Ok(()) => {}
+                }
+
+                let enc_frame_size = if (*aud_enc_ctx).frame_size > 0 {
+                    (*aud_enc_ctx).frame_size
+                } else {
+                    (*aud_dec_frame).nb_samples
+                };
+
+                (*aud_enc_frame).format = (*aud_enc_ctx).sample_fmt;
+                (*aud_enc_frame).sample_rate = (*aud_enc_ctx).sample_rate;
+                (*aud_enc_frame).nb_samples = enc_frame_size;
+                let _ = ff_sys::swresample::channel_layout::copy(
+                    &mut (*aud_enc_frame).ch_layout,
+                    &(*aud_enc_ctx).ch_layout,
+                );
+
+                let buf_ret = av_frame_get_buffer(aud_enc_frame, 0);
+                if buf_ret < 0 {
+                    av_frame_unref(aud_dec_frame);
+                    continue;
+                }
+
+                let in_data = (*aud_dec_frame).data.as_ptr() as *const *const u8;
+                let in_samples = (*aud_dec_frame).nb_samples;
+
+                let samples_out = ff_sys::swresample::convert(
+                    swr_ctx,
+                    (*aud_enc_frame).data.as_mut_ptr(),
+                    enc_frame_size,
+                    in_data,
+                    in_samples,
+                );
+
+                if let Ok(n) = samples_out
+                    && n > 0
+                {
+                    (*aud_enc_frame).nb_samples = n;
+                    (*aud_enc_frame).pts = audio_sample_count;
+                    if ff_sys::avcodec::send_frame(aud_enc_ctx, aud_enc_frame).is_ok() {
+                        drain_encoder(aud_enc_ctx, out_ctx, aud_out_stream_idx);
+                    }
+                    audio_sample_count += i64::from(n);
+                }
+
+                av_frame_unref(aud_enc_frame);
+                av_frame_unref(aud_dec_frame);
+            }
+        } else {
+            av_packet_unref(pkt);
+        }
+    }
+
+    // ── 14. Flush encoders ────────────────────────────────────────────────────
+    for state in &rendition_states {
+        let _ = ff_sys::avcodec::send_frame(state.vid_enc_ctx, ptr::null());
+        drain_encoder(state.vid_enc_ctx, out_ctx, state.vid_out_stream_idx);
+    }
+
+    if !aud_enc_ctx.is_null() {
+        if !swr_ctx.is_null() {
+            let enc_frame_size = if (*aud_enc_ctx).frame_size > 0 {
+                (*aud_enc_ctx).frame_size
+            } else {
+                1024
+            };
+            (*aud_enc_frame).format = (*aud_enc_ctx).sample_fmt;
+            (*aud_enc_frame).sample_rate = (*aud_enc_ctx).sample_rate;
+            (*aud_enc_frame).nb_samples = enc_frame_size;
+            let _ = ff_sys::swresample::channel_layout::copy(
+                &mut (*aud_enc_frame).ch_layout,
+                &(*aud_enc_ctx).ch_layout,
+            );
+            if av_frame_get_buffer(aud_enc_frame, 0) == 0 {
+                if let Ok(n) = ff_sys::swresample::convert(
+                    swr_ctx,
+                    (*aud_enc_frame).data.as_mut_ptr(),
+                    enc_frame_size,
+                    ptr::null(),
+                    0,
+                ) && n > 0
+                {
+                    (*aud_enc_frame).nb_samples = n;
+                    (*aud_enc_frame).pts = audio_sample_count;
+                    if ff_sys::avcodec::send_frame(aud_enc_ctx, aud_enc_frame).is_ok() {
+                        drain_encoder(aud_enc_ctx, out_ctx, aud_out_stream_idx);
+                    }
+                }
+                av_frame_unref(aud_enc_frame);
+            }
+        }
+        let _ = ff_sys::avcodec::send_frame(aud_enc_ctx, ptr::null());
+        drain_encoder(aud_enc_ctx, out_ctx, aud_out_stream_idx);
+    }
+
+    // ── 15. Finalize ──────────────────────────────────────────────────────────
+    av_write_trailer(out_ctx);
+
+    // ── Cleanup ───────────────────────────────────────────────────────────────
+    free_frames(vid_dec_frame, vid_enc_frame, aud_dec_frame, aud_enc_frame);
+    av_packet_free(&mut pkt);
+    cleanup_encoders(aud_enc_ctx, ptr::null_mut(), swr_ctx);
+    cleanup_renditions(&mut rendition_states);
+    cleanup_output_ctx(out_ctx);
+    cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
+
+    log::info!(
+        "dash abr write complete video_frames={video_frame_count} \
+         audio_samples={audio_sample_count}"
+    );
+
+    Ok(())
 }
