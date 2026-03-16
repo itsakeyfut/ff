@@ -61,13 +61,16 @@ pub use ff_decode::{
 
 // ── encode feature ────────────────────────────────────────────────────────────
 //
-// Progress / ProgressCallback are intentionally omitted here: they are also
-// exported by ff-pipeline, and exposing them from two paths under the same name
-// would be ambiguous when the `pipeline` feature is also enabled.
+// EncodeProgress / EncodeProgressCallback carry encode-specific metrics and are
+// distinct from ff-pipeline's Progress / ProgressCallback, so both sets can be
+// re-exported from avio without ambiguity.
+// VideoCodecEncodeExt provides encode-specific helpers (is_lgpl_compatible,
+// default_extension) on the shared VideoCodec type; import it to call them.
 #[cfg(feature = "encode")]
 pub use ff_encode::{
     AudioEncoder, AudioEncoderBuilder, BitrateMode, CRF_MAX, Container, EncodeError,
-    HardwareEncoder, ImageEncoder, ImageEncoderBuilder, Preset, VideoEncoder, VideoEncoderBuilder,
+    EncodeProgress, EncodeProgressCallback, HardwareEncoder, ImageEncoder, ImageEncoderBuilder,
+    Preset, VideoCodecEncodeExt, VideoEncoder, VideoEncoderBuilder,
 };
 
 // ── filter feature ────────────────────────────────────────────────────────────
@@ -186,6 +189,24 @@ mod tests {
     #[test]
     fn encode_error_should_be_accessible() {
         let _: EncodeError = EncodeError::Cancelled;
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn encode_progress_should_be_accessible() {
+        assert!(std::mem::size_of::<EncodeProgress>() > 0);
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn encode_progress_callback_should_be_accessible() {
+        // EncodeProgressCallback is a trait — verify it is in scope by creating
+        // a minimal no-op implementation.
+        struct NoOp;
+        impl EncodeProgressCallback for NoOp {
+            fn on_progress(&mut self, _: &EncodeProgress) {}
+        }
+        let _ = NoOp;
     }
 
     // ── filter feature ────────────────────────────────────────────────────────
