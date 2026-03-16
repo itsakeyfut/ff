@@ -89,7 +89,7 @@
 //! - [`audio`] - Audio decoder for extracting audio frames
 //! - [`video`] - Video decoder for extracting video frames
 //! - [`error`] - Error types for decoding operations
-//! - [`pool`] - Frame pool trait for memory reuse
+//! - Frame pool types (`FramePool`, `PooledBuffer`, `SimpleFramePool`) are provided by `ff-common`
 //!
 //! ## Re-exports
 //!
@@ -103,14 +103,13 @@
 pub mod audio;
 pub mod error;
 pub mod image;
-pub mod pool;
 pub mod video;
 
 // Re-exports for convenience
 pub use audio::{AudioDecoder, AudioDecoderBuilder, AudioFrameIterator};
 pub use error::DecodeError;
+pub use ff_common::{FramePool, PooledBuffer, SimpleFramePool};
 pub use image::{ImageDecoder, ImageDecoderBuilder, ImageFrameIterator};
-pub use pool::{FramePool, PooledBuffer, SimpleFramePool};
 pub use video::{VideoDecoder, VideoDecoderBuilder, VideoFrameIterator};
 
 /// Seek mode for positioning the decoder.

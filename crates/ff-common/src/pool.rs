@@ -1,10 +1,11 @@
 //! Frame buffer pooling abstractions.
 //!
-//! This module provides the [`FramePool`] trait and [`PooledBuffer`] type
+//! This module provides the [`FramePool`] trait, [`PooledBuffer`] type, and
+//! [`VecPool`] — a ready-to-use `Mutex<Vec<Vec<u8>>>` pool implementation —
 //! which enable memory pooling for decoded frames, reducing allocation
 //! overhead during video playback.
 
-use std::sync::Weak;
+use std::sync::{Arc, Mutex, Weak};
 
 /// A trait for frame buffer pooling.
 ///
@@ -194,6 +195,118 @@ impl AsMut<[u8]> for PooledBuffer {
     }
 }
 
+/// A simple frame pool backed by a `Vec` of reusable buffers.
+///
+/// Stores up to `capacity` buffers and returns them to callers via
+/// [`FramePool::acquire`]. When exhausted, `acquire` returns `None` and
+/// the caller allocates a new buffer directly.
+///
+/// # Thread Safety
+///
+/// All access is protected by a [`Mutex`], making `VecPool` safe to share
+/// across threads via `Arc<VecPool>`.
+///
+/// # Examples
+///
+/// ```
+/// use ff_common::VecPool;
+///
+/// let pool = VecPool::new(32);
+/// assert_eq!(pool.available(), 0); // pool starts empty
+/// ```
+#[derive(Debug)]
+pub struct VecPool {
+    /// Pool of available buffers.
+    buffers: Mutex<Vec<Vec<u8>>>,
+    /// Maximum number of buffers to keep; excess releases are dropped.
+    capacity: usize,
+    /// Weak self-reference used to hand out auto-returning [`PooledBuffer`]s.
+    self_ref: Mutex<Weak<Self>>,
+}
+
+impl VecPool {
+    /// Creates a new pool with the given maximum buffer count.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - Maximum number of buffers to retain in the pool.
+    #[must_use]
+    pub fn new(capacity: usize) -> Arc<Self> {
+        let pool = Arc::new(Self {
+            buffers: Mutex::new(Vec::with_capacity(capacity)),
+            capacity,
+            self_ref: Mutex::new(Weak::new()),
+        });
+        if let Ok(mut r) = pool.self_ref.lock() {
+            *r = Arc::downgrade(&pool);
+        }
+        pool
+    }
+
+    /// Returns the maximum number of buffers this pool will retain.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Returns the number of buffers currently available in the pool.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_common::VecPool;
+    ///
+    /// let pool = VecPool::new(8);
+    /// assert_eq!(pool.available(), 0);
+    /// ```
+    #[must_use]
+    pub fn available(&self) -> usize {
+        self.buffers.lock().map_or(0, |b| b.len())
+    }
+}
+
+impl FramePool for VecPool {
+    fn acquire(&self, size: usize) -> Option<PooledBuffer> {
+        if let Ok(mut buffers) = self.buffers.lock() {
+            let suitable_idx = buffers
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.capacity() >= size)
+                .min_by_key(|(_, b)| b.capacity())
+                .map(|(idx, _)| idx);
+
+            if let Some(idx) = suitable_idx {
+                let mut buf = buffers.swap_remove(idx);
+                buf.resize(size, 0);
+                buf.fill(0);
+
+                let weak_ref = self
+                    .self_ref
+                    .lock()
+                    .ok()
+                    .and_then(|r| r.upgrade())
+                    .map(|arc| Arc::downgrade(&(arc as Arc<dyn FramePool>)))?;
+
+                return Some(PooledBuffer::new(buf, weak_ref));
+            }
+        }
+        None
+    }
+
+    fn release(&self, buffer: Vec<u8>) {
+        if let Ok(mut buffers) = self.buffers.lock()
+            && buffers.len() < self.capacity
+        {
+            buffers.push(buffer);
+        }
+    }
+}
+
+/// Alias for [`VecPool`] kept for backwards compatibility with `ff-decode`.
+///
+/// Prefer [`VecPool`] for new code.
+pub type SimpleFramePool = VecPool;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +483,86 @@ mod tests {
         // buffer1 should be unaffected (deep copy)
         assert_eq!(buffer1.data(), &[1, 2, 3]);
         assert_eq!(buffer2.data(), &[99, 2, 3]);
+    }
+
+    // ── VecPool tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn vec_pool_should_start_empty() {
+        let pool = VecPool::new(32);
+        assert_eq!(pool.capacity(), 32);
+        assert_eq!(pool.available(), 0);
+    }
+
+    #[test]
+    fn vec_pool_acquire_should_return_none_when_empty() {
+        let pool = VecPool::new(8);
+        assert!(pool.acquire(1024).is_none());
+    }
+
+    #[test]
+    fn vec_pool_release_then_acquire_should_reuse_buffer() {
+        let pool = VecPool::new(8);
+
+        pool.release(vec![0u8; 1024]);
+        assert_eq!(pool.available(), 1);
+
+        let buf = pool.acquire(512).unwrap();
+        assert_eq!(buf.len(), 512);
+        assert_eq!(pool.available(), 0);
+    }
+
+    #[test]
+    fn vec_pool_buffer_should_auto_return_on_drop() {
+        let pool = VecPool::new(8);
+        pool.release(vec![0u8; 2048]);
+
+        {
+            let _buf = pool.acquire(1024).unwrap();
+            assert_eq!(pool.available(), 0);
+        }
+
+        assert_eq!(pool.available(), 1);
+    }
+
+    #[test]
+    fn vec_pool_should_not_exceed_capacity() {
+        let pool = VecPool::new(2);
+
+        pool.release(vec![0u8; 512]);
+        pool.release(vec![0u8; 512]);
+        pool.release(vec![0u8; 512]); // over capacity — dropped
+
+        assert_eq!(pool.available(), 2);
+    }
+
+    #[test]
+    fn vec_pool_acquire_should_choose_smallest_fitting_buffer() {
+        let pool = VecPool::new(8);
+        pool.release(vec![0u8; 512]);
+        pool.release(vec![0u8; 1024]);
+        pool.release(vec![0u8; 2048]);
+
+        // Request 1000 bytes — should get the 1024 buffer (smallest that fits)
+        let buf = pool.acquire(1000).unwrap();
+        assert!(buf.len() >= 1000);
+        assert_eq!(pool.available(), 2);
+    }
+
+    #[test]
+    fn vec_pool_acquire_should_return_none_when_no_suitable_buffer() {
+        let pool = VecPool::new(4);
+        pool.release(vec![0u8; 512]);
+
+        assert!(pool.acquire(1024).is_none());
+        // Original buffer must still be in the pool
+        assert_eq!(pool.available(), 1);
+    }
+
+    #[test]
+    fn simple_frame_pool_alias_should_behave_identically_to_vec_pool() {
+        let pool = SimpleFramePool::new(4);
+        assert_eq!(pool.capacity(), 4);
+        assert_eq!(pool.available(), 0);
     }
 }

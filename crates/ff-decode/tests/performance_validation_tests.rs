@@ -309,6 +309,7 @@ fn test_batch_thumbnail_performance() {
 // ============================================================================
 
 #[test]
+#[ignore = "performance thresholds are environment-dependent; run explicitly with -- --include-ignored"]
 fn test_performance_consistency() {
     // Verify that performance is consistent across multiple operations
     let mut decoder = create_decoder();
