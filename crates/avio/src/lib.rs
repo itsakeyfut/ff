@@ -306,4 +306,45 @@ mod tests {
             hardware: None,
         };
     }
+
+    // ── stream feature ────────────────────────────────────────────────────────
+
+    #[cfg(feature = "stream")]
+    #[test]
+    fn stream_hls_output_should_be_accessible() {
+        // HlsOutput::new() is the public entry point; verify name resolution.
+        let _hls: HlsOutput = HlsOutput::new("/tmp/hls");
+    }
+
+    #[cfg(feature = "stream")]
+    #[test]
+    fn stream_dash_output_should_be_accessible() {
+        // DashOutput::new() is the public entry point; verify name resolution.
+        let _dash: DashOutput = DashOutput::new("/tmp/dash");
+    }
+
+    #[cfg(feature = "stream")]
+    #[test]
+    fn stream_abr_ladder_should_be_accessible() {
+        // AbrLadder::new() is the public entry point; verify name resolution.
+        let _ladder: AbrLadder = AbrLadder::new("/no/such/file.mp4");
+    }
+
+    #[cfg(feature = "stream")]
+    #[test]
+    fn stream_rendition_should_be_accessible() {
+        let _r: Rendition = Rendition {
+            width: 1280,
+            height: 720,
+            bitrate: 3_000_000,
+        };
+    }
+
+    #[cfg(feature = "stream")]
+    #[test]
+    fn stream_error_should_be_accessible() {
+        let _err: StreamError = StreamError::InvalidConfig {
+            reason: "test".into(),
+        };
+    }
 }
