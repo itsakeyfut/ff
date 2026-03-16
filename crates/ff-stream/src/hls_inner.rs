@@ -25,7 +25,8 @@ use std::path::Path;
 use std::ptr;
 
 use ff_sys::{
-    AVCodecContext, AVFormatContext, AVFrame, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P,
+    AVCodecContext, AVFormatContext, AVFrame, AVPictureType_AV_PICTURE_TYPE_I,
+    AVPictureType_AV_PICTURE_TYPE_NONE, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P,
     SwrContext, SwsContext, av_frame_alloc, av_frame_free, av_frame_get_buffer, av_frame_unref,
     av_interleaved_write_frame, av_opt_set, av_packet_alloc, av_packet_free, av_packet_unref,
     av_write_trailer, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
@@ -33,10 +34,6 @@ use ff_sys::{
 };
 
 use crate::error::StreamError;
-
-// AV_PICTURE_TYPE_NONE = 0, AV_PICTURE_TYPE_I = 1 (from FFmpeg enum AVPictureType)
-const AV_PICTURE_TYPE_NONE: i32 = 0;
-const AV_PICTURE_TYPE_I: i32 = 1;
 
 // ============================================================================
 // Helper: map an FFmpeg error code to StreamError::Ffmpeg
@@ -477,9 +474,9 @@ unsafe fn write_hls_unsafe(
                 // Force keyframe at intervals
                 (*vid_dec_frame).pict_type =
                     if video_frame_count.is_multiple_of(u64::from(keyframe_interval)) {
-                        AV_PICTURE_TYPE_I
+                        AVPictureType_AV_PICTURE_TYPE_I
                     } else {
-                        AV_PICTURE_TYPE_NONE
+                        AVPictureType_AV_PICTURE_TYPE_NONE
                     };
 
                 // Convert decoded frame to YUV420P at encoder dimensions
