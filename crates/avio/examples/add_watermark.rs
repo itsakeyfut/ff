@@ -1,13 +1,8 @@
 //! Overlay a PNG watermark onto a video using the `overlay` filter.
 //!
 //! The `overlay` filter requires **two** video input streams:
-//! - slot 0: the main video frames (pushed per decoded frame)
-//! - slot 1: the watermark frame (pushed per decoded frame; same image repeated)
-//!
-//! Because `Pipeline` only drives slot 0, this example uses the lower-level
-//! `VideoDecoder` → `FilterGraph` → `VideoEncoder` path directly.
-//!
-//! Note: audio is not copied to the output in this example.
+//! - slot 0: the main video frames (driven by `Pipeline` internally)
+//! - slot 1: the watermark frame (fed via `secondary_input`)
 //!
 //! # Usage
 //!
@@ -22,7 +17,7 @@
 
 use std::{path::Path, process};
 
-use avio::{BitrateMode, FilterGraphBuilder, ImageDecoder, VideoDecoder, VideoEncoder};
+use avio::{EncoderConfig, FilterGraphBuilder, ImageDecoder, Pipeline, VideoCodec, VideoDecoder};
 
 // ── Position helpers ──────────────────────────────────────────────────────────
 
@@ -109,7 +104,7 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Decode watermark image ────────────────────────────────────────────────
+    // ── Probe watermark dimensions ────────────────────────────────────────────
 
     let wm_dec = match ImageDecoder::open(&watermark).build() {
         Ok(d) => d,
@@ -128,9 +123,9 @@ fn main() {
     let wm_w = wm_frame.width();
     let wm_h = wm_frame.height();
 
-    // ── Open video decoder ────────────────────────────────────────────────────
+    // ── Probe video dimensions ────────────────────────────────────────────────
 
-    let mut vid_dec = match VideoDecoder::open(&input).build() {
+    let vid_dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Error opening video: {e}");
@@ -139,7 +134,6 @@ fn main() {
     };
     let vid_w = vid_dec.width();
     let vid_h = vid_dec.height();
-    let fps = vid_dec.frame_rate();
 
     // ── Compute overlay position ──────────────────────────────────────────────
 
@@ -165,12 +159,8 @@ fn main() {
     println!();
 
     // ── Build overlay filter graph ────────────────────────────────────────────
-    //
-    // The overlay filter expects two buffersrc inputs:
-    //   slot 0 → main video frame  (pushed for every decoded frame)
-    //   slot 1 → watermark frame   (same image pushed again each iteration)
 
-    let mut filter = match FilterGraphBuilder::new().overlay(x, y).build() {
+    let filter = match FilterGraphBuilder::new().overlay(x, y).build() {
         Ok(fg) => fg,
         Err(e) => {
             eprintln!("Error building filter graph: {e}");
@@ -178,64 +168,31 @@ fn main() {
         }
     };
 
-    // ── Build video encoder ───────────────────────────────────────────────────
+    // ── Build and run pipeline ────────────────────────────────────────────────
 
-    // Audio is not handled in this example; output is video-only.
-    let mut enc = match VideoEncoder::create(&output)
-        .video(vid_w, vid_h, fps)
-        .video_codec(avio::VideoCodec::H264)
-        .bitrate_mode(BitrateMode::Crf(23))
+    let config = EncoderConfig::builder()
+        .video_codec(VideoCodec::H264)
+        .crf(23)
+        .build();
+
+    let pipeline = match Pipeline::builder()
+        .input(&input)
+        .secondary_input(&watermark)
+        .filter(filter)
+        .output(&output, config)
         .build()
     {
-        Ok(e) => e,
+        Ok(p) => p,
         Err(e) => {
-            eprintln!("Error creating encoder: {e}");
+            eprintln!("Error: {e}");
             process::exit(1);
         }
     };
 
-    // ── Decode → filter → encode loop ────────────────────────────────────────
-
-    let mut frames_out = 0u64;
-    loop {
-        let frame = match vid_dec.decode_one() {
-            Ok(Some(f)) => f,
-            Ok(None) => break,
-            Err(e) => {
-                eprintln!("Error decoding: {e}");
-                process::exit(1);
-            }
-        };
-
-        // Push main video frame to slot 0.
-        if let Err(e) = filter.push_video(0, &frame) {
-            eprintln!("Error pushing to filter slot 0: {e}");
-            process::exit(1);
-        }
-
-        // Push watermark to slot 1 (repeat each frame so the buffersrc stays fed).
-        if let Err(e) = filter.push_video(1, &wm_frame) {
-            eprintln!("Error pushing watermark to filter slot 1: {e}");
-            process::exit(1);
-        }
-
-        while let Ok(Some(filtered)) = filter.pull_video() {
-            if let Err(e) = enc.push_video(&filtered) {
-                eprintln!("Error encoding: {e}");
-                process::exit(1);
-            }
-            frames_out += 1;
-            if frames_out.is_multiple_of(100) {
-                print!("\r{frames_out} frames encoded    ");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-            }
-        }
-    }
-
-    if let Err(e) = enc.finish() {
-        eprintln!("\nError finishing encode: {e}");
+    if let Err(e) = pipeline.run() {
+        eprintln!("Error: {e}");
         process::exit(1);
     }
 
-    println!("\rDone. {out_name}  {frames_out} frames");
+    println!("Done. {out_name}");
 }

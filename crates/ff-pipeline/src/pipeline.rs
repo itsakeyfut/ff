@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use ff_decode::{AudioDecoder, VideoDecoder};
+use ff_decode::{AudioDecoder, ImageDecoder, VideoDecoder};
 use ff_encode::{BitrateMode, HardwareEncoder, VideoEncoder};
 use ff_filter::{FilterGraph, HwAccel};
 use ff_format::{AudioCodec, Timestamp, VideoCodec};
@@ -150,6 +150,7 @@ impl EncoderConfigBuilder {
 /// Execute by calling [`run`](Self::run).
 pub struct Pipeline {
     inputs: Vec<String>,
+    secondary_inputs: Vec<String>,
     filter: Option<FilterGraph>,
     output: Option<(String, EncoderConfig)>,
     callback: Option<ProgressCallback>,
@@ -208,8 +209,9 @@ impl Pipeline {
         };
 
         log::info!(
-            "pipeline starting inputs={num_inputs} output={out_path} \
-             width={out_width} height={out_height} fps={fps} total_frames={total_frames:?}"
+            "pipeline starting inputs={num_inputs} secondary_inputs={} output={out_path} \
+             width={out_width} height={out_height} fps={fps} total_frames={total_frames:?}",
+            self.secondary_inputs.len()
         );
 
         // Probe audio from the first input to configure the encoder audio track.
@@ -255,6 +257,32 @@ impl Pipeline {
         // PTS offset in seconds: accumulates the duration of all processed inputs.
         let mut pts_offset_secs: f64 = 0.0;
 
+        // Decode one frame from each secondary input before the main loop.
+        // secondary_frames[i] feeds filter slot (i + 1).
+        let secondary_frames: Vec<_> = {
+            let mut frames = Vec::with_capacity(self.secondary_inputs.len());
+            for path in &self.secondary_inputs {
+                let ext = std::path::Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(str::to_lowercase)
+                    .unwrap_or_default();
+                let frame = if matches!(
+                    ext.as_str(),
+                    "jpg" | "jpeg" | "png" | "bmp" | "webp" | "tiff" | "tif"
+                ) {
+                    let dec = ImageDecoder::open(path).build()?;
+                    dec.decode()?
+                } else {
+                    let mut dec = VideoDecoder::open(path).build()?;
+                    dec.decode_one()?
+                        .ok_or(ff_decode::DecodeError::EndOfStream)?
+                };
+                frames.push(frame);
+            }
+            frames
+        };
+
         // Reuse the already-opened first decoder; open fresh decoders for subsequent inputs.
         let mut maybe_first_vdec = Some(first_vdec);
 
@@ -280,6 +308,10 @@ impl Pipeline {
 
                 let frame = if let Some(ref mut fg) = filter {
                     fg.push_video(0, &raw_frame)?;
+                    // Feed secondary inputs to slots 1..N.
+                    for (slot_idx, sec_frame) in secondary_frames.iter().enumerate() {
+                        fg.push_video(slot_idx + 1, sec_frame)?;
+                    }
                     match fg.pull_video()? {
                         Some(f) => f,
                         None => continue, // filter is buffering; feed more input
@@ -387,6 +419,7 @@ fn hwaccel_to_hardware_encoder(hw: Option<HwAccel>) -> HardwareEncoder {
 /// All setter methods take `self` by value and return `Self` for chaining.
 pub struct PipelineBuilder {
     inputs: Vec<String>,
+    secondary_inputs: Vec<String>,
     filter: Option<FilterGraph>,
     output: Option<(String, EncoderConfig)>,
     callback: Option<ProgressCallback>,
@@ -398,6 +431,7 @@ impl PipelineBuilder {
     pub fn new() -> Self {
         Self {
             inputs: Vec::new(),
+            secondary_inputs: Vec::new(),
             filter: None,
             output: None,
             callback: None,
@@ -410,6 +444,29 @@ impl PipelineBuilder {
     #[must_use]
     pub fn input(mut self, path: &str) -> Self {
         self.inputs.push(path.to_owned());
+        self
+    }
+
+    /// Adds a secondary input path that will be fed to filter slot 1, 2, … in order.
+    ///
+    /// The first call maps to slot 1, the second to slot 2, and so on.
+    /// A filter graph **must** also be set via [`filter`](Self::filter); calling this
+    /// without a filter causes [`build`](Self::build) to return
+    /// [`PipelineError::SecondaryInputWithoutFilter`].
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Pipeline::builder()
+    ///     .input("video.mp4")
+    ///     .secondary_input("logo.png")   // → slot 1
+    ///     .filter(fg)
+    ///     .output("out.mp4", config)
+    ///     .build()?
+    /// ```
+    #[must_use]
+    pub fn secondary_input(mut self, path: &str) -> Self {
+        self.secondary_inputs.push(path.to_owned());
         self
     }
 
@@ -446,6 +503,8 @@ impl PipelineBuilder {
     ///
     /// - [`PipelineError::NoInput`] — no input was added via [`input`](Self::input)
     /// - [`PipelineError::NoOutput`] — [`output`](Self::output) was not called
+    /// - [`PipelineError::SecondaryInputWithoutFilter`] — [`secondary_input`](Self::secondary_input)
+    ///   was called but no filter was set via [`filter`](Self::filter)
     pub fn build(self) -> Result<Pipeline, PipelineError> {
         if self.inputs.is_empty() {
             return Err(PipelineError::NoInput);
@@ -453,8 +512,12 @@ impl PipelineBuilder {
         if self.output.is_none() {
             return Err(PipelineError::NoOutput);
         }
+        if !self.secondary_inputs.is_empty() && self.filter.is_none() {
+            return Err(PipelineError::SecondaryInputWithoutFilter);
+        }
         Ok(Pipeline {
             inputs: self.inputs,
+            secondary_inputs: self.secondary_inputs,
             filter: self.filter,
             output: self.output,
             callback: self.callback,
@@ -548,6 +611,19 @@ mod tests {
         assert!(matches!(
             Pipeline::builder().input("/tmp/in.mp4").build(),
             Err(PipelineError::NoOutput)
+        ));
+    }
+
+    #[test]
+    fn secondary_input_without_filter_should_return_error() {
+        let result = Pipeline::builder()
+            .input("/tmp/in.mp4")
+            .secondary_input("/tmp/logo.png")
+            .output("/tmp/out.mp4", dummy_config())
+            .build();
+        assert!(matches!(
+            result,
+            Err(PipelineError::SecondaryInputWithoutFilter)
         ));
     }
 }
