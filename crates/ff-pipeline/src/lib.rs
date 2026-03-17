@@ -41,6 +41,7 @@
 //!
 //! ## Module Structure
 //!
+//! - [`audio_pipeline`] — [`AudioPipeline`]
 //! - [`error`] — [`PipelineError`]
 //! - [`pipeline`] — [`Pipeline`], [`PipelineBuilder`], [`EncoderConfig`]
 //! - [`progress`] — [`Progress`], [`ProgressCallback`]
@@ -48,11 +49,13 @@
 
 #![warn(missing_docs)]
 
+pub mod audio_pipeline;
 pub mod error;
 pub mod pipeline;
 pub mod progress;
 pub mod thumbnail;
 
+pub use audio_pipeline::AudioPipeline;
 pub use error::PipelineError;
 pub use pipeline::{EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder};
 pub use progress::{Progress, ProgressCallback};
