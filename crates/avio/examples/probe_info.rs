@@ -27,6 +27,8 @@
 
 use std::{fmt::Write as _, process, time::Duration};
 
+use avio::{ColorRange, Rational};
+
 fn format_duration(d: Duration) -> String {
     let total_ms = d.as_millis();
     let ms = total_ms % 1000;
@@ -103,7 +105,21 @@ fn main() {
             let fps = v.fps();
             let pix_fmt = v.pixel_format();
 
+            // frame_rate() returns Rational (numerator/denominator fraction).
+            // This is more precise than fps() for rates like 30000/1001 (≈29.97).
+            let frame_rate: Rational = v.frame_rate();
+
+            // color_range() reports whether the signal is Full, Limited, or Unknown.
+            let color_range: ColorRange = v.color_range();
+
             let mut line = format!("  #{idx}  {codec}  {w}\u{d7}{h}  {fps:.2} fps  {pix_fmt}");
+            let _ = write!(
+                line,
+                "  fps={}/{} color_range={}",
+                frame_rate.num(),
+                frame_rate.den(),
+                color_range.name(),
+            );
 
             if let Some(br) = v.bitrate() {
                 let _ = write!(line, "  {}", format_bitrate(br));

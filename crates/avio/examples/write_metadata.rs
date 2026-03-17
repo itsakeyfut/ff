@@ -24,7 +24,8 @@
 use std::{path::Path, process, time::Duration};
 
 use avio::{
-    AudioCodec, BitrateMode, ChapterInfo, EncoderConfig, Pipeline, VideoCodec, VideoDecoder,
+    AudioCodec, BitrateMode, ChapterInfo, ChapterInfoBuilder, EncoderConfig, Pipeline, VideoCodec,
+    VideoDecoder,
 };
 
 fn parse_time(s: &str) -> Result<Duration, String> {
@@ -181,12 +182,14 @@ fn main() {
                 .map_or(total_duration, |(next_start, _)| *next_start);
             #[allow(clippy::cast_possible_wrap)]
             let id = i as i64;
-            ChapterInfo::builder()
+            // ChapterInfo::builder() returns ChapterInfoBuilder — name it
+            // explicitly so the type is visible to readers of this example.
+            let builder: ChapterInfoBuilder = ChapterInfo::builder()
                 .id(id)
                 .title(ch_title.clone())
                 .start(*start)
-                .end(end)
-                .build()
+                .end(end);
+            builder.build()
         })
         .collect();
 
