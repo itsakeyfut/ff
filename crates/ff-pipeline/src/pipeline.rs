@@ -11,7 +11,7 @@ use std::time::Instant;
 use ff_decode::{AudioDecoder, ImageDecoder, VideoDecoder};
 use ff_encode::{BitrateMode, HardwareEncoder, VideoEncoder};
 use ff_filter::{FilterGraph, HwAccel};
-use ff_format::{AudioCodec, Timestamp, VideoCodec};
+use ff_format::{AudioCodec, ChapterInfo, Timestamp, VideoCodec};
 
 use crate::error::PipelineError;
 use crate::progress::{Progress, ProgressCallback};
@@ -162,6 +162,8 @@ pub struct Pipeline {
     filter: Option<FilterGraph>,
     output: Option<(String, EncoderConfig)>,
     callback: Option<ProgressCallback>,
+    metadata: Vec<(String, String)>,
+    chapters: Vec<ChapterInfo>,
 }
 
 impl Pipeline {
@@ -252,6 +254,13 @@ impl Pipeline {
             enc_builder = enc_builder
                 .audio(sample_rate, channels)
                 .audio_codec(enc_config.audio_codec);
+        }
+
+        for (key, value) in self.metadata {
+            enc_builder = enc_builder.metadata(&key, &value);
+        }
+        for chapter in self.chapters {
+            enc_builder = enc_builder.chapter(chapter);
         }
 
         let mut encoder = enc_builder.build()?;
@@ -434,6 +443,8 @@ pub struct PipelineBuilder {
     filter: Option<FilterGraph>,
     output: Option<(String, EncoderConfig)>,
     callback: Option<ProgressCallback>,
+    metadata: Vec<(String, String)>,
+    chapters: Vec<ChapterInfo>,
 }
 
 impl PipelineBuilder {
@@ -446,6 +457,8 @@ impl PipelineBuilder {
             filter: None,
             output: None,
             callback: None,
+            metadata: Vec::new(),
+            chapters: Vec::new(),
         }
     }
 
@@ -510,6 +523,26 @@ impl PipelineBuilder {
         }
     }
 
+    /// Embed a metadata tag in the output container.
+    ///
+    /// Calls `av_dict_set` on `AVFormatContext->metadata` before the header
+    /// is written. Multiple calls accumulate entries; duplicate keys use the
+    /// last value.
+    #[must_use]
+    pub fn metadata(mut self, key: &str, value: &str) -> Self {
+        self.metadata.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    /// Add a chapter marker to the output container.
+    ///
+    /// Multiple calls accumulate chapters in the order added.
+    #[must_use]
+    pub fn chapter(mut self, chapter: ChapterInfo) -> Self {
+        self.chapters.push(chapter);
+        self
+    }
+
     /// Sets the output file path and encoder configuration.
     #[must_use]
     pub fn output(mut self, path: &str, config: EncoderConfig) -> Self {
@@ -552,6 +585,8 @@ impl PipelineBuilder {
             filter: self.filter,
             output: self.output,
             callback: self.callback,
+            metadata: self.metadata,
+            chapters: self.chapters,
         })
     }
 }
@@ -666,6 +701,47 @@ mod tests {
             .filter_opt(None)
             .build();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn metadata_should_accumulate_key_value_pairs() {
+        let builder = Pipeline::builder()
+            .input("/tmp/in.mp4")
+            .output("/tmp/out.mp4", dummy_config())
+            .metadata("title", "My Video")
+            .metadata("artist", "Author");
+        assert_eq!(builder.metadata.len(), 2);
+        assert_eq!(
+            builder.metadata[0],
+            ("title".to_string(), "My Video".to_string())
+        );
+        assert_eq!(
+            builder.metadata[1],
+            ("artist".to_string(), "Author".to_string())
+        );
+    }
+
+    #[test]
+    fn chapter_should_append_chapter_info() {
+        use std::time::Duration;
+        let ch = ChapterInfo::builder()
+            .id(0)
+            .title("Intro")
+            .start(Duration::ZERO)
+            .end(Duration::from_secs(10))
+            .build();
+        let builder = Pipeline::builder()
+            .input("/tmp/in.mp4")
+            .output("/tmp/out.mp4", dummy_config())
+            .chapter(ch);
+        assert_eq!(builder.chapters.len(), 1);
+    }
+
+    #[test]
+    fn metadata_and_chapters_should_be_empty_by_default() {
+        let builder = Pipeline::builder();
+        assert!(builder.metadata.is_empty());
+        assert!(builder.chapters.is_empty());
     }
 
     #[test]
