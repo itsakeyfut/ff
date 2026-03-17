@@ -19,14 +19,9 @@
 //!   --bitrate 4000000     # target bitrate in bps (required)
 //! ```
 
-use std::{
-    io::{self, Write as _},
-    path::Path,
-    process,
-    time::Instant,
-};
+use std::{path::Path, process};
 
-use avio::{BitrateMode, VideoCodec, VideoDecoder, VideoEncoder};
+use avio::{BitrateMode, EncoderConfig, Pipeline, VideoCodec, VideoDecoder};
 
 fn format_bitrate(bps: u64) -> String {
     // Insert non-breaking spaces every 3 digits for readability.
@@ -38,12 +33,6 @@ fn format_bitrate(bps: u64) -> String {
         i = i.saturating_sub(3);
     }
     chars.into_iter().collect::<String>() + " kbps"
-}
-
-fn format_elapsed(d: std::time::Duration) -> String {
-    let s = d.as_secs();
-    let m = s / 60;
-    format!("{:02}:{:02}", m, s % 60)
 }
 
 fn main() {
@@ -92,7 +81,6 @@ fn main() {
 
     let src_w = probe.width();
     let src_h = probe.height();
-    let fps = probe.frame_rate();
     let in_codec = probe.stream_info().codec_name().to_string();
     let dur = probe.duration();
     drop(probe); // release file handle before encoding
@@ -121,68 +109,27 @@ fn main() {
     println!();
     println!("Encoding (both passes handled internally)...");
 
-    // ── Build encoder (two-pass, video-only) ─────────────────────────────────
-    //
-    // `.two_pass()` is incompatible with audio streams — the encoder buffers
-    // all video frames on the first internal pass (analysis), then re-encodes
-    // them with the accumulated statistics on the second pass when `finish()`
-    // is called.
+    // ── Run pipeline ──────────────────────────────────────────────────────────
 
-    let mut enc = match VideoEncoder::create(&output)
-        .video(src_w, src_h, fps)
+    let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)
         .bitrate_mode(BitrateMode::Cbr(bitrate))
+        .build();
+
+    if let Err(e) = Pipeline::builder()
+        .input(&input)
+        .output(&output, config)
         .two_pass()
         .build()
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        })
+        .run()
     {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            process::exit(1);
-        }
-    };
-
-    // ── Decode → encode loop ──────────────────────────────────────────────────
-
-    let mut dec = match VideoDecoder::open(&input).build() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            process::exit(1);
-        }
-    };
-
-    let start = Instant::now();
-    let mut frames: u64 = 0;
-
-    loop {
-        let frame = match dec.decode_one() {
-            Ok(Some(f)) => f,
-            Ok(None) => break,
-            Err(e) => {
-                eprintln!("Error decoding: {e}");
-                process::exit(1);
-            }
-        };
-        if let Err(e) = enc.push_video(&frame) {
-            eprintln!("Error encoding: {e}");
-            process::exit(1);
-        }
-        frames += 1;
-        if frames.is_multiple_of(100) {
-            print!("\r{frames} frames    ");
-            let _ = io::stdout().flush();
-        }
-    }
-
-    // `finish()` triggers the second pass internally when `two_pass` is set.
-    if let Err(e) = enc.finish() {
-        println!();
-        eprintln!("Error finishing: {e}");
+        eprintln!("Error: {e}");
         process::exit(1);
     }
-
-    println!();
 
     let size_str = match std::fs::metadata(&output) {
         #[allow(clippy::cast_precision_loss)]
@@ -190,8 +137,5 @@ fn main() {
         Err(_) => "(unknown size)".to_string(),
     };
 
-    println!(
-        "Done. {out_name}  {size_str}  {frames} frames  {}",
-        format_elapsed(start.elapsed())
-    );
+    println!("Done. {out_name}  {size_str}");
 }

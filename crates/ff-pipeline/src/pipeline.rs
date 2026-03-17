@@ -164,6 +164,7 @@ pub struct Pipeline {
     callback: Option<ProgressCallback>,
     metadata: Vec<(String, String)>,
     chapters: Vec<ChapterInfo>,
+    two_pass: bool,
 }
 
 impl Pipeline {
@@ -242,6 +243,15 @@ impl Pipeline {
             }
         };
 
+        // Two-pass encoding is video-only; suppress audio when the flag is set.
+        let run_audio = !self.two_pass;
+        if self.two_pass && audio_config.is_some() {
+            log::warn!(
+                "two-pass encoding is video-only; audio stream will be skipped \
+                 path={first_input}"
+            );
+        }
+
         // Build encoder, adding audio track only when the first input has audio.
         let hw = hwaccel_to_hardware_encoder(enc_config.hardware);
         let mut enc_builder = VideoEncoder::create(&out_path)
@@ -250,10 +260,14 @@ impl Pipeline {
             .bitrate_mode(enc_config.bitrate_mode)
             .hardware_encoder(hw);
 
-        if let Some((sample_rate, channels)) = audio_config {
+        if run_audio && let Some((sample_rate, channels)) = audio_config {
             enc_builder = enc_builder
                 .audio(sample_rate, channels)
                 .audio_codec(enc_config.audio_codec);
+        }
+
+        if self.two_pass {
+            enc_builder = enc_builder.two_pass();
         }
 
         for (key, value) in self.metadata {
@@ -366,7 +380,7 @@ impl Pipeline {
         }
 
         // Audio pass: process each input sequentially, rebasing timestamps.
-        if !cancelled && audio_config.is_some() {
+        if !cancelled && run_audio && audio_config.is_some() {
             let mut audio_offset_secs: f64 = 0.0;
             for input in &self.inputs {
                 match AudioDecoder::open(input).build() {
@@ -445,6 +459,7 @@ pub struct PipelineBuilder {
     callback: Option<ProgressCallback>,
     metadata: Vec<(String, String)>,
     chapters: Vec<ChapterInfo>,
+    two_pass: bool,
 }
 
 impl PipelineBuilder {
@@ -459,6 +474,7 @@ impl PipelineBuilder {
             callback: None,
             metadata: Vec::new(),
             chapters: Vec::new(),
+            two_pass: false,
         }
     }
 
@@ -543,6 +559,17 @@ impl PipelineBuilder {
         self
     }
 
+    /// Enable two-pass encoding for more accurate bitrate control at a given file size.
+    ///
+    /// Two-pass encoding is video-only; any audio stream present in the input is
+    /// silently skipped when this flag is set.  Requires [`BitrateMode::Cbr`] or
+    /// [`BitrateMode::Vbr`] on the [`EncoderConfig`].
+    #[must_use]
+    pub fn two_pass(mut self) -> Self {
+        self.two_pass = true;
+        self
+    }
+
     /// Sets the output file path and encoder configuration.
     #[must_use]
     pub fn output(mut self, path: &str, config: EncoderConfig) -> Self {
@@ -587,6 +614,7 @@ impl PipelineBuilder {
             callback: self.callback,
             metadata: self.metadata,
             chapters: self.chapters,
+            two_pass: self.two_pass,
         })
     }
 }
@@ -742,6 +770,31 @@ mod tests {
         let builder = Pipeline::builder();
         assert!(builder.metadata.is_empty());
         assert!(builder.chapters.is_empty());
+    }
+
+    #[test]
+    fn two_pass_flag_should_default_to_false() {
+        let builder = Pipeline::builder();
+        assert!(!builder.two_pass);
+    }
+
+    #[test]
+    fn two_pass_should_set_flag() {
+        let builder = Pipeline::builder()
+            .input("/tmp/in.mp4")
+            .output("/tmp/out.mp4", dummy_config())
+            .two_pass();
+        assert!(builder.two_pass);
+    }
+
+    #[test]
+    fn two_pass_should_not_prevent_successful_build() {
+        let result = Pipeline::builder()
+            .input("/tmp/in.mp4")
+            .output("/tmp/out.mp4", dummy_config())
+            .two_pass()
+            .build();
+        assert!(result.is_ok());
     }
 
     #[test]
