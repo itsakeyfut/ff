@@ -256,22 +256,19 @@ fn main() {
     let last_frames: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
     let last_frames_cb = Arc::clone(&last_frames);
 
-    let mut builder = Pipeline::builder()
+    let pipeline = match Pipeline::builder()
         .input(&args.input)
         .output(&args.output, config)
+        .filter_opt(filter)
         .on_progress(move |p: &Progress| {
             render_progress(p);
             if let Ok(mut f) = last_frames_cb.lock() {
                 *f = p.frames_processed;
             }
             true // always continue
-        });
-
-    if let Some(fg) = filter {
-        builder = builder.filter(fg);
-    }
-
-    let pipeline = match builder.build() {
+        })
+        .build()
+    {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Error: {e}");
