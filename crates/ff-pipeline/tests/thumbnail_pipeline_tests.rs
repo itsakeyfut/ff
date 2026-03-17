@@ -198,7 +198,11 @@ fn run_to_files_should_write_jpeg_files_to_output_dir() {
         }
         Err(PipelineError::Decode(e)) => {
             cleanup();
-            println!("Skipping: {e}");
+            println!("Skipping: decoder unavailable: {e}");
+        }
+        Err(PipelineError::Encode(e)) => {
+            cleanup();
+            println!("Skipping: encoder/muxer unavailable: {e}");
         }
         Err(e) => {
             cleanup();
