@@ -275,8 +275,16 @@ impl FilterGraphBuilder {
             return Err(FilterError::BuildFailed);
         }
         crate::filter_inner::validate_filter_steps(&self.steps)?;
+        let output_resolution = self.steps.iter().rev().find_map(|s| {
+            if let FilterStep::Scale { width, height } = s {
+                Some((*width, *height))
+            } else {
+                None
+            }
+        });
         Ok(FilterGraph {
             inner: FilterGraphInner::new(self.steps, self.hw),
+            output_resolution,
         })
     }
 }
@@ -308,6 +316,7 @@ impl FilterGraphBuilder {
 /// ```
 pub struct FilterGraph {
     inner: FilterGraphInner,
+    output_resolution: Option<(u32, u32)>,
 }
 
 impl std::fmt::Debug for FilterGraph {
@@ -321,6 +330,16 @@ impl FilterGraph {
     #[must_use]
     pub fn builder() -> FilterGraphBuilder {
         FilterGraphBuilder::new()
+    }
+
+    /// Returns the output resolution produced by this graph's `scale` filter step,
+    /// if one was configured.
+    ///
+    /// When multiple `scale` steps are chained, the **last** one's dimensions are
+    /// returned. Returns `None` when no `scale` step was added.
+    #[must_use]
+    pub fn output_resolution(&self) -> Option<(u32, u32)> {
+        self.output_resolution
     }
 
     /// Push a video frame into input slot `slot`.
@@ -509,5 +528,27 @@ mod tests {
             result.is_ok(),
             "builder with a known filter step must succeed, got {result:?}"
         );
+    }
+
+    #[test]
+    fn output_resolution_should_return_scale_dimensions() {
+        let fg = FilterGraph::builder().scale(1280, 720).build().unwrap();
+        assert_eq!(fg.output_resolution(), Some((1280, 720)));
+    }
+
+    #[test]
+    fn output_resolution_should_return_last_scale_when_chained() {
+        let fg = FilterGraph::builder()
+            .scale(1920, 1080)
+            .scale(1280, 720)
+            .build()
+            .unwrap();
+        assert_eq!(fg.output_resolution(), Some((1280, 720)));
+    }
+
+    #[test]
+    fn output_resolution_should_return_none_when_no_scale() {
+        let fg = FilterGraph::builder().trim(0.0, 5.0).build().unwrap();
+        assert_eq!(fg.output_resolution(), None);
     }
 }
