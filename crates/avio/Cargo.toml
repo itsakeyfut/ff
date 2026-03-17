@@ -100,5 +100,9 @@ required-features = ["decode", "encode"]
 name = "hw_transcode"
 required-features = ["pipeline"]
 
+[[example]]
+name = "video_transcode"
+required-features = ["pipeline", "encode"]
+
 [lints]
 workspace = true
