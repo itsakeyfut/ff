@@ -120,10 +120,15 @@ impl ImageEncoderInner {
             path: path.to_path_buf(),
         })?;
 
+        // Use "image2" as the explicit format name rather than relying on
+        // filename-based detection.  On Linux, av_guess_format() returns NULL
+        // for filenames that contain a run of digits before the extension
+        // (e.g. "thumb_0000.jpg"), which would cause EINVAL here.  Passing the
+        // format name directly bypasses that heuristic entirely.
         let ret = avformat_alloc_output_context2(
             &mut inner.format_ctx,
             ptr::null_mut(),
-            ptr::null(),
+            c"image2".as_ptr(),
             c_path.as_ptr(),
         );
         if ret < 0 || inner.format_ctx.is_null() {
@@ -134,6 +139,23 @@ impl ImageEncoderInner {
                     ff_sys::av_error_string(ret)
                 ),
             });
+        }
+
+        // Tell the image2 muxer to write a single file rather than an image
+        // sequence.  Without this, filenames that contain digits (e.g.
+        // "thumb_0000.jpg") cause avformat_write_header to fail on Linux.
+        // The return value is intentionally ignored: not all codecs' muxers
+        // expose the "update" option, and the fallback behaviour is acceptable.
+        if !(*inner.format_ctx).priv_data.is_null() {
+            // SAFETY: priv_data is non-null (checked above) and points to the
+            // image2 muxer's private struct which has an AVClass with the
+            // "update" option.  av_opt_set is thread-safe for owned contexts.
+            let _ = ff_sys::av_opt_set(
+                (*inner.format_ctx).priv_data,
+                c"update".as_ptr(),
+                c"1".as_ptr(),
+                0,
+            );
         }
 
         // ── Step 2: Video stream ──────────────────────────────────────────────
