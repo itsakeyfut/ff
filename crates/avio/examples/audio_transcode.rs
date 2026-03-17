@@ -1,8 +1,7 @@
 //! Decode an audio file and re-encode it to a different codec or bitrate.
 //!
-//! Demonstrates the audio-only decode → encode pipeline using `AudioDecoder`
-//! and `AudioEncoder` — the building blocks for podcast processing, audio
-//! format conversion, and soundtrack extraction.
+//! Demonstrates the audio-only decode → encode pipeline using `AudioPipeline`
+//! — a high-level builder that wraps the manual decode/encode loop.
 //!
 //! # Usage
 //!
@@ -16,7 +15,7 @@
 
 use std::{path::Path, process, time::Duration};
 
-use avio::{AudioCodec, AudioDecoder, AudioEncoder};
+use avio::{AudioCodec, AudioDecoder, AudioPipeline};
 
 fn format_duration(d: Duration) -> String {
     let s = d.as_secs();
@@ -82,9 +81,9 @@ fn main() {
         }
     };
 
-    // ── Open decoder ──────────────────────────────────────────────────────────
+    // ── Probe input for display info ──────────────────────────────────────────
 
-    let mut dec = match AudioDecoder::open(&input).build() {
+    let dec = match AudioDecoder::open(&input).build() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -96,6 +95,7 @@ fn main() {
     let channels = dec.channels();
     let duration = dec.duration();
     let in_codec = dec.stream_info().codec_name().to_string();
+    drop(dec);
 
     let in_name = Path::new(&input)
         .file_name()
@@ -117,42 +117,16 @@ fn main() {
     println!();
     println!("Encoding...");
 
-    // ── Open encoder ──────────────────────────────────────────────────────────
+    // ── Run pipeline ──────────────────────────────────────────────────────────
 
-    let mut enc = match AudioEncoder::create(&output)
-        .audio(sample_rate, channels)
+    if let Err(e) = AudioPipeline::new()
+        .input(&input)
+        .output(&output)
         .audio_codec(codec)
-        .audio_bitrate(bitrate)
-        .build()
+        .bitrate(bitrate)
+        .run()
     {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Error creating encoder: {e}");
-            process::exit(1);
-        }
-    };
-
-    // ── Decode → encode loop ──────────────────────────────────────────────────
-
-    let mut frames: u64 = 0;
-    loop {
-        let frame = match dec.decode_one() {
-            Ok(Some(f)) => f,
-            Ok(None) => break,
-            Err(e) => {
-                eprintln!("Error decoding: {e}");
-                process::exit(1);
-            }
-        };
-        if let Err(e) = enc.push(&frame) {
-            eprintln!("Error encoding: {e}");
-            process::exit(1);
-        }
-        frames += 1;
-    }
-
-    if let Err(e) = enc.finish() {
-        eprintln!("Error finishing: {e}");
+        eprintln!("Error: {e}");
         process::exit(1);
     }
 
@@ -162,5 +136,5 @@ fn main() {
         Err(_) => "(unknown size)".to_string(),
     };
 
-    println!("Done. {out_name}  {size_str}  {frames} frames");
+    println!("Done. {out_name}  {size_str}");
 }

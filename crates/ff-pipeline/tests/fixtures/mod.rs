@@ -15,6 +15,11 @@ pub fn test_video_path() -> PathBuf {
     assets_dir().join("video/gameplay.mp4")
 }
 
+/// Returns the path to the test audio file.
+pub fn test_audio_path() -> PathBuf {
+    assets_dir().join("audio/konekonoosanpo.mp3")
+}
+
 /// Returns the directory used for test output files.
 pub fn test_output_dir() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

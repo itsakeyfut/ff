@@ -87,8 +87,8 @@ pub use ff_filter::{FilterError, FilterGraph, FilterGraphBuilder, HwAccel, ToneM
 // Progress / ProgressCallback are re-exported here as the canonical source.
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{
-    EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder, PipelineError, Progress,
-    ProgressCallback, ThumbnailPipeline,
+    AudioPipeline, EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder, PipelineError,
+    Progress, ProgressCallback, ThumbnailPipeline,
 };
 
 // ── stream feature ────────────────────────────────────────────────────────────
@@ -292,6 +292,12 @@ mod tests {
     fn pipeline_thumbnail_pipeline_should_be_accessible() {
         // ThumbnailPipeline::new constructs without opening a file.
         let _t: ThumbnailPipeline = ThumbnailPipeline::new("/no/such/file.mp4");
+    }
+
+    #[cfg(feature = "pipeline")]
+    #[test]
+    fn pipeline_audio_pipeline_should_be_accessible() {
+        let _: AudioPipeline = AudioPipeline::new();
     }
 
     #[cfg(all(feature = "pipeline", feature = "encode"))]
