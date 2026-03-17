@@ -8,7 +8,7 @@
 mod fixtures;
 
 use ff_pipeline::{PipelineError, ThumbnailPipeline};
-use fixtures::test_video_path;
+use fixtures::{test_output_dir, test_video_path};
 
 /// Extracts 3 frames and verifies count + dimensions match the source video.
 /// Shared by the sequential and parallel variants of the dimension test.
@@ -164,6 +164,51 @@ fn parallel_thumbnails_at_three_timestamps_should_have_source_dimensions() {
         return;
     }
     assert_thumbnails_have_expected_dimensions(input.to_str().unwrap());
+}
+
+#[test]
+fn run_to_files_should_write_jpeg_files_to_output_dir() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+
+    let dir = test_output_dir().join("thumb_test_output");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let result = ThumbnailPipeline::new(input.to_str().unwrap())
+        .timestamps(vec![0.0, 1.0])
+        .output_dir(&dir)
+        .quality(80)
+        .run_to_files();
+
+    let cleanup = || {
+        let _ = std::fs::remove_dir_all(&dir);
+    };
+
+    match result {
+        Ok(paths) => {
+            assert_eq!(paths.len(), 2);
+            for p in &paths {
+                assert!(p.exists());
+                assert!(p.metadata().unwrap().len() > 0);
+            }
+            cleanup();
+        }
+        Err(PipelineError::Decode(e)) => {
+            cleanup();
+            println!("Skipping: decoder unavailable: {e}");
+        }
+        Err(PipelineError::Encode(e)) => {
+            cleanup();
+            println!("Skipping: encoder/muxer unavailable: {e}");
+        }
+        Err(e) => {
+            cleanup();
+            panic!("unexpected error: {e}");
+        }
+    }
 }
 
 #[cfg(feature = "parallel")]

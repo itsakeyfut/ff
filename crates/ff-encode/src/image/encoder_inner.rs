@@ -120,12 +120,32 @@ impl ImageEncoderInner {
             path: path.to_path_buf(),
         })?;
 
-        let ret = avformat_alloc_output_context2(
+        // Primary attempt: let FFmpeg infer the muxer from the file extension.
+        // This works on all platforms for ordinary filenames.
+        let mut ret = avformat_alloc_output_context2(
             &mut inner.format_ctx,
             ptr::null_mut(),
             ptr::null(),
             c_path.as_ptr(),
         );
+
+        // Fallback: on some Linux FFmpeg builds, av_guess_format() returns NULL
+        // for filenames whose basename contains a run of digits before the
+        // extension (e.g. "thumb_0000.jpg"), causing EINVAL above.  Retry with
+        // an explicit muxer name derived from the codec.  These names ("mjpeg",
+        // "apng", …) do not perform sequence-pattern validation and are present
+        // in all standard FFmpeg builds.
+        if (ret < 0 || inner.format_ctx.is_null())
+            && let Some(fmt) = codec_fallback_format(codec_id)
+        {
+            ret = avformat_alloc_output_context2(
+                &mut inner.format_ctx,
+                ptr::null_mut(),
+                fmt,
+                c_path.as_ptr(),
+            );
+        }
+
         if ret < 0 || inner.format_ctx.is_null() {
             return Err(EncodeError::Ffmpeg {
                 code: ret,
@@ -422,6 +442,29 @@ pub(super) fn codec_from_extension(path: &Path) -> Result<AVCodecID, EncodeError
         e => Err(EncodeError::UnsupportedCodec {
             codec: e.to_string(),
         }),
+    }
+}
+
+/// Return a codec-specific fallback muxer name for use when filename-based
+/// format detection fails (e.g. for numeric filenames like `thumb_0000.jpg`).
+///
+/// These short names refer to dedicated single-image muxers that do not
+/// perform image-sequence pattern validation and are present in all standard
+/// FFmpeg builds.  Returns `None` for codecs whose primary muxer is `image2`
+/// and for which no dedicated alternative is commonly available.
+fn codec_fallback_format(codec_id: AVCodecID) -> Option<*const std::os::raw::c_char> {
+    // Use if/else rather than match to avoid the non_upper_case_globals lint
+    // that fires when bindgen-generated constants appear in pattern position.
+    if codec_id == AVCodecID_AV_CODEC_ID_MJPEG {
+        Some(c"mjpeg".as_ptr())
+    } else if codec_id == AVCodecID_AV_CODEC_ID_PNG {
+        Some(c"apng".as_ptr())
+    } else if codec_id == AVCodecID_AV_CODEC_ID_TIFF {
+        Some(c"tiff".as_ptr())
+    } else if codec_id == AVCodecID_AV_CODEC_ID_WEBP {
+        Some(c"webp".as_ptr())
+    } else {
+        None
     }
 }
 

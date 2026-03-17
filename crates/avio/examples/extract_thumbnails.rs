@@ -10,9 +10,9 @@
 //!   [--width 320]
 //! ```
 
-use std::{path::Path, process, time::Duration};
+use std::{process, time::Duration};
 
-use avio::{ImageEncoder, ThumbnailPipeline, VideoDecoder};
+use avio::{ThumbnailPipeline, VideoDecoder};
 
 fn parse_time(s: &str) -> Result<f64, String> {
     // Accept plain seconds "30" or HH:MM:SS "00:01:30"
@@ -103,13 +103,7 @@ fn main() {
         .collect();
     let skipped = timestamps.len() - valid_timestamps.len();
 
-    // Create output directory
-    if let Err(e) = std::fs::create_dir_all(&output) {
-        eprintln!("Error: cannot create output directory: {e}");
-        process::exit(1);
-    }
-
-    let in_name = Path::new(&input)
+    let in_name = std::path::Path::new(&input)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(&input);
@@ -122,59 +116,26 @@ fn main() {
         println!("  (skipping {skipped} timestamps beyond file duration)");
     }
 
-    // Run ThumbnailPipeline
-    let frames = match ThumbnailPipeline::new(&input)
+    let paths = match ThumbnailPipeline::new(&input)
         .timestamps(valid_timestamps.clone())
-        .run()
+        .output_dir(&output)
+        .width(width)
+        .quality(85)
+        .run_to_files()
     {
-        Ok(f) => f,
+        Ok(p) => p,
         Err(e) => {
             eprintln!("Error: {e}");
             process::exit(1);
         }
     };
 
-    // Encode each frame as JPEG
-    for (frame, &timestamp) in frames.iter().zip(valid_timestamps.iter()) {
+    for (path, &timestamp) in paths.iter().zip(valid_timestamps.iter()) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let secs = timestamp as u64;
-        let out_name = format!("thumb_{secs:03}.jpg");
-        let out_path = Path::new(&output).join(&out_name);
-
-        let w = frame.width();
-        let h = frame.height();
-
-        // Scale width if needed (keep aspect ratio)
-        let (enc_w, enc_h) = if w > width {
-            let scale = f64::from(width) / f64::from(w);
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let enc_h = (f64::from(h) * scale).round() as u32;
-            (width, enc_h)
-        } else {
-            (w, h)
-        };
-
-        match ImageEncoder::create(&out_path)
-            .width(enc_w)
-            .height(enc_h)
-            .build()
-        {
-            Ok(enc) => {
-                if let Err(e) = enc.encode(frame) {
-                    eprintln!("  Warning: failed to encode {out_name}: {e}");
-                    continue;
-                }
-            }
-            Err(e) => {
-                eprintln!("  Warning: failed to create encoder for {out_name}: {e}");
-                continue;
-            }
-        }
-
-        let hh = secs / 3600;
-        let mm = (secs % 3600) / 60;
-        let ss = secs % 60;
-        println!("  {hh:02}:{mm:02}:{ss:02}  →  {out_name}  ({enc_w}×{enc_h})");
+        let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        println!("  {h:02}:{m:02}:{s:02}  →  {name}");
     }
 
     println!("Done.");
