@@ -179,19 +179,11 @@ fn main() {
         }
     };
 
-    let resolution = match (width, height) {
-        (Some(w), Some(h)) => Some((w, h)),
-        _ => None,
-    };
-
-    let mut b = EncoderConfig::builder()
+    let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)
         .audio_codec(AudioCodec::Aac)
-        .crf(23);
-    if let Some((w, h)) = resolution {
-        b = b.resolution(w, h);
-    }
-    let config = b.build();
+        .crf(23)
+        .build();
 
     let pipeline = match Pipeline::builder()
         .input(&input)

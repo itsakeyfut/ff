@@ -34,7 +34,15 @@ pub struct EncoderConfig {
 
     /// Output resolution as `(width, height)` in pixels.
     ///
-    /// `None` preserves the source resolution.
+    /// Resolution precedence in [`Pipeline::run`]:
+    /// 1. This field when `Some` — explicit value always wins.
+    /// 2. The output dimensions of a `scale` filter, inferred automatically.
+    /// 3. The source video's native resolution.
+    ///
+    /// When a `scale` filter is used via [`PipelineBuilder::filter`] you
+    /// typically do **not** need to set this field; the pipeline infers the
+    /// encoder dimensions from the filter. Set it explicitly only to override
+    /// the filter's output size or to resize without a filter.
     pub resolution: Option<(u32, u32)>,
 
     /// Output frame rate in frames per second.
@@ -194,9 +202,12 @@ impl Pipeline {
 
         // Open the first input to determine output dimensions.
         let first_vdec = VideoDecoder::open(first_input).build()?;
-        let (out_width, out_height) = enc_config
-            .resolution
-            .unwrap_or_else(|| (first_vdec.width(), first_vdec.height()));
+        let (out_width, out_height) = enc_config.resolution.unwrap_or_else(|| {
+            filter
+                .as_ref()
+                .and_then(|fg| fg.output_resolution())
+                .unwrap_or_else(|| (first_vdec.width(), first_vdec.height()))
+        });
         let fps = enc_config
             .framerate
             .unwrap_or_else(|| first_vdec.frame_rate());

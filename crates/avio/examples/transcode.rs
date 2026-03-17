@@ -243,19 +243,11 @@ fn main() {
 
     // ── Build encoder config ─────────────────────────────────────────────────
 
-    let resolution = match (args.width, args.height) {
-        (Some(w), Some(h)) => Some((w, h)),
-        _ => None,
-    };
-
-    let mut b = EncoderConfig::builder()
+    let config = EncoderConfig::builder()
         .video_codec(args.codec)
         .audio_codec(args.audio_codec)
-        .crf(args.crf);
-    if let Some((w, h)) = resolution {
-        b = b.resolution(w, h);
-    }
-    let config = b.build();
+        .crf(args.crf)
+        .build();
 
     // ── Assemble pipeline ─────────────────────────────────────────────────────
 
