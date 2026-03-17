@@ -103,7 +103,7 @@ fn main() {
             let fps = v.fps();
             let pix_fmt = v.pixel_format();
 
-            let mut line = format!("  #{idx}  {codec}  {w}\u{d7}{h}  {fps:.2} fps  {pix_fmt:?}");
+            let mut line = format!("  #{idx}  {codec}  {w}\u{d7}{h}  {fps:.2} fps  {pix_fmt}");
 
             if let Some(br) = v.bitrate() {
                 let _ = write!(line, "  {}", format_bitrate(br));
@@ -136,7 +136,7 @@ fn main() {
             let layout = a.channel_layout();
             let rate = a.sample_rate();
 
-            let mut line = format!("  #{idx}  {codec}  {layout:?}  {rate} Hz");
+            let mut line = format!("  #{idx}  {codec}  {layout}  {rate} Hz");
 
             if let Some(br) = a.bitrate() {
                 let _ = write!(line, "  {}", format_bitrate(br));

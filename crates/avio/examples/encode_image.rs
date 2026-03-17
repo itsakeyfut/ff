@@ -172,7 +172,7 @@ fn main() {
     let w = frame.width();
     let h = frame.height();
     let fmt = frame.format();
-    println!("Frame:   pts={pts_secs:.3}s  {w}×{h}  {fmt:?}");
+    println!("Frame:   pts={pts_secs:.3}s  {w}×{h}  {fmt}");
     println!("Output:  {out_name}  ({fmt_label}  quality={quality})");
     println!();
 
