@@ -9,7 +9,8 @@
 ///
 /// - **Downstream errors**: [`Decode`](Self::Decode), [`Filter`](Self::Filter),
 ///   [`Encode`](Self::Encode) — propagated from the underlying crates via `#[from]`
-/// - **Configuration errors**: [`NoInput`](Self::NoInput), [`NoOutput`](Self::NoOutput)
+/// - **Configuration errors**: [`NoInput`](Self::NoInput), [`NoOutput`](Self::NoOutput),
+///   [`SecondaryInputWithoutFilter`](Self::SecondaryInputWithoutFilter)
 ///   — returned by [`PipelineBuilder::build`](crate::PipelineBuilder::build)
 /// - **Runtime control**: [`Cancelled`](Self::Cancelled) — returned by
 ///   [`Pipeline::run`](crate::Pipeline::run) when the progress callback returns `false`
@@ -49,6 +50,13 @@ pub enum PipelineError {
     /// required before [`PipelineBuilder::build`](crate::PipelineBuilder::build).
     #[error("no output specified")]
     NoOutput,
+
+    /// `secondary_input()` was called but no filter graph was provided.
+    ///
+    /// A secondary input only makes sense when a multi-slot filter is set via
+    /// [`PipelineBuilder::filter`](crate::PipelineBuilder::filter).
+    #[error("secondary input provided without a filter graph")]
+    SecondaryInputWithoutFilter,
 
     /// The pipeline was cancelled by the progress callback.
     ///

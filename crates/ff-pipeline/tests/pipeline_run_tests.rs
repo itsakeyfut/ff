@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
 use ff_filter::FilterGraph;
 use ff_pipeline::{EncoderConfig, Pipeline, PipelineError};
-use fixtures::{FileGuard, test_output_path, test_video_path};
+use fixtures::{FileGuard, assets_dir, test_output_path, test_video_path};
 
 fn basic_config() -> EncoderConfig {
     EncoderConfig::builder()
@@ -519,6 +519,66 @@ fn concat_two_inputs_should_produce_output_with_approx_sum_duration() {
         }
         Err(PipelineError::Encode(e)) => println!("Skipping: encoder unavailable: {e}"),
         Err(PipelineError::Decode(e)) => println!("Skipping: decoder unavailable: {e}"),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
+#[test]
+fn pipeline_with_secondary_input_should_produce_valid_output() {
+    let input = test_video_path();
+    if !input.exists() {
+        println!("Skipping: test asset not found at {input:?}");
+        return;
+    }
+    let watermark = assets_dir().join("img/hello-triangle.png");
+    if !watermark.exists() {
+        println!("Skipping: watermark asset not found at {watermark:?}");
+        return;
+    }
+    let output = test_output_path("pipeline_secondary_input.mp4");
+    let _guard = FileGuard::new(output.clone());
+
+    let filter = match FilterGraph::builder().overlay(0, 0).build() {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Skipping: filter build failed: {e}");
+            return;
+        }
+    };
+
+    let config = EncoderConfig::builder()
+        .video_codec(VideoCodec::Mpeg4)
+        .audio_codec(AudioCodec::Aac)
+        .bitrate_mode(BitrateMode::Cbr(1_000_000))
+        .resolution(320, 240)
+        .framerate(24.0)
+        .build();
+
+    let pipeline = match Pipeline::builder()
+        .input(input.to_str().unwrap())
+        .secondary_input(watermark.to_str().unwrap())
+        .filter(filter)
+        .output(output.to_str().unwrap(), config)
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Skipping: build failed: {e}");
+            return;
+        }
+    };
+
+    match pipeline.run() {
+        Ok(()) => {
+            assert!(output.exists(), "output file must exist after run");
+            assert!(
+                std::fs::metadata(&output).unwrap().len() > 0,
+                "output file must be non-empty"
+            );
+        }
+        Err(PipelineError::Encode(e)) => println!("Skipping: encoder unavailable: {e}"),
+        Err(PipelineError::Decode(e)) => println!("Skipping: decoder unavailable: {e}"),
+        Err(PipelineError::Filter(e)) => println!("Skipping: filter unavailable: {e}"),
         Err(e) => panic!("unexpected error: {e}"),
     }
 }
