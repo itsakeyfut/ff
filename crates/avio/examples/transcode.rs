@@ -25,8 +25,7 @@ use std::{
 };
 
 use avio::{
-    AudioCodec, BitrateMode, EncoderConfig, FilterGraphBuilder, Pipeline, PipelineError, Progress,
-    VideoCodec,
+    AudioCodec, EncoderConfig, FilterGraphBuilder, Pipeline, PipelineError, Progress, VideoCodec,
 };
 
 // ── Argument parsing ─────────────────────────────────────────────────────────
@@ -249,14 +248,14 @@ fn main() {
         _ => None,
     };
 
-    let config = EncoderConfig {
-        video_codec: args.codec,
-        audio_codec: args.audio_codec,
-        bitrate_mode: BitrateMode::Crf(args.crf),
-        resolution,
-        framerate: None,
-        hardware: None,
-    };
+    let mut b = EncoderConfig::builder()
+        .video_codec(args.codec)
+        .audio_codec(args.audio_codec)
+        .crf(args.crf);
+    if let Some((w, h)) = resolution {
+        b = b.resolution(w, h);
+    }
+    let config = b.build();
 
     // ── Assemble pipeline ─────────────────────────────────────────────────────
 

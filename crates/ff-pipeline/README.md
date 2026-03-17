@@ -13,16 +13,15 @@ ff-pipeline = "0.3"
 
 ```rust
 use ff_pipeline::{Pipeline, EncoderConfig};
-use ff_encode::{VideoCodec, AudioCodec, BitrateMode};
+use ff_format::{VideoCodec, AudioCodec};
+use ff_encode::BitrateMode;
 
-let config = EncoderConfig {
-    video_codec:  VideoCodec::H264,
-    audio_codec:  AudioCodec::Aac,
-    bitrate_mode: BitrateMode::Cbr(4_000_000),
-    resolution:   Some((1280, 720)),
-    framerate:    None,
-    hardware:     None,
-};
+let config = EncoderConfig::builder()
+    .video_codec(VideoCodec::H264)
+    .audio_codec(AudioCodec::Aac)
+    .bitrate_mode(BitrateMode::Cbr(4_000_000))
+    .resolution(1280, 720)
+    .build();
 
 let pipeline = Pipeline::builder()
     .input("input.mp4")

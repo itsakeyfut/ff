@@ -31,9 +31,7 @@ use std::{
     time::Instant,
 };
 
-use avio::{
-    AudioCodec, BitrateMode, EncoderConfig, HwAccel, Pipeline, PipelineError, Progress, VideoCodec,
-};
+use avio::{AudioCodec, EncoderConfig, HwAccel, Pipeline, PipelineError, Progress, VideoCodec};
 
 fn format_elapsed(d: std::time::Duration) -> String {
     let s = d.as_secs();
@@ -162,14 +160,14 @@ fn main() {
 
     // ── Build pipeline with hardware backend ──────────────────────────────────
 
-    let config = EncoderConfig {
-        video_codec,
-        audio_codec: AudioCodec::Aac,
-        bitrate_mode: BitrateMode::Crf(crf),
-        resolution: None,
-        framerate: None,
-        hardware: hw_accel,
-    };
+    let mut b = EncoderConfig::builder()
+        .video_codec(video_codec)
+        .audio_codec(AudioCodec::Aac)
+        .crf(crf);
+    if let Some(hw) = hw_accel {
+        b = b.hardware(hw);
+    }
+    let config = b.build();
 
     let start = Instant::now();
     let last_frames: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));

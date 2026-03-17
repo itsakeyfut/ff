@@ -17,16 +17,16 @@
 //!
 //! ```ignore
 //! use ff_pipeline::{Pipeline, EncoderConfig};
-//! use ff_encode::{VideoCodec, AudioCodec, BitrateMode};
+//! use ff_format::{VideoCodec, AudioCodec};
+//! use ff_encode::BitrateMode;
 //!
-//! let config = EncoderConfig {
-//!     video_codec:  VideoCodec::H264,
-//!     audio_codec:  AudioCodec::Aac,
-//!     bitrate_mode: BitrateMode::Cbr(4_000_000),
-//!     resolution:   Some((1280, 720)),
-//!     framerate:    Some(30.0),
-//!     hardware:     None,
-//! };
+//! let config = EncoderConfig::builder()
+//!     .video_codec(VideoCodec::H264)
+//!     .audio_codec(AudioCodec::Aac)
+//!     .bitrate_mode(BitrateMode::Cbr(4_000_000))
+//!     .resolution(1280, 720)
+//!     .framerate(30.0)
+//!     .build();
 //!
 //! Pipeline::builder()
 //!     .input("input.mp4")
@@ -54,6 +54,6 @@ pub mod progress;
 pub mod thumbnail;
 
 pub use error::PipelineError;
-pub use pipeline::{EncoderConfig, Pipeline, PipelineBuilder};
+pub use pipeline::{EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder};
 pub use progress::{Progress, ProgressCallback};
 pub use thumbnail::ThumbnailPipeline;

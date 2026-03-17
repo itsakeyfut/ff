@@ -87,8 +87,8 @@ pub use ff_filter::{FilterError, FilterGraph, FilterGraphBuilder, HwAccel, ToneM
 // Progress / ProgressCallback are re-exported here as the canonical source.
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{
-    EncoderConfig, Pipeline, PipelineBuilder, PipelineError, Progress, ProgressCallback,
-    ThumbnailPipeline,
+    EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder, PipelineError, Progress,
+    ProgressCallback, ThumbnailPipeline,
 };
 
 // ── stream feature ────────────────────────────────────────────────────────────
@@ -297,14 +297,11 @@ mod tests {
     #[cfg(all(feature = "pipeline", feature = "encode"))]
     #[test]
     fn pipeline_encoder_config_should_be_accessible() {
-        let _config = EncoderConfig {
-            video_codec: VideoCodec::H264,
-            audio_codec: AudioCodec::Aac,
-            bitrate_mode: BitrateMode::Cbr(4_000_000),
-            resolution: None,
-            framerate: None,
-            hardware: None,
-        };
+        let _config = EncoderConfig::builder()
+            .video_codec(VideoCodec::H264)
+            .audio_codec(AudioCodec::Aac)
+            .bitrate_mode(BitrateMode::Cbr(4_000_000))
+            .build();
     }
 
     // ── stream feature ────────────────────────────────────────────────────────

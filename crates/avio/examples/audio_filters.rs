@@ -22,9 +22,7 @@ use std::{
     process,
 };
 
-use avio::{
-    AudioCodec, BitrateMode, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec,
-};
+use avio::{AudioCodec, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
 
 fn render_progress(p: &Progress) {
     match p.percent() {
@@ -139,14 +137,11 @@ fn main() {
 
     // ── Assemble pipeline ─────────────────────────────────────────────────────
 
-    let config = EncoderConfig {
-        video_codec: VideoCodec::H264,
-        audio_codec: AudioCodec::Aac,
-        bitrate_mode: BitrateMode::Crf(23),
-        resolution: None,
-        framerate: None,
-        hardware: None,
-    };
+    let config = EncoderConfig::builder()
+        .video_codec(VideoCodec::H264)
+        .audio_codec(AudioCodec::Aac)
+        .crf(23)
+        .build();
 
     let pipeline = match Pipeline::builder()
         .input(&input)
