@@ -1,13 +1,26 @@
 //! Package a video as an HLS stream using `HlsOutput`.
 //!
+//! Demonstrates:
+//! - `HlsOutput::new()` — create an HLS output builder
+//! - `HlsOutput::input()` — set the source file
+//! - `HlsOutput::segment_duration()` — target segment length
+//! - `HlsOutput::keyframe_interval()` — force an IDR every N frames
+//! - `HlsOutput::bitrate()` — target video bitrate
+//! - `HlsOutput::build()` / `write()` — finalise and write all segments
+//!
+//! `keyframe_interval(N)` inserts a forced keyframe every N frames so that
+//! HLS segment boundaries fall exactly on IDR frames. The default is 48.
+//! Set it to `fps * segment_duration` for clean segment alignment.
+//!
 //! # Usage
 //!
 //! ```bash
 //! cargo run --example hls_output --features stream -- \
-//!   --input    input.mp4  \
-//!   --output   ./hls/     \
-//!   [--segment 6]         \
-//!   [--bitrate 2000000]
+//!   --input              input.mp4  \
+//!   --output             ./hls/     \
+//!   [--segment           6]         \
+//!   [--keyframe-interval 48]        \
+//!   [--bitrate           2000000]
 //! ```
 
 use std::{path::Path, process, time::Duration};
@@ -20,6 +33,7 @@ fn main() {
     let mut output = None::<String>;
     let mut segment_secs: u64 = 6;
     let mut bitrate = None::<u64>;
+    let mut keyframe_interval = None::<u32>;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -28,6 +42,10 @@ fn main() {
             "--segment" | "-s" => {
                 let v = args.next().unwrap_or_default();
                 segment_secs = v.parse().unwrap_or(6);
+            }
+            "--keyframe-interval" | "-k" => {
+                let v = args.next().unwrap_or_default();
+                keyframe_interval = v.parse().ok();
             }
             "--bitrate" => {
                 let v = args.next().unwrap_or_default();
@@ -41,7 +59,10 @@ fn main() {
     }
 
     let input = input.unwrap_or_else(|| {
-        eprintln!("Usage: hls_output --input <file> --output <dir> [--segment N] [--bitrate N]");
+        eprintln!(
+            "Usage: hls_output --input <file> --output <dir> \
+             [--segment N] [--keyframe-interval N] [--bitrate N]"
+        );
         process::exit(1);
     });
     let output = output.unwrap_or_else(|| {
@@ -64,16 +85,27 @@ fn main() {
     println!("Input:    {in_name}");
     println!("Output:   {output}");
     println!("Segment:  {segment_secs} s");
+    if let Some(kfi) = keyframe_interval {
+        println!("Keyframe: every {kfi} frames");
+    }
     if let Some(br) = bitrate {
         println!("Bitrate:  {br} bps");
     }
     println!();
     println!("Writing HLS segments...");
 
-    // Build and write
+    // ── Build HLS output ──────────────────────────────────────────────────────
+    //
+    // keyframe_interval(N) forces an IDR frame every N frames.
+    // The default is 48; for clean segment alignment use fps × segment_duration.
+
     let mut builder = HlsOutput::new(&output)
         .input(&input)
         .segment_duration(Duration::from_secs(segment_secs));
+
+    if let Some(kfi) = keyframe_interval {
+        builder = builder.keyframe_interval(kfi);
+    }
 
     if let Some(br) = bitrate {
         builder = builder.bitrate(br);

@@ -1,0 +1,172 @@
+//! Decode video, audio, and images using the iterator API.
+//!
+//! Demonstrates:
+//! - `VideoDecoder::frames()` → `VideoFrameIterator` — `for frame in vdec.frames()`
+//! - `AudioDecoder::frames()` → `AudioFrameIterator` — `for frame in adec.frames()`
+//! - `ImageDecoder::frames()` → `ImageFrameIterator` — `for frame in idec.frames()`
+//!
+//! Each decoder exposes `.frames()` which returns an iterator with
+//! `Item = Result<Frame, DecodeError>`. This is an alternative to the manual
+//! `loop { decode_one() }` pattern — it integrates naturally with iterator
+//! adaptors (`take`, `filter_map`, `enumerate`, etc.).
+//!
+//! # Usage
+//!
+//! ```bash
+//! cargo run --example decode_iterator --features decode -- \
+//!   --input input.mp4   \
+//!   [--image photo.png]  # optional: also decode a still image
+//! ```
+
+use std::{path::Path, process};
+
+use avio::{AudioDecoder, DecodeError, ImageDecoder, VideoDecoder};
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let mut input = None::<String>;
+    let mut image = None::<String>;
+
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--input" | "-i" => input = Some(args.next().unwrap_or_default()),
+            "--image" => image = Some(args.next().unwrap_or_default()),
+            other => {
+                eprintln!("Unknown flag: {other}");
+                process::exit(1);
+            }
+        }
+    }
+
+    let input = input.unwrap_or_else(|| {
+        eprintln!("Usage: decode_iterator --input <file> [--image <file>]");
+        process::exit(1);
+    });
+
+    let in_name = Path::new(&input)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&input);
+
+    println!("Input: {in_name}");
+    println!();
+
+    // ── VideoFrameIterator ────────────────────────────────────────────────────
+    //
+    // VideoDecoder::frames() returns a VideoFrameIterator whose Item is
+    // Result<VideoFrame, DecodeError>.
+    //
+    // The `for` loop terminates when the iterator returns None (EOF).
+    // Errors are surfaced as Err variants inside the loop body.
+
+    println!("=== VideoFrameIterator ===");
+
+    match VideoDecoder::open(&input).build() {
+        Ok(mut vdec) => {
+            println!(
+                "Source: {}×{}  {:.2} fps  codec={}",
+                vdec.width(),
+                vdec.height(),
+                vdec.frame_rate(),
+                vdec.stream_info().codec_name(),
+            );
+
+            let mut video_frames: u64 = 0;
+
+            // Iterator form: no manual `loop { decode_one() }` needed.
+            for result in vdec.frames() {
+                match result {
+                    Ok(_frame) => video_frames += 1,
+                    Err(DecodeError::EndOfStream) => break,
+                    Err(e) => {
+                        eprintln!("Video decode error: {e}");
+                        break;
+                    }
+                }
+            }
+
+            println!("Decoded {video_frames} video frames");
+        }
+        Err(e) => println!("Skipping video: {e}"),
+    }
+
+    println!();
+
+    // ── AudioFrameIterator ────────────────────────────────────────────────────
+    //
+    // AudioDecoder::frames() returns an AudioFrameIterator with
+    // Item = Result<AudioFrame, DecodeError>.
+
+    println!("=== AudioFrameIterator ===");
+
+    match AudioDecoder::open(&input).build() {
+        Ok(mut adec) => {
+            println!(
+                "Source: {} Hz  channels={}  codec={}",
+                adec.sample_rate(),
+                adec.channels(),
+                adec.stream_info().codec_name(),
+            );
+
+            let mut audio_frames: u64 = 0;
+            let mut total_samples: u64 = 0;
+
+            for result in adec.frames() {
+                match result {
+                    Ok(frame) => {
+                        audio_frames += 1;
+                        total_samples += frame.samples() as u64;
+                    }
+                    Err(DecodeError::EndOfStream) => break,
+                    Err(e) => {
+                        eprintln!("Audio decode error: {e}");
+                        break;
+                    }
+                }
+            }
+
+            println!("Decoded {audio_frames} audio frames  ({total_samples} samples)");
+        }
+        Err(e) => println!("Skipping audio (no audio stream): {e}"),
+    }
+
+    // ── ImageFrameIterator ────────────────────────────────────────────────────
+    //
+    // ImageDecoder::frames() returns an ImageFrameIterator with
+    // Item = Result<VideoFrame, DecodeError>.
+    //
+    // For a still image exactly one frame is expected.
+
+    if let Some(ref img_path) = image {
+        println!();
+        let img_name = Path::new(img_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(img_path.as_str());
+
+        println!("=== ImageFrameIterator ({img_name}) ===");
+
+        match ImageDecoder::open(img_path).build() {
+            Ok(mut idec) => {
+                for result in idec.frames() {
+                    match result {
+                        Ok(frame) => {
+                            println!(
+                                "Frame: {}×{}  format={}",
+                                frame.width(),
+                                frame.height(),
+                                frame.format(),
+                            );
+                        }
+                        Err(DecodeError::EndOfStream) => break,
+                        Err(e) => {
+                            eprintln!("Image decode error: {e}");
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("Skipping image: {e}"),
+        }
+    }
+}

@@ -74,7 +74,7 @@ required-features = ["stream", "probe"]
 
 [[example]]
 name = "audio_transcode"
-required-features = ["decode", "encode"]
+required-features = ["pipeline", "decode", "encode"]
 
 [[example]]
 name = "dash_output"
@@ -90,11 +90,11 @@ required-features = ["pipeline"]
 
 [[example]]
 name = "two_pass_encode"
-required-features = ["decode", "encode"]
+required-features = ["pipeline", "decode", "encode"]
 
 [[example]]
 name = "write_metadata"
-required-features = ["decode", "encode"]
+required-features = ["pipeline", "decode", "encode"]
 
 [[example]]
 name = "hw_transcode"
@@ -103,6 +103,46 @@ required-features = ["pipeline"]
 [[example]]
 name = "video_transcode"
 required-features = ["pipeline", "encode"]
+
+[[example]]
+name = "encode_audio_direct"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "encode_video_direct"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "decode_format_convert"
+required-features = ["decode"]
+
+[[example]]
+name = "filter_direct"
+required-features = ["decode", "encode", "filter"]
+
+[[example]]
+name = "encode_with_progress"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "hardware_decode"
+required-features = ["decode"]
+
+[[example]]
+name = "frame_pool_usage"
+required-features = ["decode"]
+
+[[example]]
+name = "container_format"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "tone_map_hdr"
+required-features = ["pipeline", "probe"]
+
+[[example]]
+name = "decode_iterator"
+required-features = ["decode"]
 
 [lints]
 workspace = true
