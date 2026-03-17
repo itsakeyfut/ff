@@ -86,7 +86,7 @@ fn main() {
     println!("File:         {file_name}");
     println!("Format:       {format_name}");
     println!("Dimensions:   {w}×{h}");
-    println!("Pixel format: {pix_fmt:?}");
+    println!("Pixel format: {pix_fmt}");
     println!("Planes:       {num_planes}");
 
     for i in 0..num_planes {
