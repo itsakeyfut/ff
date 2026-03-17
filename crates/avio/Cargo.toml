@@ -72,5 +72,33 @@ required-features = ["stream"]
 name = "abr_ladder"
 required-features = ["stream", "probe"]
 
+[[example]]
+name = "audio_transcode"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "dash_output"
+required-features = ["stream"]
+
+[[example]]
+name = "video_effects"
+required-features = ["pipeline"]
+
+[[example]]
+name = "audio_filters"
+required-features = ["pipeline"]
+
+[[example]]
+name = "two_pass_encode"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "write_metadata"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "hw_transcode"
+required-features = ["pipeline"]
+
 [lints]
 workspace = true
