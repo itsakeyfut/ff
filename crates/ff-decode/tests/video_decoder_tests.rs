@@ -461,3 +461,14 @@ fn test_flush_decoder() {
 
     assert!(frame.width() > 0, "Frame should be valid after flush");
 }
+
+#[test]
+fn video_stream_info_codec_name_should_not_be_empty() {
+    let decoder = create_decoder().expect("Failed to create decoder");
+    let info = decoder.stream_info();
+
+    assert!(
+        !info.codec_name().is_empty(),
+        "codec_name() should not be empty"
+    );
+}

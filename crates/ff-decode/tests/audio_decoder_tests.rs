@@ -879,3 +879,14 @@ fn test_audio_frame_iterator_multiple_iterations() {
         "Second batch should have 5 audio frames"
     );
 }
+
+#[test]
+fn audio_stream_info_codec_name_should_not_be_empty() {
+    let decoder = create_audio_decoder().expect("Failed to create audio decoder");
+    let info = decoder.stream_info();
+
+    assert!(
+        !info.codec_name().is_empty(),
+        "codec_name() should not be empty"
+    );
+}
