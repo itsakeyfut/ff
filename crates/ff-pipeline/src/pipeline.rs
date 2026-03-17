@@ -490,6 +490,26 @@ impl PipelineBuilder {
         self
     }
 
+    /// Sets the filter graph when `graph` is `Some`; no-op when `None`.
+    ///
+    /// This is a convenience wrapper over [`filter`](Self::filter) for
+    /// use when the filter is conditionally constructed:
+    ///
+    /// ```ignore
+    /// let pipeline = Pipeline::builder()
+    ///     .input(&args.input)
+    ///     .output(&args.output, config)
+    ///     .filter_opt(maybe_filter)   // Option<FilterGraph> — no rebind needed
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn filter_opt(self, graph: Option<FilterGraph>) -> Self {
+        match graph {
+            Some(g) => self.filter(g),
+            None => self,
+        }
+    }
+
     /// Sets the output file path and encoder configuration.
     #[must_use]
     pub fn output(mut self, path: &str, config: EncoderConfig) -> Self {
@@ -631,6 +651,32 @@ mod tests {
             .input("/tmp/in.mp4")
             .secondary_input("/tmp/logo.png")
             .output("/tmp/out.mp4", dummy_config())
+            .build();
+        assert!(matches!(
+            result,
+            Err(PipelineError::SecondaryInputWithoutFilter)
+        ));
+    }
+
+    #[test]
+    fn filter_opt_with_none_should_not_prevent_successful_build() {
+        let result = Pipeline::builder()
+            .input("/tmp/in.mp4")
+            .output("/tmp/out.mp4", dummy_config())
+            .filter_opt(None)
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn filter_opt_with_none_should_behave_like_no_filter_call() {
+        // secondary_input without a filter must still be rejected even when
+        // filter_opt(None) is called — None is a strict no-op.
+        let result = Pipeline::builder()
+            .input("/tmp/in.mp4")
+            .secondary_input("/tmp/logo.png")
+            .output("/tmp/out.mp4", dummy_config())
+            .filter_opt(None)
             .build();
         assert!(matches!(
             result,
