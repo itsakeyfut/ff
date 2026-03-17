@@ -22,6 +22,7 @@
 #![allow(clippy::if_same_then_else)]
 #![allow(clippy::cast_lossless)]
 
+use std::ffi::CStr;
 use std::path::Path;
 use std::ptr;
 use std::time::Duration;
@@ -405,6 +406,17 @@ impl AudioDecoderInner {
         }
     }
 
+    /// Returns the human-readable codec name for a given `AVCodecID`.
+    unsafe fn extract_codec_name(codec_id: ff_sys::AVCodecID) -> String {
+        // SAFETY: avcodec_get_name is safe for any codec ID value
+        let name_ptr = unsafe { ff_sys::avcodec_get_name(codec_id) };
+        if name_ptr.is_null() {
+            return String::from("unknown");
+        }
+        // SAFETY: avcodec_get_name returns a valid C string with static lifetime
+        unsafe { CStr::from_ptr(name_ptr).to_string_lossy().into_owned() }
+    }
+
     /// Extracts audio stream information from FFmpeg structures.
     unsafe fn extract_stream_info(
         format_ctx: *mut AVFormatContext,
@@ -442,11 +454,13 @@ impl AudioDecoderInner {
 
         // Extract codec
         let codec = Self::convert_codec(codec_id);
+        let codec_name = unsafe { Self::extract_codec_name(codec_id) };
 
         // Build stream info
         let mut builder = AudioStreamInfo::builder()
             .index(stream_index as u32)
             .codec(codec)
+            .codec_name(codec_name)
             .sample_rate(sample_rate)
             .channels(channels)
             .sample_format(sample_format)
@@ -1268,5 +1282,23 @@ mod tests {
             AudioDecoderInner::convert_channel_layout(&layout, 6),
             ChannelLayout::from_channels(6)
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // extract_codec_name
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn codec_name_should_return_h264_for_h264_codec_id() {
+        let name =
+            unsafe { AudioDecoderInner::extract_codec_name(ff_sys::AVCodecID_AV_CODEC_ID_H264) };
+        assert_eq!(name, "h264");
+    }
+
+    #[test]
+    fn codec_name_should_return_none_for_none_codec_id() {
+        let name =
+            unsafe { AudioDecoderInner::extract_codec_name(ff_sys::AVCodecID_AV_CODEC_ID_NONE) };
+        assert_eq!(name, "none");
     }
 }
