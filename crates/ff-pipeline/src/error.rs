@@ -64,6 +64,10 @@ pub enum PipelineError {
     /// [`ProgressCallback`](crate::ProgressCallback) returns `false`.
     #[error("pipeline cancelled by caller")]
     Cancelled,
+
+    /// An I/O error (e.g. creating the output directory for thumbnails).
+    #[error("i/o error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[cfg(test)]
@@ -163,5 +167,28 @@ mod tests {
         assert!(PipelineError::NoInput.source().is_none());
         assert!(PipelineError::NoOutput.source().is_none());
         assert!(PipelineError::Cancelled.source().is_none());
+    }
+
+    // --- Io variant ---
+
+    #[test]
+    fn io_error_should_convert_into_pipeline_error() {
+        let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err: PipelineError = inner.into();
+        assert!(matches!(err, PipelineError::Io(_)));
+    }
+
+    #[test]
+    fn io_error_should_display_correct_message() {
+        let inner = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let err: PipelineError = inner.into();
+        assert_eq!(err.to_string(), "i/o error: access denied");
+    }
+
+    #[test]
+    fn io_error_should_expose_source() {
+        let inner = std::io::Error::new(std::io::ErrorKind::Other, "some error");
+        let err: PipelineError = inner.into();
+        assert!(err.source().is_some());
     }
 }
