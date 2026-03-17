@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use avio::{AudioCodec, BitrateMode, EncoderConfig, Pipeline, Progress, VideoCodec, open};
+use avio::{AudioCodec, EncoderConfig, Pipeline, Progress, VideoCodec, open};
 
 fn format_duration(d: Duration) -> String {
     let total = d.as_secs();
@@ -124,14 +124,11 @@ fn main() {
         .and_then(|n| n.to_str())
         .unwrap_or(&output);
 
-    let config = EncoderConfig {
-        video_codec: VideoCodec::H264,
-        audio_codec: AudioCodec::Aac,
-        bitrate_mode: BitrateMode::Crf(23),
-        resolution: None,
-        framerate: None,
-        hardware: None,
-    };
+    let config = EncoderConfig::builder()
+        .video_codec(VideoCodec::H264)
+        .audio_codec(AudioCodec::Aac)
+        .crf(23)
+        .build();
 
     let mut builder = Pipeline::builder();
     for input in &inputs {

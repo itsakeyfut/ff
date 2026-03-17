@@ -16,14 +16,13 @@ use ff_pipeline::{EncoderConfig, Pipeline, PipelineError};
 use fixtures::{FileGuard, test_output_path, test_video_path};
 
 fn basic_config() -> EncoderConfig {
-    EncoderConfig {
-        video_codec: VideoCodec::Mpeg4,
-        audio_codec: AudioCodec::Aac,
-        bitrate_mode: BitrateMode::Cbr(1_000_000),
-        resolution: Some((320, 240)),
-        framerate: Some(24.0),
-        hardware: None,
-    }
+    EncoderConfig::builder()
+        .video_codec(VideoCodec::Mpeg4)
+        .audio_codec(AudioCodec::Aac)
+        .bitrate_mode(BitrateMode::Cbr(1_000_000))
+        .resolution(320, 240)
+        .framerate(24.0)
+        .build()
 }
 
 #[test]
@@ -200,14 +199,13 @@ fn transcode_with_scale_filter_should_produce_valid_output() {
     };
 
     // Resolution matches filter output; no override needed.
-    let config = EncoderConfig {
-        video_codec: VideoCodec::Mpeg4,
-        audio_codec: AudioCodec::Aac,
-        bitrate_mode: BitrateMode::Cbr(500_000),
-        resolution: Some((160, 120)),
-        framerate: Some(24.0),
-        hardware: None,
-    };
+    let config = EncoderConfig::builder()
+        .video_codec(VideoCodec::Mpeg4)
+        .audio_codec(AudioCodec::Aac)
+        .bitrate_mode(BitrateMode::Cbr(500_000))
+        .resolution(160, 120)
+        .framerate(24.0)
+        .build();
 
     let pipeline = match Pipeline::builder()
         .input(input.to_str().unwrap())

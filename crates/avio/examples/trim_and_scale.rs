@@ -19,9 +19,7 @@ use std::{
     time::Duration,
 };
 
-use avio::{
-    AudioCodec, BitrateMode, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec,
-};
+use avio::{AudioCodec, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
 
 fn parse_time(s: &str) -> Result<f64, String> {
     if s.contains(':') {
@@ -186,14 +184,14 @@ fn main() {
         _ => None,
     };
 
-    let config = EncoderConfig {
-        video_codec: VideoCodec::H264,
-        audio_codec: AudioCodec::Aac,
-        bitrate_mode: BitrateMode::Crf(23),
-        resolution,
-        framerate: None,
-        hardware: None,
-    };
+    let mut b = EncoderConfig::builder()
+        .video_codec(VideoCodec::H264)
+        .audio_codec(AudioCodec::Aac)
+        .crf(23);
+    if let Some((w, h)) = resolution {
+        b = b.resolution(w, h);
+    }
+    let config = b.build();
 
     let pipeline = match Pipeline::builder()
         .input(&input)

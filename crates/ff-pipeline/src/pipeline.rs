@@ -19,6 +19,9 @@ use crate::progress::{Progress, ProgressCallback};
 /// Codec and quality configuration for the pipeline output.
 ///
 /// Passed to [`PipelineBuilder::output`] alongside the output path.
+///
+/// Construct via [`EncoderConfig::builder`].
+#[non_exhaustive]
 pub struct EncoderConfig {
     /// Video codec to use for the output stream.
     pub video_codec: VideoCodec,
@@ -43,6 +46,102 @@ pub struct EncoderConfig {
     ///
     /// `None` uses software (CPU) encoding.
     pub hardware: Option<HwAccel>,
+}
+
+impl EncoderConfig {
+    /// Returns an [`EncoderConfigBuilder`] with sensible defaults:
+    /// H.264 video, AAC audio, CRF 23, no resolution/framerate override, software encoding.
+    #[must_use]
+    pub fn builder() -> EncoderConfigBuilder {
+        EncoderConfigBuilder::new()
+    }
+}
+
+/// Consuming builder for [`EncoderConfig`].
+///
+/// Obtain via [`EncoderConfig::builder`].
+pub struct EncoderConfigBuilder {
+    video_codec: VideoCodec,
+    audio_codec: AudioCodec,
+    bitrate_mode: BitrateMode,
+    resolution: Option<(u32, u32)>,
+    framerate: Option<f64>,
+    hardware: Option<HwAccel>,
+}
+
+impl EncoderConfigBuilder {
+    fn new() -> Self {
+        Self {
+            video_codec: VideoCodec::H264,
+            audio_codec: AudioCodec::Aac,
+            bitrate_mode: BitrateMode::Crf(23),
+            resolution: None,
+            framerate: None,
+            hardware: None,
+        }
+    }
+
+    /// Sets the video codec.
+    #[must_use]
+    pub fn video_codec(mut self, codec: VideoCodec) -> Self {
+        self.video_codec = codec;
+        self
+    }
+
+    /// Sets the audio codec.
+    #[must_use]
+    pub fn audio_codec(mut self, codec: AudioCodec) -> Self {
+        self.audio_codec = codec;
+        self
+    }
+
+    /// Sets the bitrate control mode.
+    #[must_use]
+    pub fn bitrate_mode(mut self, mode: BitrateMode) -> Self {
+        self.bitrate_mode = mode;
+        self
+    }
+
+    /// Convenience: sets `BitrateMode::Crf(crf)`.
+    #[must_use]
+    pub fn crf(mut self, crf: u32) -> Self {
+        self.bitrate_mode = BitrateMode::Crf(crf);
+        self
+    }
+
+    /// Sets the output resolution in pixels.
+    #[must_use]
+    pub fn resolution(mut self, width: u32, height: u32) -> Self {
+        self.resolution = Some((width, height));
+        self
+    }
+
+    /// Sets the output frame rate in frames per second.
+    #[must_use]
+    pub fn framerate(mut self, fps: f64) -> Self {
+        self.framerate = Some(fps);
+        self
+    }
+
+    /// Sets the hardware acceleration backend.
+    #[must_use]
+    pub fn hardware(mut self, hw: HwAccel) -> Self {
+        self.hardware = Some(hw);
+        self
+    }
+
+    /// Builds the [`EncoderConfig`]. Never fails; returns the config directly.
+    #[must_use]
+    pub fn build(self) -> EncoderConfig {
+        EncoderConfig {
+            video_codec: self.video_codec,
+            audio_codec: self.audio_codec,
+            bitrate_mode: self.bitrate_mode,
+            resolution: self.resolution,
+            framerate: self.framerate,
+            hardware: self.hardware,
+        }
+    }
 }
 
 /// A configured, ready-to-run transcode pipeline.
@@ -376,14 +475,11 @@ mod tests {
     use ff_format::{AudioCodec, VideoCodec};
 
     fn dummy_config() -> EncoderConfig {
-        EncoderConfig {
-            video_codec: VideoCodec::H264,
-            audio_codec: AudioCodec::Aac,
-            bitrate_mode: BitrateMode::Cbr(4_000_000),
-            resolution: None,
-            framerate: None,
-            hardware: None,
-        }
+        EncoderConfig::builder()
+            .video_codec(VideoCodec::H264)
+            .audio_codec(AudioCodec::Aac)
+            .bitrate_mode(BitrateMode::Cbr(4_000_000))
+            .build()
     }
 
     #[test]
