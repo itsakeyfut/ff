@@ -1095,15 +1095,16 @@ impl VideoDecoderInner {
     /// If a frame pool is configured, attempts to acquire a buffer from the pool.
     /// The returned PooledBuffer will automatically be returned to the pool when dropped.
     fn allocate_buffer(&self, size: usize) -> PooledBuffer {
-        if let Some(ref pool) = self.frame_pool
-            && let Some(pooled_buffer) = pool.acquire(size)
-        {
-            // Return the pooled buffer directly - it will be automatically
-            // returned to the pool when the VideoFrame is dropped
-            return pooled_buffer;
+        if let Some(ref pool) = self.frame_pool {
+            if let Some(pooled_buffer) = pool.acquire(size) {
+                return pooled_buffer;
+            }
+            // Pool is configured but currently empty (or has no buffer large
+            // enough). Allocate fresh memory and attach it to the pool so
+            // that when the VideoFrame is dropped the buffer is returned via
+            // pool.release() and becomes available for the next frame.
+            return PooledBuffer::new(vec![0u8; size], Arc::downgrade(pool));
         }
-
-        // Pool not available or exhausted - allocate a standalone buffer
         PooledBuffer::standalone(vec![0u8; size])
     }
 

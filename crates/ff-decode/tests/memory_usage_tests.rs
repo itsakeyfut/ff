@@ -13,7 +13,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ff_decode::{HardwareAccel, SeekMode, VideoDecoder};
+use std::sync::Arc;
+
+use ff_decode::{FramePool, HardwareAccel, SeekMode, SimpleFramePool, VideoDecoder};
 
 // ============================================================================
 // Test Helpers
@@ -409,4 +411,79 @@ fn test_decoder_memory_overhead() {
     }
 
     drop(decoder);
+}
+
+// ============================================================================
+// Frame Pool Tests
+// ============================================================================
+
+#[test]
+fn frame_pool_should_accumulate_buffers_after_decode() {
+    let pool = SimpleFramePool::new(8);
+    let pool_dyn: Arc<dyn FramePool> = Arc::clone(&pool) as Arc<dyn FramePool>;
+
+    let mut decoder = VideoDecoder::open(&test_video_path())
+        .hardware_accel(HardwareAccel::None)
+        .frame_pool(pool_dyn)
+        .build()
+        .expect("Failed to create decoder");
+
+    // Decode and immediately drop 5 frames. Each drop should return the
+    // buffer to the pool, growing pool.available().
+    for _ in 0..5 {
+        match decoder.decode_one() {
+            Ok(Some(frame)) => drop(frame),
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
+    assert!(
+        pool.available() > 0,
+        "pool.available() should be > 0 after dropping decoded frames, got {}",
+        pool.available()
+    );
+}
+
+#[test]
+fn frame_pool_available_should_be_zero_while_frames_are_held() {
+    // Case C: decode multiple frames simultaneously, verify pool is empty
+    // while they're held, then verify it fills after they're dropped.
+    let pool = SimpleFramePool::new(8);
+    let pool_dyn: Arc<dyn FramePool> = Arc::clone(&pool) as Arc<dyn FramePool>;
+
+    let mut decoder = VideoDecoder::open(&test_video_path())
+        .hardware_accel(HardwareAccel::None)
+        .frame_pool(pool_dyn)
+        .build()
+        .expect("Failed to create decoder");
+
+    // Decode 4 frames and hold them all.
+    let mut held_frames = Vec::new();
+    for _ in 0..4 {
+        match decoder.decode_one() {
+            Ok(Some(frame)) => held_frames.push(frame),
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
+    assert_eq!(held_frames.len(), 4, "Should have decoded 4 frames");
+
+    // All buffers are in use — pool must be empty.
+    assert_eq!(
+        pool.available(),
+        0,
+        "pool.available() should be 0 while frames are held, got {}",
+        pool.available()
+    );
+
+    // Drop all frames — buffers should return to the pool.
+    drop(held_frames);
+
+    assert!(
+        pool.available() > 0,
+        "pool.available() should be > 0 after dropping all held frames, got {}",
+        pool.available()
+    );
 }
