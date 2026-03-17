@@ -1,6 +1,6 @@
 //! Transcode a video while embedding metadata tags and chapter markers.
 //!
-//! Demonstrates `VideoEncoderBuilder::metadata()` and `.chapter()` — essential
+//! Demonstrates `PipelineBuilder::metadata()` and `.chapter()` — essential
 //! for podcast distribution (ID3-style tags), video platform uploads, and
 //! structured long-form content (documentaries, lectures, audiobooks).
 //!
@@ -21,14 +21,11 @@
 //! cargo run --example probe_info -- tagged.mp4
 //! ```
 
-use std::{
-    io::{self, Write as _},
-    path::Path,
-    process,
-    time::Duration,
-};
+use std::{path::Path, process, time::Duration};
 
-use avio::{AudioCodec, BitrateMode, ChapterInfo, VideoCodec, VideoDecoder, VideoEncoder};
+use avio::{
+    AudioCodec, BitrateMode, ChapterInfo, EncoderConfig, Pipeline, VideoCodec, VideoDecoder,
+};
 
 fn parse_time(s: &str) -> Result<Duration, String> {
     if s.contains(':') {
@@ -125,7 +122,7 @@ fn main() {
 
     // ── Open decoder — probe source dimensions and duration ───────────────────
 
-    let mut vid_dec = match VideoDecoder::open(&input).build() {
+    let vid_dec = match VideoDecoder::open(&input).build() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -135,7 +132,6 @@ fn main() {
 
     let src_w = vid_dec.width();
     let src_h = vid_dec.height();
-    let fps = vid_dec.frame_rate();
     let in_codec = vid_dec.stream_info().codec_name().to_string();
     let total_duration = vid_dec.duration();
 
@@ -207,66 +203,40 @@ fn main() {
         println!();
     }
 
-    // ── Build encoder with metadata and chapters ──────────────────────────────
+    // ── Build pipeline with metadata and chapters ─────────────────────────────
 
-    let mut enc_builder = VideoEncoder::create(&output)
-        .video(src_w, src_h, fps)
+    let config = EncoderConfig::builder()
         .video_codec(VideoCodec::H264)
+        .audio_codec(AudioCodec::Aac)
         .bitrate_mode(BitrateMode::Crf(23))
-        .audio(48000, 2)
-        .audio_codec(AudioCodec::Aac);
+        .build();
+
+    let mut builder = Pipeline::builder().input(&input).output(&output, config);
 
     if let Some(ref t) = title {
-        enc_builder = enc_builder.metadata("title", t);
+        builder = builder.metadata("title", t);
     }
     if let Some(ref a) = artist {
-        enc_builder = enc_builder.metadata("artist", a);
+        builder = builder.metadata("artist", a);
     }
     if let Some(ref y) = year {
-        enc_builder = enc_builder.metadata("date", y);
+        builder = builder.metadata("date", y);
     }
     for ch in chapters {
-        enc_builder = enc_builder.chapter(ch);
+        builder = builder.chapter(ch);
     }
 
-    let mut enc = match enc_builder.build() {
-        Ok(e) => e,
-        Err(e) => {
+    if let Err(e) = builder
+        .build()
+        .unwrap_or_else(|e| {
             eprintln!("Error: {e}");
             process::exit(1);
-        }
-    };
-
-    // ── Decode → encode loop ──────────────────────────────────────────────────
-
-    let mut frames: u64 = 0;
-    loop {
-        let frame = match vid_dec.decode_one() {
-            Ok(Some(f)) => f,
-            Ok(None) => break,
-            Err(e) => {
-                eprintln!("Error decoding: {e}");
-                process::exit(1);
-            }
-        };
-        if let Err(e) = enc.push_video(&frame) {
-            eprintln!("Error encoding: {e}");
-            process::exit(1);
-        }
-        frames += 1;
-        if frames.is_multiple_of(100) {
-            print!("\r{frames} frames    ");
-            let _ = io::stdout().flush();
-        }
-    }
-
-    if let Err(e) = enc.finish() {
-        println!();
-        eprintln!("Error finishing: {e}");
+        })
+        .run()
+    {
+        eprintln!("Error: {e}");
         process::exit(1);
     }
-
-    println!();
 
     let size_str = match std::fs::metadata(&output) {
         #[allow(clippy::cast_precision_loss)]
@@ -274,6 +244,6 @@ fn main() {
         Err(_) => "(unknown size)".to_string(),
     };
 
-    println!("Done. {out_name}  {size_str}  {frames} frames");
+    println!("Done. {out_name}  {size_str}");
     println!("Verify with: cargo run --example probe_info -- {out_name}");
 }
