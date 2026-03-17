@@ -46,6 +46,7 @@
 //! - [`pipeline`] — [`Pipeline`], [`PipelineBuilder`], [`EncoderConfig`]
 //! - [`progress`] — [`Progress`], [`ProgressCallback`]
 //! - [`thumbnail`] — [`ThumbnailPipeline`]
+//! - [`video_pipeline`] — [`VideoPipeline`]
 
 #![warn(missing_docs)]
 
@@ -54,9 +55,11 @@ pub mod error;
 pub mod pipeline;
 pub mod progress;
 pub mod thumbnail;
+pub mod video_pipeline;
 
 pub use audio_pipeline::AudioPipeline;
 pub use error::PipelineError;
 pub use pipeline::{EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder};
 pub use progress::{Progress, ProgressCallback};
 pub use thumbnail::ThumbnailPipeline;
+pub use video_pipeline::VideoPipeline;

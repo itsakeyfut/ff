@@ -88,7 +88,7 @@ pub use ff_filter::{FilterError, FilterGraph, FilterGraphBuilder, HwAccel, ToneM
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{
     AudioPipeline, EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder, PipelineError,
-    Progress, ProgressCallback, ThumbnailPipeline,
+    Progress, ProgressCallback, ThumbnailPipeline, VideoPipeline,
 };
 
 // ── stream feature ────────────────────────────────────────────────────────────
