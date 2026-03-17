@@ -565,4 +565,41 @@ mod tests {
         assert_eq!(pool.capacity(), 4);
         assert_eq!(pool.available(), 0);
     }
+
+    #[test]
+    fn vec_pool_acquired_buffer_should_return_on_drop_when_pool_was_empty() {
+        let pool = VecPool::new(4);
+        assert_eq!(pool.available(), 0);
+        assert!(pool.acquire(1024).is_none());
+
+        // Simulate what allocate_buffer does: attach fresh memory to the pool.
+        let pool_dyn: Arc<dyn FramePool> = Arc::clone(&pool) as Arc<dyn FramePool>;
+        let buf = PooledBuffer::new(vec![0u8; 1024], Arc::downgrade(&pool_dyn));
+        drop(buf);
+
+        assert_eq!(pool.available(), 1);
+    }
+
+    #[test]
+    fn vec_pool_should_grow_from_zero_via_connected_alloc() {
+        let pool = VecPool::new(8);
+        let pool_dyn: Arc<dyn FramePool> = Arc::clone(&pool) as Arc<dyn FramePool>;
+
+        // Allocate three buffers with pool reference (pool empty on each call).
+        let b1 = PooledBuffer::new(vec![0u8; 1024], Arc::downgrade(&pool_dyn));
+        let b2 = PooledBuffer::new(vec![0u8; 1024], Arc::downgrade(&pool_dyn));
+        let b3 = PooledBuffer::new(vec![0u8; 1024], Arc::downgrade(&pool_dyn));
+        assert_eq!(pool.available(), 0);
+
+        drop(b1);
+        drop(b2);
+        drop(b3);
+
+        assert_eq!(pool.available(), 3);
+
+        // Next acquire should succeed.
+        let buf = pool.acquire(512);
+        assert!(buf.is_some());
+        assert_eq!(pool.available(), 2);
+    }
 }
