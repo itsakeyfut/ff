@@ -32,5 +32,45 @@ ff-filter   = { workspace = true, optional = true }
 ff-pipeline = { workspace = true, optional = true }
 ff-stream   = { workspace = true, optional = true }
 
+[[example]]
+name = "probe_info"
+required-features = ["probe"]
+
+[[example]]
+name = "transcode"
+required-features = ["pipeline"]
+
+[[example]]
+name = "extract_thumbnails"
+required-features = ["pipeline", "encode"]
+
+[[example]]
+name = "trim_and_scale"
+required-features = ["pipeline"]
+
+[[example]]
+name = "concat_clips"
+required-features = ["pipeline", "probe"]
+
+[[example]]
+name = "add_watermark"
+required-features = ["pipeline", "decode", "encode"]
+
+[[example]]
+name = "decode_image"
+required-features = ["decode"]
+
+[[example]]
+name = "encode_image"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "hls_output"
+required-features = ["stream"]
+
+[[example]]
+name = "abr_ladder"
+required-features = ["stream", "probe"]
+
 [lints]
 workspace = true
