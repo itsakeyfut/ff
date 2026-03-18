@@ -161,6 +161,10 @@ required-features = ["tokio"]
 name = "async_encode_video"
 required-features = ["tokio"]
 
+[[example]]
+name = "async_encode_audio"
+required-features = ["tokio"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
