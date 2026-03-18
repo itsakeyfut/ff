@@ -4,7 +4,6 @@
 //! - `VecPool::new(capacity)` — create a pool that retains up to N buffers
 //! - `VecPool::capacity()` — the configured pool size
 //! - `VecPool::available()` — buffers currently held in the pool
-//! - `SimpleFramePool` — type alias for `VecPool`
 //! - `FramePool` — the shared trait implemented by all pool types
 //! - `VideoDecoderBuilder::frame_pool()` — attach the pool to the decoder
 //!
@@ -22,7 +21,7 @@
 
 use std::{path::Path, process, sync::Arc};
 
-use avio::{FramePool, SimpleFramePool, VecPool, VideoDecoder};
+use avio::{FramePool, VecPool, VideoDecoder};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -65,14 +64,6 @@ fn main() {
         pool.capacity(),
         pool.available()
     );
-
-    // ── SimpleFramePool ───────────────────────────────────────────────────────
-    //
-    // SimpleFramePool is a type alias for VecPool.
-    // Both names refer to exactly the same type.
-
-    let _simple: Arc<SimpleFramePool> = SimpleFramePool::new(pool_size);
-    println!("SimpleFramePool::new() — same type as VecPool");
 
     // ── FramePool (trait) ─────────────────────────────────────────────────────
     //

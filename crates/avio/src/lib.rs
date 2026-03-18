@@ -29,6 +29,84 @@
 //! # Full stack (implies filter + pipeline)
 //! avio = { version = "0.5", features = ["stream"] }
 //! ```
+//!
+//! # Quick Start
+//!
+//! ## Probe
+//!
+//! [`open`] is a free function (not a method) that reads metadata without
+//! decoding:
+//!
+//! ```ignore
+//! use avio::open;
+//!
+//! let info = open("video.mp4")?;
+//! println!("duration: {:?}", info.duration());
+//! ```
+//!
+//! ## Decode
+//!
+//! All decoders follow the same builder pattern. Use
+//! `.output_format()` / `.output_sample_rate()` to request automatic
+//! format conversion inside the decoder:
+//!
+//! ```ignore
+//! use avio::{VideoDecoder, AudioDecoder, PixelFormat, SampleFormat};
+//!
+//! // Video — request RGB24 output (FFmpeg converts internally)
+//! let mut vdec = VideoDecoder::open("video.mp4")
+//!     .output_format(PixelFormat::Rgb24)
+//!     .build()?;
+//! for frame in vdec.frames() { /* ... */ }
+//!
+//! // Audio — resample to 16-bit 44.1 kHz
+//! let mut adec = AudioDecoder::open("video.mp4")
+//!     .output_format(SampleFormat::I16)
+//!     .output_sample_rate(44_100)
+//!     .build()?;
+//! ```
+//!
+//! ## Encode
+//!
+//! For simple single-file encoding use `VideoEncoder` / `AudioEncoder`
+//! directly. For transcoding with optional filtering prefer `Pipeline`.
+//!
+//! ```ignore
+//! use avio::{VideoEncoder, VideoCodec, BitrateMode};
+//!
+//! VideoEncoder::create("out.mp4")
+//!     .video_codec(VideoCodec::H264)
+//!     .bitrate_mode(BitrateMode::Crf(23))
+//!     .build()?
+//!     .encode_file("input.mp4")?;
+//! ```
+//!
+//! ### Extension trait
+//!
+//! `VideoCodecEncodeExt` adds encode-specific helpers (`.default_extension()`,
+//! `.is_lgpl_compatible()`) to `VideoCodec`. Import the trait to call them:
+//!
+//! ```ignore
+//! use avio::{VideoCodec, VideoCodecEncodeExt};
+//!
+//! let ext = VideoCodec::H264.default_extension(); // "mp4"
+//! ```
+//!
+//! ## Pipeline (high-level transcode)
+//!
+//! ```ignore
+//! use avio::{Pipeline, EncoderConfig, VideoCodec, AudioCodec, BitrateMode};
+//!
+//! Pipeline::builder()
+//!     .input("input.mp4")
+//!     .output("output.mp4", EncoderConfig::builder()
+//!         .video_codec(VideoCodec::H264)
+//!         .audio_codec(AudioCodec::Aac)
+//!         .bitrate_mode(BitrateMode::Crf(23))
+//!         .build())
+//!     .build()?
+//!     .run()?;
+//! ```
 
 // ── Always-available types from ff-format ────────────────────────────────────
 //
@@ -39,9 +117,9 @@
 // in from ff-format anyway).
 pub use ff_format::{
     AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo, ChapterInfoBuilder,
-    ColorPrimaries, ColorRange, ColorSpace, FormatError, FrameError, MediaInfo, MediaInfoBuilder,
-    PixelFormat, PooledBuffer, Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo,
-    SubtitleStreamInfoBuilder, Timestamp, VideoCodec, VideoFrame, VideoStreamInfo,
+    ColorPrimaries, ColorRange, ColorSpace, MediaInfo, MediaInfoBuilder, PixelFormat, Rational,
+    SampleFormat, SubtitleCodec, SubtitleStreamInfo, Timestamp, VideoCodec, VideoFrame,
+    VideoStreamInfo,
 };
 
 // ── probe feature ─────────────────────────────────────────────────────────────
@@ -50,17 +128,16 @@ pub use ff_probe::{ProbeError, open};
 
 // ── decode feature ────────────────────────────────────────────────────────────
 //
-// PooledBuffer and the frame/codec types are already re-exported from ff-format
-// above, so we omit them here to keep a single canonical source.
-// FramePool, SimpleFramePool, and VecPool come from ff-common (re-exported via
-// ff-decode). VecPool is the canonical concrete pool; SimpleFramePool is its alias.
+// Frame/codec types are already re-exported from ff-format above, so we omit
+// them here to keep a single canonical source.
+// Memory pooling: VecPool is the concrete pool implementation; FramePool is the
+// trait for accepting custom pool implementations. Use VecPool directly, or
+// Arc<dyn FramePool> when you need to pass a pool through an abstraction boundary.
 #[cfg(feature = "decode")]
 pub use ff_common::VecPool;
 #[cfg(feature = "decode")]
 pub use ff_decode::{
-    AudioDecoder, AudioDecoderBuilder, AudioFrameIterator, DecodeError, FramePool, HardwareAccel,
-    ImageDecoder, ImageDecoderBuilder, ImageFrameIterator, SeekMode, SimpleFramePool, VideoDecoder,
-    VideoDecoderBuilder, VideoFrameIterator,
+    AudioDecoder, DecodeError, FramePool, HardwareAccel, ImageDecoder, SeekMode, VideoDecoder,
 };
 
 // ── encode feature ────────────────────────────────────────────────────────────
@@ -72,9 +149,9 @@ pub use ff_decode::{
 // default_extension) on the shared VideoCodec type; import it to call them.
 #[cfg(feature = "encode")]
 pub use ff_encode::{
-    AudioEncoder, AudioEncoderBuilder, BitrateMode, CRF_MAX, Container, EncodeError,
-    EncodeProgress, EncodeProgressCallback, HardwareEncoder, ImageEncoder, ImageEncoderBuilder,
-    Preset, VideoCodecEncodeExt, VideoEncoder, VideoEncoderBuilder,
+    AudioEncoder, BitrateMode, CRF_MAX, Container, EncodeError, EncodeProgress,
+    EncodeProgressCallback, HardwareEncoder, ImageEncoder, Preset, VideoCodecEncodeExt,
+    VideoEncoder,
 };
 
 // ── filter feature ────────────────────────────────────────────────────────────
@@ -145,9 +222,9 @@ mod tests {
         // Builder entry points are static methods on the decoder types.
         // Calling them with a dummy path exercises name resolution without
         // touching FFmpeg.
-        let _builder: VideoDecoderBuilder = VideoDecoder::open("/no/such/file.mp4");
-        let _builder: AudioDecoderBuilder = AudioDecoder::open("/no/such/file.mp4");
-        let _builder: ImageDecoderBuilder = ImageDecoder::open("/no/such/file.mp4");
+        let _ = VideoDecoder::open("/no/such/file.mp4");
+        let _ = AudioDecoder::open("/no/such/file.mp4");
+        let _ = ImageDecoder::open("/no/such/file.mp4");
     }
 
     #[cfg(feature = "decode")]
@@ -186,8 +263,8 @@ mod tests {
     fn encode_builder_types_should_be_accessible() {
         // VideoEncoder::create / AudioEncoder::create are the public entry
         // points that return their respective builder types.
-        let _builder: VideoEncoderBuilder = VideoEncoder::create("/tmp/out.mp4");
-        let _builder: AudioEncoderBuilder = AudioEncoder::create("/tmp/out.mp3");
+        let _ = VideoEncoder::create("/tmp/out.mp4");
+        let _ = AudioEncoder::create("/tmp/out.mp3");
     }
 
     #[cfg(feature = "encode")]

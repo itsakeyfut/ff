@@ -20,8 +20,9 @@ use crate::error::StreamError;
 /// ```
 /// use ff_stream::Rendition;
 ///
-/// let r = Rendition { width: 1280, height: 720, bitrate: 3_000_000 };
+/// let r = Rendition::new(1280, 720, 3_000_000);
 /// assert_eq!(r.width, 1280);
+/// assert_eq!(r.bitrate, 3_000_000);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rendition {
@@ -31,6 +32,27 @@ pub struct Rendition {
     pub height: u32,
     /// Target bitrate in bits per second.
     pub bitrate: u64,
+}
+
+impl Rendition {
+    /// Create a rendition with the given width, height, and bitrate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_stream::Rendition;
+    ///
+    /// let hd = Rendition::new(1280, 720, 3_000_000);
+    /// let fhd = Rendition::new(1920, 1080, 6_000_000);
+    /// ```
+    #[must_use]
+    pub const fn new(width: u32, height: u32, bitrate: u64) -> Self {
+        Self {
+            width,
+            height,
+            bitrate,
+        }
+    }
 }
 
 /// Produces multi-rendition HLS or DASH output from a single input.

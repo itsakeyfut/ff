@@ -6,4 +6,4 @@
 pub mod builder;
 pub mod decoder_inner;
 
-pub use builder::{ImageDecoder, ImageDecoderBuilder, ImageFrameIterator};
+pub use builder::{ImageDecoder, ImageDecoderBuilder};

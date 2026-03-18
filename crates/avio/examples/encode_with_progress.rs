@@ -5,7 +5,7 @@
 //! - `EncodeProgressCallback::should_cancel()` — signal cancellation from within
 //!   the callback (no external flag needed)
 //! - `EncodeProgress::frames_encoded` / `current_fps` / `elapsed` — progress fields
-//! - `VideoEncoderBuilder::progress_callback()` — attach a trait object to the encoder
+//! - `VideoEncoder::create().progress_callback()` — attach a trait object to the encoder
 //!
 //! The simpler closure form (`on_progress(|p| …)`) is shown in `transcode.rs`.
 //! This example shows the trait-based form which supports state and cancellation.

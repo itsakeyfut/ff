@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use std::sync::Arc;
 
-use ff_decode::{FramePool, HardwareAccel, SeekMode, SimpleFramePool, VideoDecoder};
+use ff_common::VecPool;
+use ff_decode::{FramePool, HardwareAccel, SeekMode, VideoDecoder};
 
 // ============================================================================
 // Test Helpers
@@ -419,7 +420,7 @@ fn test_decoder_memory_overhead() {
 
 #[test]
 fn frame_pool_should_accumulate_buffers_after_decode() {
-    let pool = SimpleFramePool::new(8);
+    let pool = VecPool::new(8);
     let pool_dyn: Arc<dyn FramePool> = Arc::clone(&pool) as Arc<dyn FramePool>;
 
     let mut decoder = VideoDecoder::open(&test_video_path())
@@ -449,7 +450,7 @@ fn frame_pool_should_accumulate_buffers_after_decode() {
 fn frame_pool_available_should_be_zero_while_frames_are_held() {
     // Case C: decode multiple frames simultaneously, verify pool is empty
     // while they're held, then verify it fills after they're dropped.
-    let pool = SimpleFramePool::new(8);
+    let pool = VecPool::new(8);
     let pool_dyn: Arc<dyn FramePool> = Arc::clone(&pool) as Arc<dyn FramePool>;
 
     let mut decoder = VideoDecoder::open(&test_video_path())

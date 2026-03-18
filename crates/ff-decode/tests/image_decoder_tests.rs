@@ -1,5 +1,4 @@
-//! Integration tests for [`ImageDecoder`], [`ImageDecoderBuilder`], and
-//! [`ImageFrameIterator`].
+//! Integration tests for [`ImageDecoder`] and [`ImageDecoderBuilder`].
 //!
 //! The real assets `assets/img/hello-triangle.png` and
 //! `assets/img/hello-triangle.jpg` are used for happy-path tests.
@@ -12,7 +11,7 @@ mod fixtures;
 
 use std::path::PathBuf;
 
-use ff_decode::{ImageDecoder, ImageDecoderBuilder, ImageFrameIterator};
+use ff_decode::{ImageDecoder, ImageDecoderBuilder};
 
 fn png_path() -> PathBuf {
     fixtures::assets_dir().join("img/hello-triangle.png")
@@ -24,13 +23,12 @@ fn jpeg_path() -> PathBuf {
 
 // ── crate-root exports ────────────────────────────────────────────────────────
 
-/// `ImageDecoder`, `ImageDecoderBuilder`, and `ImageFrameIterator` must all be
-/// importable from the crate root without any extra path segments.
+/// `ImageDecoder` and `ImageDecoderBuilder` must be importable from the crate
+/// root without any extra path segments.
 #[test]
 fn crate_root_should_export_image_decoder_types() {
     // If these types are not re-exported the test won't compile.
     let _: fn(&str) -> ImageDecoderBuilder = |p| ImageDecoder::open(p);
-    let _: std::marker::PhantomData<ImageFrameIterator> = std::marker::PhantomData;
 }
 
 // ── open() / build() — error cases ───────────────────────────────────────────

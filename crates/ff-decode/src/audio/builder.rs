@@ -438,7 +438,7 @@ impl AudioDecoder {
     ///     // Process frame...
     /// }
     /// ```
-    pub fn frames(&mut self) -> AudioFrameIterator<'_> {
+    pub fn frames(&mut self) -> impl Iterator<Item = Result<AudioFrame, DecodeError>> + '_ {
         AudioFrameIterator { decoder: self }
     }
 
@@ -627,7 +627,7 @@ impl AudioDecoder {
 ///
 /// Created by calling [`AudioDecoder::frames()`]. Yields frames until the end
 /// of the stream is reached or an error occurs.
-pub struct AudioFrameIterator<'a> {
+pub(crate) struct AudioFrameIterator<'a> {
     decoder: &'a mut AudioDecoder,
 }
 

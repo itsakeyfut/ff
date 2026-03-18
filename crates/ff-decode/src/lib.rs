@@ -89,7 +89,7 @@
 //! - [`audio`] - Audio decoder for extracting audio frames
 //! - [`video`] - Video decoder for extracting video frames
 //! - [`error`] - Error types for decoding operations
-//! - Frame pool types (`FramePool`, `PooledBuffer`, `SimpleFramePool`) are provided by `ff-common`
+//! - Frame pool types (`FramePool`, `PooledBuffer`, `VecPool`) are provided by `ff-common`
 //!
 //! ## Re-exports
 //!
@@ -106,11 +106,11 @@ pub mod image;
 pub mod video;
 
 // Re-exports for convenience
-pub use audio::{AudioDecoder, AudioDecoderBuilder, AudioFrameIterator};
+pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
-pub use ff_common::{FramePool, PooledBuffer, SimpleFramePool};
-pub use image::{ImageDecoder, ImageDecoderBuilder, ImageFrameIterator};
-pub use video::{VideoDecoder, VideoDecoderBuilder, VideoFrameIterator};
+pub use ff_common::{FramePool, PooledBuffer};
+pub use image::{ImageDecoder, ImageDecoderBuilder};
+pub use video::{VideoDecoder, VideoDecoderBuilder};
 
 /// Seek mode for positioning the decoder.
 ///
@@ -287,9 +287,8 @@ impl HardwareAccel {
 /// ```
 pub mod prelude {
     pub use crate::{
-        AudioDecoder, AudioDecoderBuilder, AudioFrameIterator, DecodeError, FramePool,
-        HardwareAccel, ImageDecoder, ImageDecoderBuilder, ImageFrameIterator, PooledBuffer,
-        SeekMode, SimpleFramePool, VideoDecoder, VideoDecoderBuilder, VideoFrameIterator,
+        AudioDecoder, AudioDecoderBuilder, DecodeError, FramePool, HardwareAccel, ImageDecoder,
+        ImageDecoderBuilder, PooledBuffer, SeekMode, VideoDecoder, VideoDecoderBuilder,
     };
 }
 

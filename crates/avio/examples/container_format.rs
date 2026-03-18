@@ -4,7 +4,7 @@
 //! - `Container` enum — `Mp4`, `Mkv`, `WebM`, `Avi`, `Mov`
 //! - `Container::as_str()` — `FFmpeg` format name
 //! - `Container::default_extension()` — canonical file extension
-//! - `VideoEncoderBuilder::container()` — override the container inferred
+//! - `VideoEncoder::create().container()` — override the container inferred
 //!   from the output file extension
 //!
 //! By default the container is auto-detected from the output extension.

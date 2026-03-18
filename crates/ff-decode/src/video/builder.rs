@@ -625,7 +625,7 @@ impl VideoDecoder {
     ///     // Process frame...
     /// }
     /// ```
-    pub fn frames(&mut self) -> VideoFrameIterator<'_> {
+    pub fn frames(&mut self) -> impl Iterator<Item = Result<VideoFrame, DecodeError>> + '_ {
         VideoFrameIterator { decoder: self }
     }
 
@@ -1038,7 +1038,7 @@ impl VideoDecoder {
 ///
 /// Created by calling [`VideoDecoder::frames()`]. Yields frames until the end
 /// of the stream is reached or an error occurs.
-pub struct VideoFrameIterator<'a> {
+pub(crate) struct VideoFrameIterator<'a> {
     decoder: &'a mut VideoDecoder,
 }
 

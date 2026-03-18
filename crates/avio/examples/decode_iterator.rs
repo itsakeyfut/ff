@@ -1,9 +1,9 @@
 //! Decode video, audio, and images using the iterator API.
 //!
 //! Demonstrates:
-//! - `VideoDecoder::frames()` → `VideoFrameIterator` — `for frame in vdec.frames()`
-//! - `AudioDecoder::frames()` → `AudioFrameIterator` — `for frame in adec.frames()`
-//! - `ImageDecoder::frames()` → `ImageFrameIterator` — `for frame in idec.frames()`
+//! - `VideoDecoder::frames()` — `for frame in vdec.frames()`
+//! - `AudioDecoder::frames()` — `for frame in adec.frames()`
+//! - `ImageDecoder::frames()` — `for frame in idec.frames()`
 //!
 //! Each decoder exposes `.frames()` which returns an iterator with
 //! `Item = Result<Frame, DecodeError>`. This is an alternative to the manual
@@ -51,15 +51,14 @@ fn main() {
     println!("Input: {in_name}");
     println!();
 
-    // ── VideoFrameIterator ────────────────────────────────────────────────────
+    // ── VideoDecoder::frames() ────────────────────────────────────────────────
     //
-    // VideoDecoder::frames() returns a VideoFrameIterator whose Item is
-    // Result<VideoFrame, DecodeError>.
+    // frames() returns an iterator whose Item is Result<VideoFrame, DecodeError>.
     //
     // The `for` loop terminates when the iterator returns None (EOF).
     // Errors are surfaced as Err variants inside the loop body.
 
-    println!("=== VideoFrameIterator ===");
+    println!("=== Video frames ===");
 
     match VideoDecoder::open(&input).build() {
         Ok(mut vdec) => {
@@ -92,12 +91,11 @@ fn main() {
 
     println!();
 
-    // ── AudioFrameIterator ────────────────────────────────────────────────────
+    // ── AudioDecoder::frames() ────────────────────────────────────────────────
     //
-    // AudioDecoder::frames() returns an AudioFrameIterator with
-    // Item = Result<AudioFrame, DecodeError>.
+    // frames() returns an iterator with Item = Result<AudioFrame, DecodeError>.
 
-    println!("=== AudioFrameIterator ===");
+    println!("=== Audio frames ===");
 
     match AudioDecoder::open(&input).build() {
         Ok(mut adec) => {
@@ -132,9 +130,8 @@ fn main() {
 
     // ── ImageFrameIterator ────────────────────────────────────────────────────
     //
-    // ImageDecoder::frames() returns an ImageFrameIterator with
+    // ImageDecoder::frames() returns an iterator with
     // Item = Result<VideoFrame, DecodeError>.
-    //
     // For a still image exactly one frame is expected.
 
     if let Some(ref img_path) = image {
@@ -144,7 +141,7 @@ fn main() {
             .and_then(|n| n.to_str())
             .unwrap_or(img_path.as_str());
 
-        println!("=== ImageFrameIterator ({img_name}) ===");
+        println!("=== Image frame ({img_name}) ===");
 
         match ImageDecoder::open(img_path).build() {
             Ok(mut idec) => {
