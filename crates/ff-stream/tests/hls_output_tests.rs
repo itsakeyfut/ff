@@ -153,3 +153,23 @@ fn segment_duration_should_be_respected_in_playlist() {
         "#EXT-X-TARGETDURATION={target_dur} expected ≤2 for 1s configured segment duration"
     );
 }
+
+#[test]
+fn hls_target_duration_should_not_be_zero() {
+    let Some((out_dir, _guard)) = run_hls_write("hls_nonzero_duration_test", 1, 25) else {
+        return;
+    };
+
+    let content = std::fs::read_to_string(out_dir.join("playlist.m3u8")).unwrap();
+    let target_dur: u32 = content
+        .lines()
+        .find(|l| l.starts_with("#EXT-X-TARGETDURATION:"))
+        .and_then(|l| l.trim_start_matches("#EXT-X-TARGETDURATION:").parse().ok())
+        .expect("#EXT-X-TARGETDURATION not found or not an integer");
+
+    assert!(
+        target_dur > 0,
+        "#EXT-X-TARGETDURATION must be non-zero; got {target_dur} \
+         (zero means the HLS muxer received no packet durations)"
+    );
+}
