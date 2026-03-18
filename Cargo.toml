@@ -37,6 +37,10 @@ bindgen = "0.72.1"
 pkg-config = "0.3.32"
 vcpkg = "0.2.15"
 
+# Async runtime
+tokio   = { version = "1.50.0", features = ["rt"] }
+futures = { version = "0.3.32" }
+
 # Testing
 criterion = "0.8.1"
 
