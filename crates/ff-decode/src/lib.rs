@@ -112,6 +112,13 @@ pub use ff_common::{FramePool, PooledBuffer};
 pub use image::{ImageDecoder, ImageDecoderBuilder};
 pub use video::{VideoDecoder, VideoDecoderBuilder};
 
+#[cfg(feature = "tokio")]
+pub use audio::AsyncAudioDecoder;
+#[cfg(feature = "tokio")]
+pub use image::AsyncImageDecoder;
+#[cfg(feature = "tokio")]
+pub use video::AsyncVideoDecoder;
+
 /// Seek mode for positioning the decoder.
 ///
 /// This enum determines how seeking is performed when navigating
@@ -286,6 +293,8 @@ impl HardwareAccel {
 /// use ff_decode::prelude::*;
 /// ```
 pub mod prelude {
+    #[cfg(feature = "tokio")]
+    pub use crate::{AsyncAudioDecoder, AsyncImageDecoder, AsyncVideoDecoder};
     pub use crate::{
         AudioDecoder, AudioDecoderBuilder, DecodeError, FramePool, HardwareAccel, ImageDecoder,
         ImageDecoderBuilder, PooledBuffer, SeekMode, VideoDecoder, VideoDecoderBuilder,

@@ -19,9 +19,12 @@ ff-format = { workspace = true }
 ff-sys = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+tokio   = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+tokio = { version = "1.50.0", features = ["macros", "rt", "rt-multi-thread"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 winapi = { workspace = true, features = ["processthreadsapi", "psapi"] }
@@ -29,6 +32,7 @@ winapi = { workspace = true, features = ["processthreadsapi", "psapi"] }
 [features]
 default = ["hwaccel"]
 hwaccel = []  # Hardware acceleration
+tokio = ["dep:tokio", "dep:futures"]
 
 [[bench]]
 name = "decode_bench"
