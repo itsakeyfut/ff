@@ -71,6 +71,7 @@
 #![warn(missing_docs)]
 
 pub mod abr;
+pub(crate) mod codec_utils;
 pub mod dash;
 pub(crate) mod dash_inner;
 /// Unified error type for the `ff-stream` crate.
