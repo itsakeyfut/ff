@@ -11,6 +11,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-03-18
+
+### Added
+
+#### ff-decode — async API (tokio feature)
+- `tokio` feature flag: opt-in async support that does not affect the default sync API ([#176](https://github.com/itsakeyfut/avio/issues/176))
+- `AsyncVideoDecoder`: async wrapper around `VideoDecoder` backed by `tokio::task::spawn_blocking`; exposes `open()`, `decode_frame()`, and `into_stream()` returning `impl Stream<Item = Result<VideoFrame, DecodeError>> + Send` ([#177](https://github.com/itsakeyfut/avio/issues/177), [#178](https://github.com/itsakeyfut/avio/issues/178))
+- `AsyncAudioDecoder`: async wrapper around `AudioDecoder` with the same three-method API ([#179](https://github.com/itsakeyfut/avio/issues/179))
+- `AsyncImageDecoder`: async wrapper around `ImageDecoder`; exposes `open()` and `decode()` (no stream — single-frame by design)
+- Compile-time `Send` bounds asserted for all async decoder types ([#180](https://github.com/itsakeyfut/avio/issues/180))
+- Integration tests: async video decode frame count matches sync; async audio decode sample count matches sync ([#185](https://github.com/itsakeyfut/avio/issues/185), [#186](https://github.com/itsakeyfut/avio/issues/186))
+- CI job `no-tokio-feature`: builds, tests, and lints the workspace with `--no-default-features` to verify the sync API is unaffected ([#188](https://github.com/itsakeyfut/avio/issues/188))
+
+#### ff-encode — async API (tokio feature)
+- `tokio` feature flag in `ff-encode` ([#181](https://github.com/itsakeyfut/avio/issues/181))
+- `AsyncVideoEncoder`: frames are queued into a bounded `tokio::sync::mpsc` channel (capacity 8) consumed by a dedicated worker thread; `push().await` suspends automatically when the channel is full (back-pressure); `finish().await` sends a `WorkerMsg::Finish` sentinel, drops the sender, and joins the worker via `spawn_blocking` ([#182](https://github.com/itsakeyfut/avio/issues/182), [#184](https://github.com/itsakeyfut/avio/issues/184))
+- `AsyncAudioEncoder`: identical pattern for audio frames ([#183](https://github.com/itsakeyfut/avio/issues/183))
+- Integration tests: async video/audio encode produces valid output; back-pressure test ([#187](https://github.com/itsakeyfut/avio/issues/187))
+
+#### avio — tokio feature
+- `tokio` feature flag forwarding to `ff-decode/tokio` and `ff-encode/tokio`; re-exports all five async types (`AsyncVideoDecoder`, `AsyncAudioDecoder`, `AsyncImageDecoder`, `AsyncVideoEncoder`, `AsyncAudioEncoder`) under `#[cfg(feature = "tokio")]` ([#593](https://github.com/itsakeyfut/avio/issues/593))
+
+#### Examples (async)
+- `async_decode_video`: frame-by-frame, `into_stream()` combinators, and `tokio::spawn` patterns ([#594](https://github.com/itsakeyfut/avio/issues/594))
+- `async_decode_audio`: same three patterns for audio, including sample counting via `fold` ([#595](https://github.com/itsakeyfut/avio/issues/595))
+- `async_decode_image`: single decode and parallel multi-image decode via `futures::future::join_all` ([#596](https://github.com/itsakeyfut/avio/issues/596))
+- `async_encode_video`: basic async encode loop and producer/consumer pattern with `mpsc` channel ([#597](https://github.com/itsakeyfut/avio/issues/597))
+- `async_encode_audio`: same two patterns for audio, with real-time audio source motivation ([#598](https://github.com/itsakeyfut/avio/issues/598))
+- `async_transcode`: end-to-end `AsyncVideoDecoder` → `AsyncVideoEncoder` in sequential and concurrent flavours; flagship async example ([#599](https://github.com/itsakeyfut/avio/issues/599))
+
+### Changed
+
+#### avio — documentation
+- `## Encode` section in crate-level docs expanded into a three-part decision guide: when to use `Pipeline`, `VideoEncoder`/`AudioEncoder` directly, or the async encoders; each section includes bullet criteria, a code snippet, and cross-references to relevant examples
+
+---
+
 ## [0.5.0] - 2026-03-16
 
 ### Added
