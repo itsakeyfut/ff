@@ -96,6 +96,19 @@ let mut decoder = VideoDecoder::open("video.mp4")?
 - EOF signalled as `Ok(None)` rather than a special error variant
 - Pixel format and sample format negotiation via `swscale` / `swresample`
 
+## Feature Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `tokio` | Enables `AsyncVideoDecoder` and `AsyncAudioDecoder`. Wraps each blocking FFmpeg call in `tokio::task::spawn_blocking` and exposes a `futures::Stream` interface via `into_stream()`. Requires a tokio 1.x runtime. | disabled |
+
+```toml
+[dependencies]
+ff-decode = { version = "0.5", features = ["tokio"] }
+```
+
+When the `tokio` feature is disabled, only the synchronous `VideoDecoder` and `AudioDecoder` APIs are compiled. No tokio dependency is pulled in.
+
 ## MSRV
 
 Rust 1.93.0 (edition 2024).

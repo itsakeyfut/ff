@@ -101,6 +101,21 @@ Enable the `gpl` feature to add libx264 and libx265. This changes the license te
 | `EncodeError::Io`                  | Write error on the output file                     |
 | `EncodeError::Encode`              | FFmpeg returned an error during frame encoding     |
 
+## Feature Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `hwaccel` | Enables hardware encoder detection (NVENC, QSV, AMF, VideoToolbox, VA-API). | enabled |
+| `gpl` | Enables GPL-licensed encoders (libx264, libx265). Requires GPL compliance or MPEG LA licensing. | disabled |
+| `tokio` | Enables `AsyncVideoEncoder` and `AsyncAudioEncoder`. Each encoder runs a worker thread and exposes an async `push` / `finish` interface backed by a bounded `tokio::sync::mpsc` channel (capacity 8). Requires a tokio 1.x runtime. | disabled |
+
+```toml
+[dependencies]
+ff-encode = { version = "0.5", features = ["tokio"] }
+```
+
+When the `tokio` feature is disabled, only the synchronous `VideoEncoder`, `AudioEncoder`, and `ImageEncoder` APIs are compiled. No tokio dependency is pulled in.
+
 ## MSRV
 
 Rust 1.93.0 (edition 2024).

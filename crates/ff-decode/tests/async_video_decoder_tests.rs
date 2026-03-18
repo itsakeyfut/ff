@@ -80,3 +80,48 @@ async fn into_stream_drop_mid_stream_should_not_leak() {
     let _ = stream.next().await;
     // FFmpeg cleanup happens via VideoDecoder::drop when stream is dropped here
 }
+
+#[tokio::test]
+async fn async_video_decode_frame_count_matches_sync() {
+    use futures::StreamExt;
+
+    let sync_count = {
+        let mut dec = match ff_decode::VideoDecoder::open(test_video_path()).build() {
+            Ok(d) => d,
+            Err(e) => {
+                println!("Skipping (sync open failed): {e}");
+                return;
+            }
+        };
+        let mut n = 0u64;
+        loop {
+            match dec.decode_one() {
+                Ok(Some(_)) => n += 1,
+                Ok(None) => break,
+                Err(e) => {
+                    println!("Skipping (sync decode error): {e}");
+                    return;
+                }
+            }
+        }
+        n
+    };
+
+    let decoder = match AsyncVideoDecoder::open(test_video_path()).await {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping (async open failed): {e}");
+            return;
+        }
+    };
+    let async_count = decoder
+        .into_stream()
+        .filter_map(|r| async move { r.ok() })
+        .count()
+        .await as u64;
+
+    assert_eq!(
+        sync_count, async_count,
+        "async frame count ({async_count}) must match sync frame count ({sync_count})"
+    );
+}
