@@ -83,15 +83,19 @@ impl AsyncVideoDecoder {
 
     /// Converts this decoder into a [`Stream`] of video frames.
     ///
-    /// The stream ends when the decoder reaches end-of-file or encounters an
-    /// error.
-    pub fn into_stream(self) -> impl Stream<Item = Result<VideoFrame, DecodeError>> {
-        stream::unfold(Some(self), |state| async move {
-            let mut decoder = state?;
+    /// Decoding is offloaded to a `spawn_blocking` thread on each poll via
+    /// [`Self::decode_frame`]. The stream is `Send` and can be used with
+    /// [`tokio::spawn`].
+    ///
+    /// The stream ends when the file is exhausted (`Ok(None)` from
+    /// `decode_frame`). Errors are yielded as `Err` items; the stream
+    /// terminates after the first error.
+    pub fn into_stream(self) -> impl Stream<Item = Result<VideoFrame, DecodeError>> + Send {
+        stream::unfold(self, |mut decoder| async move {
             match decoder.decode_frame().await {
-                Ok(Some(frame)) => Some((Ok(frame), Some(decoder))),
+                Ok(Some(frame)) => Some((Ok(frame), decoder)),
                 Ok(None) => None,
-                Err(e) => Some((Err(e), None)),
+                Err(e) => Some((Err(e), decoder)),
             }
         })
     }

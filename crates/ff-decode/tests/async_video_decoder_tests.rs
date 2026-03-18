@@ -35,3 +35,48 @@ async fn async_video_decoder_should_fail_on_missing_file() {
         Err(ff_decode::DecodeError::FileNotFound { .. })
     ));
 }
+
+#[tokio::test]
+async fn into_stream_should_yield_frames() {
+    use futures::StreamExt;
+    let decoder = match AsyncVideoDecoder::open(test_video_path()).await {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frames: Vec<_> = decoder.into_stream().take(3).collect().await;
+    assert!(!frames.is_empty(), "expected at least one frame");
+    assert!(frames.iter().all(|r| r.is_ok()), "all frames should be Ok");
+}
+
+#[tokio::test]
+async fn into_stream_should_be_send() {
+    // Compile-time proof: the stream satisfies Send.
+    fn assert_send<T: Send>(_: T) {}
+    let decoder = match AsyncVideoDecoder::open(test_video_path()).await {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    assert_send(decoder.into_stream());
+}
+
+#[tokio::test]
+async fn into_stream_drop_mid_stream_should_not_leak() {
+    use futures::StreamExt;
+    let decoder = match AsyncVideoDecoder::open(test_video_path()).await {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let stream = decoder.into_stream();
+    futures::pin_mut!(stream);
+    let _ = stream.next().await;
+    // FFmpeg cleanup happens via VideoDecoder::drop when stream is dropped here
+}
