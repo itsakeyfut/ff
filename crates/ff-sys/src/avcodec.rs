@@ -23,6 +23,7 @@ use crate::{
     avcodec_find_encoder_by_name as ffi_avcodec_find_encoder_by_name,
     avcodec_flush_buffers as ffi_avcodec_flush_buffers,
     avcodec_free_context as ffi_avcodec_free_context, avcodec_open2 as ffi_avcodec_open2,
+    avcodec_parameters_from_context as ffi_avcodec_parameters_from_context,
     avcodec_parameters_to_context as ffi_avcodec_parameters_to_context,
     avcodec_receive_frame as ffi_avcodec_receive_frame,
     avcodec_receive_packet as ffi_avcodec_receive_packet,
@@ -180,6 +181,38 @@ pub unsafe fn free_context(ctx: *mut *mut AVCodecContext) {
     if !ctx.is_null() && !(*ctx).is_null() {
         ffi_avcodec_free_context(ctx);
     }
+}
+
+/// Copy codec parameters from an open codec context to a stream's `codecpar`.
+///
+/// Must be called **after** `avcodec_open2` so that the codec has had a chance
+/// to populate extradata (e.g. FLAC STREAMINFO, AAC AudioSpecificConfig).
+/// Using this function instead of manual field copies ensures that extradata
+/// and all other codec-specific fields are transferred correctly.
+///
+/// # Arguments
+///
+/// * `par` - The destination `AVCodecParameters` (e.g. from `AVStream.codecpar`)
+/// * `ctx` - The source codec context (must be open)
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an FFmpeg error code on failure.
+///
+/// # Safety
+///
+/// Both pointers must be valid and non-null.
+pub unsafe fn parameters_from_context(
+    par: *mut AVCodecParameters,
+    ctx: *const AVCodecContext,
+) -> Result<(), c_int> {
+    if par.is_null() || ctx.is_null() {
+        return Err(crate::error_codes::EINVAL);
+    }
+
+    let ret = ffi_avcodec_parameters_from_context(par, ctx);
+
+    if ret < 0 { Err(ret) } else { Ok(()) }
 }
 
 /// Copy codec parameters from a stream to a codec context.
