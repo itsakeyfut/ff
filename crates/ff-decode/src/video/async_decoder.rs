@@ -84,7 +84,7 @@ impl AsyncVideoDecoder {
     /// Converts this decoder into a [`Stream`] of video frames.
     ///
     /// Decoding is offloaded to a `spawn_blocking` thread on each poll via
-    /// [`decode_frame`]. The stream is `Send` and can be used with
+    /// [`Self::decode_frame`]. The stream is `Send` and can be used with
     /// [`tokio::spawn`].
     ///
     /// The stream ends when the file is exhausted (`Ok(None)` from
