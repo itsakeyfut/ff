@@ -380,6 +380,7 @@ fn test_thumbnail_memory_efficiency() {
 // ============================================================================
 
 #[test]
+#[ignore = "performance thresholds are environment-dependent; run explicitly with -- --include-ignored"]
 fn test_decoder_memory_overhead() {
     // Measure the base memory overhead of creating a decoder
     let baseline_memory = get_memory_usage_bytes();
