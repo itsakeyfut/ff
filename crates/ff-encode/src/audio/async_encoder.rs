@@ -9,6 +9,7 @@ use crate::EncodeError;
 /// Messages sent from the async front-end to the worker thread.
 enum WorkerMsg {
     Frame(AudioFrame),
+    Finish,
 }
 
 /// Async wrapper around [`AudioEncoder`].
@@ -71,10 +72,14 @@ impl AsyncAudioEncoder {
         let handle = std::thread::spawn(move || -> Result<(), EncodeError> {
             let mut encoder: AudioEncoder = encoder;
             let mut rx = rx;
-            while let Some(WorkerMsg::Frame(frame)) = rx.blocking_recv() {
-                encoder.push(&frame)?;
+            #[allow(clippy::while_let_loop)]
+            loop {
+                match rx.blocking_recv() {
+                    Some(WorkerMsg::Frame(frame)) => encoder.push(&frame)?,
+                    Some(WorkerMsg::Finish) | None => break,
+                }
             }
-            // Channel closed (sender dropped) → flush remaining frames and write trailer.
+            // Flush remaining frames and write the container trailer.
             encoder.finish()
         });
 
@@ -115,8 +120,12 @@ impl AsyncAudioEncoder {
             sender,
             join_handle,
         } = self;
-        // Dropping the sender closes the channel; the worker's blocking_recv()
-        // returns None, breaks out of the loop, and calls encoder.finish().
+        // Send the Finish sentinel so the worker exits its loop cleanly, then
+        // drop the sender to close the channel.
+        sender
+            .send(WorkerMsg::Finish)
+            .await
+            .map_err(|_| EncodeError::WorkerPanicked)?;
         drop(sender);
         if let Some(handle) = join_handle {
             // Join on a spawn_blocking thread so the async executor is not blocked.
