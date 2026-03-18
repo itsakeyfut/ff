@@ -105,6 +105,13 @@ impl AsyncVideoDecoder {
 mod tests {
     use super::*;
 
+    // Compile-time proof that AsyncVideoDecoder satisfies the Send bound
+    // required by tokio::spawn and other Send-requiring contexts.
+    fn _assert_send() {
+        fn is_send<T: Send>() {}
+        is_send::<AsyncVideoDecoder>();
+    }
+
     #[tokio::test]
     async fn async_video_decoder_should_fail_on_missing_file() {
         let result = AsyncVideoDecoder::open("/nonexistent/path/video.mp4").await;

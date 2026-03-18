@@ -105,6 +105,13 @@ impl AsyncAudioDecoder {
 mod tests {
     use super::*;
 
+    // Compile-time proof that AsyncAudioDecoder satisfies the Send bound
+    // required by tokio::spawn and other Send-requiring contexts.
+    fn _assert_send() {
+        fn is_send<T: Send>() {}
+        is_send::<AsyncAudioDecoder>();
+    }
+
     #[tokio::test]
     async fn async_audio_decoder_should_fail_on_missing_file() {
         let result = AsyncAudioDecoder::open("/nonexistent/path/audio.mp3").await;
