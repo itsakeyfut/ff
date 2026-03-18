@@ -18,6 +18,7 @@ encode   = ["dep:ff-encode"]
 filter   = ["dep:ff-filter"]
 pipeline = ["dep:ff-pipeline", "filter"]
 stream   = ["dep:ff-stream", "pipeline"]
+tokio    = ["decode", "encode", "ff-decode/tokio", "ff-encode/tokio"]
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

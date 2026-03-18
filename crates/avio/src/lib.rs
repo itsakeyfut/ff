@@ -7,14 +7,15 @@
 //!
 //! # Feature Flags
 //!
-//! | Feature    | Crate         | Default | Implies    |
-//! |------------|---------------|---------|------------|
-//! | `probe`    | `ff-probe`    | yes     | —          |
-//! | `decode`   | `ff-decode`   | yes     | —          |
-//! | `encode`   | `ff-encode`   | yes     | —          |
-//! | `filter`   | `ff-filter`   | no      | —          |
-//! | `pipeline` | `ff-pipeline` | no      | `filter`   |
-//! | `stream`   | `ff-stream`   | no      | `pipeline` |
+//! | Feature    | Crate         | Default | Implies             |
+//! |------------|---------------|---------|---------------------|
+//! | `probe`    | `ff-probe`    | yes     | —                   |
+//! | `decode`   | `ff-decode`   | yes     | —                   |
+//! | `encode`   | `ff-encode`   | yes     | —                   |
+//! | `filter`   | `ff-filter`   | no      | —                   |
+//! | `pipeline` | `ff-pipeline` | no      | `filter`            |
+//! | `stream`   | `ff-stream`   | no      | `pipeline`          |
+//! | `tokio`    | ff-decode/encode | no   | `decode` + `encode` |
 //!
 //! # Usage
 //!
@@ -153,6 +154,17 @@ pub use ff_encode::{
     EncodeProgressCallback, HardwareEncoder, ImageEncoder, Preset, VideoCodecEncodeExt,
     VideoEncoder,
 };
+
+// ── tokio feature ─────────────────────────────────────────────────────────────
+//
+// Enabling `tokio` also enables `decode` and `encode` (see Cargo.toml), so the
+// underlying crate dependencies are guaranteed to be present. Each async wrapper
+// is a thin Send + async shell around its synchronous counterpart, backed by
+// spawn_blocking and a bounded tokio::sync::mpsc channel (encoders, cap=8).
+#[cfg(feature = "tokio")]
+pub use ff_decode::{AsyncAudioDecoder, AsyncImageDecoder, AsyncVideoDecoder};
+#[cfg(feature = "tokio")]
+pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 
 // ── filter feature ────────────────────────────────────────────────────────────
 #[cfg(feature = "filter")]
@@ -296,6 +308,31 @@ mod tests {
             fn on_progress(&mut self, _: &EncodeProgress) {}
         }
         let _ = NoOp;
+    }
+
+    // ── tokio feature ─────────────────────────────────────────────────────────
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn tokio_async_decoders_should_be_accessible() {
+        // Verify name resolution — constructing the builder/future without
+        // opening a file is enough to confirm the types are in scope.
+        let _ = AsyncVideoDecoder::open("/no/such/file.mp4");
+        let _ = AsyncAudioDecoder::open("/no/such/file.mp4");
+        let _ = AsyncImageDecoder::open("/no/such/file.mp4");
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn tokio_async_encoders_should_be_accessible() {
+        // from_builder consumes a builder; constructing the builder (which is
+        // a sync operation) confirms the types are in scope without touching FFmpeg.
+        use ff_encode::{AudioEncoderBuilder, VideoEncoderBuilder};
+        fn _accepts_video_builder(_: VideoEncoderBuilder) {}
+        fn _accepts_audio_builder(_: AudioEncoderBuilder) {}
+        // The types compile — that is the assertion.
+        let _ = std::mem::size_of::<AsyncVideoEncoder>();
+        let _ = std::mem::size_of::<AsyncAudioEncoder>();
     }
 
     // ── filter feature ────────────────────────────────────────────────────────
