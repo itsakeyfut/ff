@@ -302,11 +302,6 @@ impl FramePool for VecPool {
     }
 }
 
-/// Alias for [`VecPool`] kept for backwards compatibility with `ff-decode`.
-///
-/// Prefer [`VecPool`] for new code.
-pub type SimpleFramePool = VecPool;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,13 +552,6 @@ mod tests {
         assert!(pool.acquire(1024).is_none());
         // Original buffer must still be in the pool
         assert_eq!(pool.available(), 1);
-    }
-
-    #[test]
-    fn simple_frame_pool_alias_should_behave_identically_to_vec_pool() {
-        let pool = SimpleFramePool::new(4);
-        assert_eq!(pool.capacity(), 4);
-        assert_eq!(pool.available(), 0);
     }
 
     #[test]

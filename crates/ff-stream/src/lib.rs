@@ -63,10 +63,9 @@
 //!
 //! ## Status
 //!
-//! The public API is stable. The `write()` / `hls()` / `dash()` methods that
-//! perform actual `FFmpeg` muxing are stubs and will return
-//! [`StreamError::InvalidConfig`] with `"not yet implemented"` until the
-//! `FFmpeg` HLS/DASH integration is complete.
+//! The public API is stable. HLS and DASH muxing are fully implemented via the
+//! `FFmpeg` HLS/DASH muxers. `write()` / `hls()` / `dash()` perform real
+//! encode-and-mux operations against the filesystem.
 
 #![warn(missing_docs)]
 

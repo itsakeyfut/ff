@@ -6,4 +6,4 @@
 pub mod builder;
 pub mod decoder_inner;
 
-pub use builder::{VideoDecoder, VideoDecoderBuilder, VideoFrameIterator};
+pub use builder::{VideoDecoder, VideoDecoderBuilder};

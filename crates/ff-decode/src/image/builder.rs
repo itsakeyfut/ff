@@ -140,7 +140,7 @@ impl ImageDecoder {
     ///
     /// [`VideoDecoder`]: crate::VideoDecoder
     /// [`AudioDecoder`]: crate::AudioDecoder
-    pub fn frames(&mut self) -> ImageFrameIterator<'_> {
+    pub fn frames(&mut self) -> impl Iterator<Item = Result<VideoFrame, DecodeError>> + '_ {
         ImageFrameIterator { decoder: self }
     }
 
@@ -166,12 +166,9 @@ impl ImageDecoder {
 /// Created by calling [`ImageDecoder::frames()`]. Yields exactly one item —
 /// the decoded [`VideoFrame`] — then returns `None`.
 ///
-/// This type exists for API consistency with [`VideoFrameIterator`] and
-/// [`AudioFrameIterator`].
-///
-/// [`VideoFrameIterator`]: crate::VideoFrameIterator
-/// [`AudioFrameIterator`]: crate::AudioFrameIterator
-pub struct ImageFrameIterator<'a> {
+/// This type exists for API consistency with `VideoDecoder::frames()` and
+/// `AudioDecoder::frames()`.
+pub(crate) struct ImageFrameIterator<'a> {
     decoder: &'a mut ImageDecoder,
 }
 

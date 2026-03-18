@@ -6,4 +6,4 @@
 pub mod builder;
 pub mod decoder_inner;
 
-pub use builder::{AudioDecoder, AudioDecoderBuilder, AudioFrameIterator};
+pub use builder::{AudioDecoder, AudioDecoderBuilder};

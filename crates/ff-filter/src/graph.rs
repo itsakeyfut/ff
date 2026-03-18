@@ -12,13 +12,30 @@ use crate::filter_inner::FilterGraphInner;
 /// Tone-mapping algorithm for HDR-to-SDR conversion.
 ///
 /// Used with [`FilterGraphBuilder::tone_map`].
+///
+/// # Choosing an algorithm
+///
+/// | Variant | Characteristic | When to use |
+/// |---------|---------------|-------------|
+/// | [`Hable`](Self::Hable) | Filmic, rich contrast | Film / cinematic content |
+/// | [`Reinhard`](Self::Reinhard) | Simple, fast, neutral | Fast previews, general video |
+/// | [`Mobius`](Self::Mobius) | Smooth highlights | Bright outdoor or HDR10 content |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToneMap {
     /// Hable (Uncharted 2) filmic tone mapping.
+    ///
+    /// Produces a warm, cinematic look with compressed shadows and highlights.
+    /// The most commonly used algorithm for film and narrative video content.
     Hable,
     /// Reinhard tone mapping.
+    ///
+    /// A simple, globally uniform operator. Fast and neutral; a safe default
+    /// when color-accurate reproduction matters more than filmic aesthetics.
     Reinhard,
     /// Mobius tone mapping.
+    ///
+    /// A smooth, shoulder-based curve that preserves mid-tones while gently
+    /// rolling off bright highlights. Well suited for outdoor and HDR10 content.
     Mobius,
 }
 
