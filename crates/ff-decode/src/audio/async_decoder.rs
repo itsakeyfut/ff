@@ -1,6 +1,7 @@
 //! Async audio decoder backed by `tokio::task::spawn_blocking`.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use ff_format::AudioFrame;
 use futures::stream::{self, Stream};
@@ -10,9 +11,9 @@ use crate::error::DecodeError;
 
 /// Async wrapper around [`AudioDecoder`].
 ///
-/// All blocking `FFmpeg` calls are offloaded to a `spawn_blocking` thread during
-/// `open`. Frame decoding calls `decode_one` directly on the async thread —
-/// each call takes microseconds, so the brief blocking is acceptable.
+/// `open` and `decode_frame` both execute on a `spawn_blocking` thread so the
+/// Tokio executor is never blocked by `FFmpeg` I/O or decoding work.
+/// Multiple concurrent callers share the inner decoder through `Arc<Mutex<...>>`.
 ///
 /// # Examples
 ///
@@ -26,7 +27,7 @@ use crate::error::DecodeError;
 /// }
 /// ```
 pub struct AsyncAudioDecoder {
-    inner: AudioDecoder,
+    inner: Arc<Mutex<AudioDecoder>>,
 }
 
 impl AsyncAudioDecoder {
@@ -47,34 +48,54 @@ impl AsyncAudioDecoder {
                 code: 0,
                 message: format!("spawn_blocking panicked: {e}"),
             })??;
-        Ok(Self { inner: decoder })
+        Ok(Self {
+            inner: Arc::new(Mutex::new(decoder)),
+        })
     }
 
     /// Decodes the next audio frame.
+    ///
+    /// The blocking `FFmpeg` call is offloaded to a `spawn_blocking` thread so
+    /// the Tokio executor is never blocked.
     ///
     /// Returns `Ok(None)` at end of stream.
     ///
     /// # Errors
     ///
     /// Returns [`DecodeError`] on codec or I/O errors.
-    // decode_one() is synchronous but the method is intentionally `async` so
-    // callers can uniformly `.await` it alongside other async operations.
-    #[allow(clippy::unused_async)]
     pub async fn decode_frame(&mut self) -> Result<Option<AudioFrame>, DecodeError> {
-        self.inner.decode_one()
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            inner
+                .lock()
+                .map_err(|_| DecodeError::Ffmpeg {
+                    code: 0,
+                    message: "mutex poisoned".to_string(),
+                })?
+                .decode_one()
+        })
+        .await
+        .map_err(|e| DecodeError::Ffmpeg {
+            code: 0,
+            message: format!("spawn_blocking panicked: {e}"),
+        })?
     }
 
     /// Converts this decoder into a [`Stream`] of audio frames.
     ///
-    /// The stream ends when the decoder reaches end-of-file or encounters an
-    /// error.
-    pub fn into_stream(self) -> impl Stream<Item = Result<AudioFrame, DecodeError>> {
-        stream::unfold(Some(self), |state| async move {
-            let mut decoder = state?;
+    /// Decoding is offloaded to a `spawn_blocking` thread on each poll via
+    /// [`Self::decode_frame`]. The stream is `Send` and can be used with
+    /// [`tokio::spawn`].
+    ///
+    /// The stream ends when the file is exhausted (`Ok(None)` from
+    /// `decode_frame`). Errors are yielded as `Err` items; the stream
+    /// terminates after the first error.
+    pub fn into_stream(self) -> impl Stream<Item = Result<AudioFrame, DecodeError>> + Send {
+        stream::unfold(self, |mut decoder| async move {
             match decoder.decode_frame().await {
-                Ok(Some(frame)) => Some((Ok(frame), Some(decoder))),
+                Ok(Some(frame)) => Some((Ok(frame), decoder)),
                 Ok(None) => None,
-                Err(e) => Some((Err(e), None)),
+                Err(e) => Some((Err(e), decoder)),
             }
         })
     }
