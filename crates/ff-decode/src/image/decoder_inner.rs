@@ -18,6 +18,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_lossless)]
 
+use std::ffi::CStr;
 use std::path::Path;
 use std::ptr;
 
@@ -168,10 +169,19 @@ impl ImageDecoderInner {
 
         // 4. avcodec_find_decoder
         // SAFETY: codec_id comes from FFmpeg.
+        // SAFETY: avcodec_get_name is safe for any codec ID value and returns a static C string.
+        let codec_name = unsafe {
+            let name_ptr = ff_sys::avcodec_get_name(codec_id);
+            if name_ptr.is_null() {
+                String::from("unknown")
+            } else {
+                CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+            }
+        };
         let codec = unsafe {
             ff_sys::avcodec::find_decoder(codec_id).ok_or_else(|| {
                 DecodeError::UnsupportedCodec {
-                    codec: format!("codec_id={codec_id:?}"),
+                    codec: format!("{codec_name} (codec_id={codec_id:?})"),
                 }
             })?
         };
@@ -656,6 +666,31 @@ mod tests {
         assert_eq!(
             ImageDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8),
             PixelFormat::Gray8
+        );
+    }
+
+    #[test]
+    fn unsupported_codec_error_should_include_codec_name() {
+        let codec_id = ff_sys::AVCodecID_AV_CODEC_ID_PNG;
+        // SAFETY: avcodec_get_name is safe for any codec ID value and returns a static C string.
+        let codec_name = unsafe {
+            let name_ptr = ff_sys::avcodec_get_name(codec_id);
+            if name_ptr.is_null() {
+                String::from("unknown")
+            } else {
+                std::ffi::CStr::from_ptr(name_ptr)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        let error = crate::error::DecodeError::UnsupportedCodec {
+            codec: format!("{codec_name} (codec_id={codec_id:?})"),
+        };
+        let msg = error.to_string();
+        assert!(msg.contains("png"), "expected codec name in error: {msg}");
+        assert!(
+            msg.contains("codec_id="),
+            "expected codec_id in error: {msg}"
         );
     }
 }

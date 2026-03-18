@@ -535,10 +535,11 @@ impl VideoDecoderInner {
 
         // Find the decoder for this codec
         // SAFETY: codec_id is valid from FFmpeg
+        let codec_name = unsafe { Self::extract_codec_name(codec_id) };
         let codec = unsafe {
             ff_sys::avcodec::find_decoder(codec_id).ok_or_else(|| {
                 DecodeError::UnsupportedCodec {
-                    codec: format!("codec_id={codec_id:?}"),
+                    codec: format!("{codec_name} (codec_id={codec_id:?})"),
                 }
             })?
         };
@@ -2324,5 +2325,20 @@ mod tests {
         let name =
             unsafe { VideoDecoderInner::extract_codec_name(ff_sys::AVCodecID_AV_CODEC_ID_NONE) };
         assert_eq!(name, "none");
+    }
+
+    #[test]
+    fn unsupported_codec_error_should_include_codec_name() {
+        let codec_id = ff_sys::AVCodecID_AV_CODEC_ID_H264;
+        let codec_name = unsafe { VideoDecoderInner::extract_codec_name(codec_id) };
+        let error = crate::error::DecodeError::UnsupportedCodec {
+            codec: format!("{codec_name} (codec_id={codec_id:?})"),
+        };
+        let msg = error.to_string();
+        assert!(msg.contains("h264"), "expected codec name in error: {msg}");
+        assert!(
+            msg.contains("codec_id="),
+            "expected codec_id in error: {msg}"
+        );
     }
 }
