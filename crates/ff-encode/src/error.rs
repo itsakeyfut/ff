@@ -75,6 +75,10 @@ pub enum EncodeError {
     /// Encoding cancelled by user
     #[error("Encoding cancelled by user")]
     Cancelled,
+
+    /// Async encoder worker thread panicked or disconnected unexpectedly
+    #[error("Async encoder worker panicked or disconnected")]
+    WorkerPanicked,
 }
 
 impl EncodeError {

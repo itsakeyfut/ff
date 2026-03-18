@@ -213,3 +213,6 @@ pub use image::{ImageEncoder, ImageEncoderBuilder};
 pub use preset::Preset;
 pub use progress::{EncodeProgress, EncodeProgressCallback};
 pub use video::{VideoEncoder, VideoEncoderBuilder};
+
+#[cfg(feature = "tokio")]
+pub use video::AsyncVideoEncoder;
