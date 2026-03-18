@@ -35,11 +35,12 @@ pub enum HardwareEncoder {
 }
 
 impl HardwareEncoder {
-    /// Get the list of available hardware encoders.
+    /// Get the list of concrete hardware encoder backends available on this system.
     ///
-    /// Queries FFmpeg for available hardware encoders on the system.
-    /// This is useful for UI to show which hardware acceleration options
-    /// the user can select.
+    /// Returns only actual hardware backends (NVENC, QSV, AMF, VideoToolbox,
+    /// VA-API). The control variants [`Auto`](Self::Auto) and [`None`](Self::None)
+    /// are intentionally excluded — they are configuration options, not hardware
+    /// backends.
     ///
     /// The result is cached on first call for performance.
     ///
@@ -48,9 +49,13 @@ impl HardwareEncoder {
     /// ```no_run
     /// use ff_encode::HardwareEncoder;
     ///
-    /// let available = HardwareEncoder::available();
-    /// for hw in available {
-    ///     println!("Available: {:?}", hw);
+    /// let backends = HardwareEncoder::available();
+    /// if backends.is_empty() {
+    ///     println!("No hardware encoders detected");
+    /// } else {
+    ///     for hw in backends {
+    ///         println!("Available: {:?}", hw);
+    ///     }
     /// }
     /// ```
     #[must_use]
@@ -60,11 +65,8 @@ impl HardwareEncoder {
         AVAILABLE.get_or_init(|| {
             let mut result = Vec::new();
 
-            // Auto and None are always available
-            result.push(Self::Auto);
-            result.push(Self::None);
-
-            // Check each hardware encoder type
+            // Check each concrete hardware encoder type.
+            // Auto and None are control variants, not hardware backends — excluded.
             if Self::Nvenc.is_available() {
                 result.push(Self::Nvenc);
             }
@@ -156,11 +158,17 @@ mod tests {
     }
 
     #[test]
-    fn test_available_returns_at_least_auto_and_none() {
+    fn available_should_contain_only_hardware_backends() {
         let available = HardwareEncoder::available();
-        assert!(available.contains(&HardwareEncoder::Auto));
-        assert!(available.contains(&HardwareEncoder::None));
-        assert!(available.len() >= 2);
+        assert!(
+            !available.contains(&HardwareEncoder::Auto),
+            "Auto is a control variant, not a hardware backend"
+        );
+        assert!(
+            !available.contains(&HardwareEncoder::None),
+            "None is a control variant, not a hardware backend"
+        );
+        // May be empty on systems with no hardware encoders — that is correct.
     }
 
     #[test]

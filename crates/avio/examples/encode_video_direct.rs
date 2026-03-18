@@ -229,8 +229,15 @@ fn main() {
     }
 
     let size_str = match std::fs::metadata(&output) {
-        #[allow(clippy::cast_precision_loss)]
-        Ok(m) => format!("{:.1} MB", m.len() as f64 / 1_048_576.0),
+        Ok(m) => {
+            #[allow(clippy::cast_precision_loss)]
+            let kb = m.len() as f64 / 1024.0;
+            if kb < 1024.0 {
+                format!("{kb:.0} KB")
+            } else {
+                format!("{:.1} MB", kb / 1024.0)
+            }
+        }
         Err(_) => "(unknown size)".to_string(),
     };
 
