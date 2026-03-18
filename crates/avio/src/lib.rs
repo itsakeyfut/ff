@@ -69,31 +69,19 @@
 //!
 //! ## Encode
 //!
-//! For simple single-file encoding use `VideoEncoder` / `AudioEncoder`
-//! directly. For transcoding with optional filtering prefer `Pipeline`.
+//! There are three encode APIs, each suited to a different situation.
+//! Choosing the right one prevents unnecessary complexity.
 //!
-//! ```ignore
-//! use avio::{VideoEncoder, VideoCodec, BitrateMode};
+//! ### When to use `Pipeline` (feature: `pipeline`)
 //!
-//! VideoEncoder::create("out.mp4")
-//!     .video_codec(VideoCodec::H264)
-//!     .bitrate_mode(BitrateMode::Crf(23))
-//!     .build()?
-//!     .encode_file("input.mp4")?;
-//! ```
+//! Use `Pipeline` when your source is an **existing media file** and you want
+//! to transcode, filter, or repackage it with minimal boilerplate.
 //!
-//! ### Extension trait
-//!
-//! `VideoCodecEncodeExt` adds encode-specific helpers (`.default_extension()`,
-//! `.is_lgpl_compatible()`) to `VideoCodec`. Import the trait to call them:
-//!
-//! ```ignore
-//! use avio::{VideoCodec, VideoCodecEncodeExt};
-//!
-//! let ext = VideoCodec::H264.default_extension(); // "mp4"
-//! ```
-//!
-//! ## Pipeline (high-level transcode)
+//! - You are transcoding a file to another codec or container.
+//! - You want to apply filters (scale, trim, fade, tone-map, …).
+//! - You want to concatenate multiple input files.
+//! - You need progress reporting without managing the decode loop yourself.
+//! - You are generating HLS or DASH output (`stream` feature).
 //!
 //! ```ignore
 //! use avio::{Pipeline, EncoderConfig, VideoCodec, AudioCodec, BitrateMode};
@@ -107,6 +95,82 @@
 //!         .build())
 //!     .build()?
 //!     .run()?;
+//! ```
+//!
+//! **Examples:** `transcode`, `trim_and_scale`, `concat_clips`,
+//! `extract_thumbnails`, `hls_output`, `abr_ladder`.
+//!
+//! ### When to use `VideoEncoder` / `AudioEncoder` directly (feature: `encode`)
+//!
+//! Use the encoder types directly when you need **frame-level control** or
+//! your frames come from a source other than a media file.
+//!
+//! - You are generating frames programmatically (e.g., a game renderer,
+//!   a signal generator, test patterns).
+//! - You need to inspect or modify individual frames between decode and encode.
+//! - You want per-frame metadata, custom PTS/DTS, or non-standard GOP structure.
+//! - You need to react to `EncodeError::Cancelled` mid-stream.
+//! - You want cancellable progress via `EncodeProgressCallback::should_cancel()`.
+//!
+//! ```ignore
+//! use avio::{VideoDecoder, VideoEncoder, VideoCodec};
+//!
+//! let mut decoder = VideoDecoder::open("input.mp4").build()?;
+//! let mut encoder = VideoEncoder::create("output.mp4")
+//!     .video(decoder.width(), decoder.height(), decoder.frame_rate())
+//!     .video_codec(VideoCodec::H264)
+//!     .build()?;
+//!
+//! while let Ok(Some(frame)) = decoder.decode_one() {
+//!     // Inspect or modify `frame` here before encoding.
+//!     encoder.push_video(&frame)?;
+//! }
+//! encoder.finish()?;
+//! ```
+//!
+//! **Examples:** `encode_video_direct`, `encode_audio_direct`,
+//! `encode_with_progress`, `two_pass_encode`, `filter_direct`.
+//!
+//! ### When to use `AsyncVideoEncoder` / `AsyncAudioEncoder` (feature: `tokio`)
+//!
+//! Use the async encoders when your application runs on a **Tokio runtime**
+//! and you need back-pressure or concurrent decode/encode.
+//!
+//! - You are writing an async application and cannot block the executor.
+//! - Frames arrive from an async source (network, channel, microphone).
+//! - You want the decoder and encoder to run concurrently on separate tasks.
+//! - You rely on the bounded internal channel (capacity 8) to prevent
+//!   unbounded memory growth when the encoder is slower than the producer.
+//!
+//! ```ignore
+//! use avio::{AsyncVideoDecoder, AsyncVideoEncoder, VideoEncoder, VideoCodec};
+//! use futures::StreamExt;
+//!
+//! let mut encoder = AsyncVideoEncoder::from_builder(
+//!     VideoEncoder::create("output.mp4")
+//!         .video(1920, 1080, 30.0)
+//!         .video_codec(VideoCodec::H264),
+//! )?;
+//!
+//! let stream = AsyncVideoDecoder::open("input.mp4").await?.into_stream();
+//! tokio::pin!(stream);
+//! while let Some(Ok(frame)) = stream.next().await {
+//!     encoder.push(frame).await?;
+//! }
+//! encoder.finish().await?;
+//! ```
+//!
+//! **Examples:** `async_encode_video`, `async_encode_audio`, `async_transcode`.
+//!
+//! ### Extension trait
+//!
+//! `VideoCodecEncodeExt` adds encode-specific helpers (`.default_extension()`,
+//! `.is_lgpl_compatible()`) to `VideoCodec`. Import the trait to call them:
+//!
+//! ```ignore
+//! use avio::{VideoCodec, VideoCodecEncodeExt};
+//!
+//! let ext = VideoCodec::H264.default_extension(); // "mp4"
 //! ```
 
 // ── Always-available types from ff-format ────────────────────────────────────
