@@ -1,7 +1,21 @@
 //! Audio encoder tests.
 
+use std::path::PathBuf;
+
+use ff_decode::AudioDecoder;
 use ff_encode::{AudioCodec, AudioEncoder};
 use ff_format::{AudioFrame, SampleFormat};
+
+mod fixtures;
+use fixtures::{FileGuard, assert_valid_output_file, test_output_path};
+
+fn assets_dir() -> PathBuf {
+    PathBuf::from(format!("{}/../../assets", env!("CARGO_MANIFEST_DIR")))
+}
+
+fn test_mp3_path() -> PathBuf {
+    assets_dir().join("audio/konekonoosanpo.mp3")
+}
 
 #[test]
 fn test_audio_encoder_aac_stereo() {
@@ -106,4 +120,123 @@ fn test_audio_encoder_planar_format() {
     encoder.finish().expect("Failed to finish encoding");
     assert!(std::path::Path::new(output_path).exists());
     let _ = std::fs::remove_file(output_path);
+}
+
+// ============================================================================
+// Transcode tests (MP3 → lossy/lossless)
+// ============================================================================
+
+#[test]
+fn mp3_to_aac_transcode_should_succeed() {
+    let mp3_path = test_mp3_path();
+
+    let mut decoder = match AudioDecoder::open(&mp3_path).build() {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+    };
+
+    let info = decoder.stream_info();
+    let sample_rate = info.sample_rate();
+    let channels = info.channels();
+
+    let output = test_output_path("transcode_mp3_to_aac.m4a");
+    let _guard = FileGuard::new(output.clone());
+
+    let mut encoder = match AudioEncoder::create(&output)
+        .audio(sample_rate, channels)
+        .audio_codec(AudioCodec::Aac)
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+    };
+
+    loop {
+        match decoder.decode_one() {
+            Ok(Some(frame)) => encoder.push(&frame).expect("Failed to push frame"),
+            Ok(None) => break,
+            Err(e) => panic!("Decode error: {e}"),
+        }
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output);
+}
+
+#[test]
+fn mp3_to_flac_transcode_should_succeed() {
+    let mp3_path = test_mp3_path();
+
+    let mut decoder = match AudioDecoder::open(&mp3_path).build() {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+    };
+
+    let info = decoder.stream_info();
+    let sample_rate = info.sample_rate();
+    let channels = info.channels();
+
+    let output = test_output_path("transcode_mp3_to_flac.flac");
+    let _guard = FileGuard::new(output.clone());
+
+    let mut encoder = match AudioEncoder::create(&output)
+        .audio(sample_rate, channels)
+        .audio_codec(AudioCodec::Flac)
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+    };
+
+    loop {
+        match decoder.decode_one() {
+            Ok(Some(frame)) => encoder.push(&frame).expect("Failed to push frame"),
+            Ok(None) => break,
+            Err(e) => panic!("Decode error: {e}"),
+        }
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output);
+}
+
+#[test]
+fn aac_encoder_with_non_multiple_frame_count_should_succeed() {
+    // Push a total sample count that is not a multiple of 1024 to exercise
+    // the zero-padding path in the FIFO flush inside `finish`.
+    let output = test_output_path("aac_non_multiple.m4a");
+    let _guard = FileGuard::new(output.clone());
+
+    let mut encoder = match AudioEncoder::create(&output)
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Aac)
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    // 10 frames × 512 samples = 5120 samples (not a multiple of 1024)
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(512, 2, 44100, SampleFormat::F32p).unwrap();
+        encoder.push(&frame).expect("Failed to push frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output);
 }

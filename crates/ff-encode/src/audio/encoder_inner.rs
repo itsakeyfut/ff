@@ -12,7 +12,7 @@
 use crate::{AudioCodec, EncodeError};
 use ff_format::AudioFrame;
 use ff_sys::{
-    AVChannelLayout, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
+    AVAudioFifo, AVChannelLayout, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
     AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_DTS,
     AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_MP3,
     AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
@@ -21,7 +21,7 @@ use ff_sys::{
     av_write_trailer, avcodec, avformat_alloc_output_context2, avformat_free_context,
     avformat_new_stream, avformat_write_header, swresample,
 };
-use std::ffi::CString;
+use std::ffi::{CString, c_void};
 use std::ptr;
 
 /// Internal encoder state with FFmpeg contexts.
@@ -46,6 +46,13 @@ pub(super) struct AudioEncoderInner {
 
     /// Actual audio codec name being used
     pub(super) actual_codec: String,
+
+    /// FFmpeg format-aware sample FIFO.  Non-null when the encoder requires a
+    /// fixed number of samples per frame (e.g. AAC: 1024, FLAC: 4096).
+    fifo: *mut AVAudioFifo,
+
+    /// Required samples per frame; 0 when the encoder accepts variable sizes.
+    frame_size: usize,
 }
 
 /// AudioEncoder configuration (stored from builder).
@@ -101,6 +108,8 @@ impl AudioEncoderInner {
                 sample_count: 0,
                 bytes_written: 0,
                 actual_codec: String::new(),
+                fifo: ptr::null_mut(),
+                frame_size: 0,
             };
 
             // Initialize audio encoder
@@ -168,9 +177,19 @@ impl AudioEncoderInner {
             config.channels as i32,
         );
 
-        // Set sample format (encoder's preferred format)
-        // We'll use FLTP (planar float) as it's widely supported
-        (*codec_ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
+        // Select the first sample format the codec actually supports; fall back to FLTP.
+        // Reading sample_fmts before avcodec_open2 is required — the encoder uses
+        // this value to decide its internal pipeline.
+        let target_fmt = {
+            let fmts = (*codec_ptr).sample_fmts;
+            if !fmts.is_null() && *fmts != ff_sys::swresample::sample_format::NONE {
+                // SAFETY: sample_fmts is a null-terminated array owned by the codec descriptor
+                *fmts
+            } else {
+                ff_sys::swresample::sample_format::FLTP
+            }
+        };
+        (*codec_ctx).sample_fmt = target_fmt;
 
         // Set bitrate
         if let Some(br) = config.bitrate {
@@ -200,6 +219,25 @@ impl AudioEncoderInner {
         avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
             .map_err(EncodeError::from_ffmpeg_error)?;
 
+        // After open2, frame_size is populated.  Allocate an AVAudioFifo when
+        // the encoder requires a fixed number of samples and does not advertise
+        // VARIABLE_FRAME_SIZE.  AVAudioFifo handles both planar and packed
+        // layouts internally and is backed by a ring-buffer (O(1) read/write).
+        let required = (*codec_ctx).frame_size as usize;
+        let caps = (*codec_ptr).capabilities as u32;
+        if required > 0 && caps & ff_sys::avcodec::codec_caps::VARIABLE_FRAME_SIZE == 0 {
+            self.fifo =
+                swresample::audio_fifo::alloc(target_fmt, config.channels as i32, required as i32)
+                    .map_err(|e| EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Cannot allocate audio FIFO: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    })?;
+            self.frame_size = required;
+        }
+
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
         if stream.is_null() {
@@ -212,19 +250,13 @@ impl AudioEncoderInner {
 
         (*stream).time_base = (*codec_ctx).time_base;
 
-        // Copy codec parameters to stream
-        if !(*stream).codecpar.is_null() {
-            (*(*stream).codecpar).codec_id = (*codec_ctx).codec_id;
-            (*(*stream).codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO;
-            (*(*stream).codecpar).sample_rate = (*codec_ctx).sample_rate;
-            (*(*stream).codecpar).format = (*codec_ctx).sample_fmt;
-            // Copy channel layout
-            swresample::channel_layout::copy(
-                &mut (*(*stream).codecpar).ch_layout,
-                &(*codec_ctx).ch_layout,
-            )
+        // Copy ALL codec parameters (including extradata) from the open codec
+        // context to the stream.  avcodec_parameters_from_context must be
+        // called after avcodec_open2 because some codecs (e.g. FLAC, AAC)
+        // populate extradata only after the codec is opened.  Manual field
+        // copies would miss extradata, causing avformat_write_header to fail.
+        avcodec::parameters_from_context((*stream).codecpar, codec_ctx)
             .map_err(EncodeError::from_ffmpeg_error)?;
-        }
 
         self.stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
         self.codec_ctx = Some(codec_ctx);
@@ -273,7 +305,98 @@ impl AudioEncoderInner {
             reason: "Audio codec not initialized".to_string(),
         })?;
 
-        // Allocate AVFrame
+        if !self.fifo.is_null() {
+            // Fixed-frame-size path: convert → write into AVAudioFifo → drain
+            // complete frames.  AVAudioFifo manages the ring buffer internally.
+            let mut av_frame = av_frame_alloc();
+            if av_frame.is_null() {
+                return Err(EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Cannot allocate frame".to_string(),
+                });
+            }
+
+            let convert_result = self.convert_audio_frame(frame, av_frame);
+            if let Err(e) = convert_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(e);
+            }
+
+            let nb_samples = (*av_frame).nb_samples;
+
+            // Write converted samples into AVAudioFifo.
+            // SAFETY: av_frame data buffers were allocated by convert_audio_frame
+            let write_result = swresample::audio_fifo::write(
+                self.fifo,
+                (*av_frame).data.as_ptr().cast::<*mut c_void>(),
+                nb_samples,
+            );
+
+            av_frame_free(&mut av_frame as *mut *mut _);
+
+            write_result.map_err(|e| EncodeError::Ffmpeg {
+                code: e,
+                message: format!(
+                    "Failed to write to audio FIFO: {}",
+                    ff_sys::av_error_string(e)
+                ),
+            })?;
+
+            // Drain all complete frames from the FIFO
+            let frame_size = self.frame_size as i32;
+            while swresample::audio_fifo::size(self.fifo) >= frame_size {
+                self.drain_fifo_frame(codec_ctx, frame_size, false)?;
+            }
+        } else {
+            // Direct path: send frame straight to the encoder.
+            let mut av_frame = av_frame_alloc();
+            if av_frame.is_null() {
+                return Err(EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Cannot allocate frame".to_string(),
+                });
+            }
+
+            let convert_result = self.convert_audio_frame(frame, av_frame);
+            if let Err(e) = convert_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(e);
+            }
+
+            (*av_frame).pts = self.sample_count as i64;
+
+            let send_result = avcodec::send_frame(codec_ctx, av_frame);
+            if let Err(e) = send_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(EncodeError::Ffmpeg {
+                    code: e,
+                    message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
+                });
+            }
+
+            let receive_result = self.receive_packets();
+            av_frame_free(&mut av_frame as *mut *mut _);
+            receive_result?;
+
+            self.sample_count += frame.samples() as u64;
+        }
+
+        Ok(())
+    }
+
+    /// Read `frame_size` samples from the FIFO into a new AVFrame and encode it.
+    ///
+    /// When `zero_pad` is `true` the frame buffer is zeroed before reading so
+    /// that a partial tail (fewer samples than `frame_size`) is silence-padded
+    /// to the required length.  `zero_pad` should be `false` in the normal drain
+    /// loop (FIFO always contains a full frame's worth of samples) and `true`
+    /// only in the EOF flush called from [`Self::finish`].
+    unsafe fn drain_fifo_frame(
+        &mut self,
+        codec_ctx: *mut AVCodecContext,
+        frame_size: i32,
+        zero_pad: bool,
+    ) -> Result<(), EncodeError> {
         let mut av_frame = av_frame_alloc();
         if av_frame.is_null() {
             return Err(EncodeError::Ffmpeg {
@@ -282,36 +405,73 @@ impl AudioEncoderInner {
             });
         }
 
-        // Convert AudioFrame to AVFrame
-        let convert_result = self.convert_audio_frame(frame, av_frame);
-        if let Err(e) = convert_result {
-            av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(e);
-        }
-
-        // Set frame properties
+        (*av_frame).format = (*codec_ctx).sample_fmt;
+        (*av_frame).sample_rate = (*codec_ctx).sample_rate;
+        (*av_frame).nb_samples = frame_size;
         (*av_frame).pts = self.sample_count as i64;
 
-        // Send frame to encoder
-        let send_result = avcodec::send_frame(codec_ctx, av_frame);
-        if let Err(e) = send_result {
+        if let Err(e) =
+            swresample::channel_layout::copy(&mut (*av_frame).ch_layout, &(*codec_ctx).ch_layout)
+        {
+            av_frame_free(&mut av_frame as *mut *mut _);
+            return Err(EncodeError::from_ffmpeg_error(e));
+        }
+
+        let ret = ff_sys::av_frame_get_buffer(av_frame, 0);
+        if ret < 0 {
             av_frame_free(&mut av_frame as *mut *mut _);
             return Err(EncodeError::Ffmpeg {
-                code: e,
-                message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
+                code: ret,
+                message: format!(
+                    "Cannot allocate audio frame buffer: {}",
+                    ff_sys::av_error_string(ret)
+                ),
             });
         }
 
-        // Receive packets
-        let receive_result = self.receive_packets();
+        if zero_pad {
+            // Zero all plane buffers so the unread tail is silence, not garbage.
+            // linesize[i] gives the allocated size of each plane in bytes.
+            // SAFETY: av_frame_get_buffer guarantees data[i] and linesize[i] are consistent
+            for i in 0..8 {
+                if !(*av_frame).data[i].is_null() {
+                    let sz = (*av_frame).linesize[i].max(0) as usize;
+                    ptr::write_bytes((*av_frame).data[i], 0, sz);
+                }
+            }
+        }
 
-        // Always cleanup the frame
+        // Read from AVAudioFifo into the frame's plane buffers.
+        // For zero_pad=false: FIFO has >= frame_size samples → returns exactly frame_size.
+        // For zero_pad=true:  FIFO has < frame_size samples → returns < frame_size;
+        //                     the zeroed tail provides silence padding.
+        // SAFETY: av_frame_get_buffer allocated the plane buffers; they are large enough
+        if let Err(e) = swresample::audio_fifo::read(
+            self.fifo,
+            (*av_frame).data.as_ptr().cast::<*mut c_void>(),
+            frame_size,
+        ) {
+            av_frame_free(&mut av_frame as *mut *mut _);
+            return Err(EncodeError::Ffmpeg {
+                code: e,
+                message: format!(
+                    "Failed to read from audio FIFO: {}",
+                    ff_sys::av_error_string(e)
+                ),
+            });
+        }
+        // nb_samples stays as frame_size: the encoder always receives a full frame.
+
+        let send_result = avcodec::send_frame(codec_ctx, av_frame);
         av_frame_free(&mut av_frame as *mut *mut _);
 
-        // Check if receiving packets failed
-        receive_result?;
+        send_result.map_err(|e| EncodeError::Ffmpeg {
+            code: e,
+            message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
+        })?;
 
-        self.sample_count += frame.samples() as u64;
+        self.receive_packets()?;
+        self.sample_count += frame_size as u64;
 
         Ok(())
     }
@@ -515,6 +675,15 @@ impl AudioEncoderInner {
 
     /// Finish encoding and write trailer.
     pub(super) unsafe fn finish(&mut self) -> Result<(), EncodeError> {
+        // Flush any remaining samples from the AVAudioFifo (silence-padded to a
+        // full frame so the encoder always receives its required frame_size).
+        if !self.fifo.is_null() && swresample::audio_fifo::size(self.fifo) > 0 {
+            let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Audio codec not initialized".to_string(),
+            })?;
+            self.drain_fifo_frame(codec_ctx, self.frame_size as i32, true)?;
+        }
+
         // Flush audio encoder
         if let Some(codec_ctx) = self.codec_ctx {
             // Send NULL frame to flush
@@ -536,6 +705,12 @@ impl AudioEncoderInner {
 
     /// Cleanup FFmpeg resources.
     unsafe fn cleanup(&mut self) {
+        // Free AVAudioFifo
+        if !self.fifo.is_null() {
+            swresample::audio_fifo::free(self.fifo);
+            self.fifo = ptr::null_mut();
+        }
+
         // Free audio codec context
         if let Some(mut ctx) = self.codec_ctx.take() {
             avcodec::free_context(&mut ctx as *mut *mut _);
