@@ -145,5 +145,13 @@ required-features = ["pipeline", "probe"]
 name = "decode_iterator"
 required-features = ["decode"]
 
+[[example]]
+name = "async_decode_video"
+required-features = ["tokio"]
+
+[dev-dependencies]
+futures = { workspace = true }
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true
