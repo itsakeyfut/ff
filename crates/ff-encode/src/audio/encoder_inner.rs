@@ -786,6 +786,13 @@ fn sample_format_to_av(format: ff_format::SampleFormat) -> ff_sys::AVSampleForma
     }
 }
 
+// SAFETY: AudioEncoderInner owns all FFmpeg contexts exclusively.
+//         These contexts are not accessed from multiple threads simultaneously;
+//         all access is serialized by whichever thread holds the AudioEncoder.
+//         Ownership transfer between threads is safe because FFmpeg contexts
+//         are created and destroyed on the same thread (via std::thread::spawn).
+unsafe impl Send for AudioEncoderInner {}
+
 #[cfg(test)]
 mod tests {
     use ff_format::SampleFormat;

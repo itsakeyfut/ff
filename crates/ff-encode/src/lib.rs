@@ -215,4 +215,6 @@ pub use progress::{EncodeProgress, EncodeProgressCallback};
 pub use video::{VideoEncoder, VideoEncoderBuilder};
 
 #[cfg(feature = "tokio")]
+pub use audio::AsyncAudioEncoder;
+#[cfg(feature = "tokio")]
 pub use video::AsyncVideoEncoder;
