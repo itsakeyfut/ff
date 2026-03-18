@@ -4,7 +4,11 @@
 //! The implementation is split into public API ([`builder`]) and internal
 //! implementation details ([`encoder_inner`]).
 
+#[cfg(feature = "tokio")]
+pub mod async_encoder;
 pub mod builder;
 mod encoder_inner;
 
+#[cfg(feature = "tokio")]
+pub use async_encoder::AsyncVideoEncoder;
 pub use builder::{VideoEncoder, VideoEncoderBuilder};
