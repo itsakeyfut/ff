@@ -23,12 +23,12 @@ use std::ptr;
 use ff_format::{PixelFormat, VideoFrame};
 use ff_sys::{
     AVCodecID, AVCodecID_AV_CODEC_ID_BMP, AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_PNG,
-    AVCodecID_AV_CODEC_ID_TIFF, AVCodecID_AV_CODEC_ID_WEBP, AVFormatContext, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_BGR24, AVPixelFormat_AV_PIX_FMT_RGB24,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, AVPixelFormat_AV_PIX_FMT_YUVJ420P, AVRational,
-    av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
-    av_packet_unref, av_write_trailer, avcodec, avformat, avformat_alloc_output_context2,
-    avformat_free_context, avformat_new_stream, avformat_write_header, swscale,
+    AVCodecID_AV_CODEC_ID_TIFF, AVCodecID_AV_CODEC_ID_WEBP, AVColorRange_AVCOL_RANGE_JPEG,
+    AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_BGR24, AVPixelFormat_AV_PIX_FMT_RGB24,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, av_frame_alloc, av_frame_free,
+    av_interleaved_write_frame, av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer,
+    avcodec, avformat, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
+    avformat_write_header, swscale,
 };
 
 use crate::EncodeError;
@@ -120,28 +120,43 @@ impl ImageEncoderInner {
             path: path.to_path_buf(),
         })?;
 
-        // Primary attempt: let FFmpeg infer the muxer from the file extension.
-        // This works on all platforms for ordinary filenames.
-        let mut ret = avformat_alloc_output_context2(
-            &mut inner.format_ctx,
-            ptr::null_mut(),
-            ptr::null(),
-            c_path.as_ptr(),
-        );
+        // Prefer an explicit muxer name when one is available.
+        //
+        // The auto-detection path (NULL format name) resolves to the `image2`
+        // muxer for most still-image formats.  `image2` expects filenames that
+        // contain a `%d` sequence-number pattern and emits a cosmetic warning:
+        //   "[image2 @ …] The specified filename '…' does not contain an image
+        //    sequence pattern"
+        // for any ordinary name like "frame.jpg".  Using a dedicated single-image
+        // muxer ("mjpeg", "apng", …) avoids that warning entirely.
+        //
+        // If no explicit muxer is known (e.g. BMP), or if the explicit muxer
+        // fails for any reason, we fall back to auto-detection.
+        let explicit_fmt = codec_fallback_format(codec_id);
 
-        // Fallback: on some Linux FFmpeg builds, av_guess_format() returns NULL
-        // for filenames whose basename contains a run of digits before the
-        // extension (e.g. "thumb_0000.jpg"), causing EINVAL above.  Retry with
-        // an explicit muxer name derived from the codec.  These names ("mjpeg",
-        // "apng", …) do not perform sequence-pattern validation and are present
-        // in all standard FFmpeg builds.
-        if (ret < 0 || inner.format_ctx.is_null())
-            && let Some(fmt) = codec_fallback_format(codec_id)
-        {
-            ret = avformat_alloc_output_context2(
+        let mut ret = if let Some(fmt) = explicit_fmt {
+            avformat_alloc_output_context2(
                 &mut inner.format_ctx,
                 ptr::null_mut(),
                 fmt,
+                c_path.as_ptr(),
+            )
+        } else {
+            avformat_alloc_output_context2(
+                &mut inner.format_ctx,
+                ptr::null_mut(),
+                ptr::null(),
+                c_path.as_ptr(),
+            )
+        };
+
+        // Fallback to auto-detection if the explicit muxer was unavailable or
+        // failed (e.g. on a minimal FFmpeg build that omits the dedicated muxer).
+        if ret < 0 || inner.format_ctx.is_null() {
+            ret = avformat_alloc_output_context2(
+                &mut inner.format_ctx,
+                ptr::null_mut(),
+                ptr::null(),
                 c_path.as_ptr(),
             );
         }
@@ -178,6 +193,15 @@ impl ImageEncoderInner {
         (*inner.codec_ctx).height = dst_height as i32;
         (*inner.codec_ctx).time_base = AVRational { num: 1, den: 1 };
         (*inner.codec_ctx).pix_fmt = pix_fmt;
+
+        // For MJPEG, declare full-range (JPEG) color so FFmpeg does not emit
+        // "deprecated pixel format used" warnings that appear when using the
+        // deprecated YUVJ420P format. Using YUV420P + AVCOL_RANGE_JPEG is the
+        // recommended replacement since FFmpeg 5.x.
+        if codec_id == AVCodecID_AV_CODEC_ID_MJPEG {
+            // SAFETY: codec_ctx is non-null; color_range is a plain integer field.
+            (*inner.codec_ctx).color_range = AVColorRange_AVCOL_RANGE_JPEG;
+        }
 
         if let Some(q) = opts.quality {
             // SAFETY: codec_ctx is non-null and freshly allocated.
@@ -471,7 +495,9 @@ fn codec_fallback_format(codec_id: AVCodecID) -> Option<*const std::os::raw::c_c
 /// Return the preferred `AVPixelFormat` for the given codec.
 fn preferred_pix_fmt(codec_id: AVCodecID) -> AVPixelFormat {
     match codec_id {
-        x if x == AVCodecID_AV_CODEC_ID_MJPEG => AVPixelFormat_AV_PIX_FMT_YUVJ420P,
+        // Use YUV420P + AVCOL_RANGE_JPEG (set in open()) instead of the
+        // deprecated YUVJ420P alias to avoid "deprecated pixel format" warnings.
+        x if x == AVCodecID_AV_CODEC_ID_MJPEG => AVPixelFormat_AV_PIX_FMT_YUV420P,
         x if x == AVCodecID_AV_CODEC_ID_PNG => AVPixelFormat_AV_PIX_FMT_RGB24,
         x if x == AVCodecID_AV_CODEC_ID_BMP => AVPixelFormat_AV_PIX_FMT_BGR24,
         x if x == AVCodecID_AV_CODEC_ID_TIFF => AVPixelFormat_AV_PIX_FMT_RGB24,
@@ -568,10 +594,15 @@ unsafe fn apply_quality(codec_ctx: *mut ff_sys::AVCodecContext, codec_id: AVCode
             log::info!("WebP quality applied quality={q}");
         }
     } else {
-        log::warn!(
-            "quality option has no effect for this codec \
-             codec_id={codec_id} quality={q}"
-        );
+        // BMP and TIFF have no quality concept; any other codec is unrecognised.
+        let fmt_name = if codec_id == AVCodecID_AV_CODEC_ID_BMP {
+            "bmp"
+        } else if codec_id == AVCodecID_AV_CODEC_ID_TIFF {
+            "tiff"
+        } else {
+            "this format"
+        };
+        log::warn!("quality option has no effect for {fmt_name} images, ignoring quality={q}");
     }
 }
 
@@ -676,10 +707,12 @@ mod tests {
     }
 
     #[test]
-    fn preferred_pix_fmt_mjpeg_should_return_yuvj420p() {
+    fn preferred_pix_fmt_mjpeg_should_return_yuv420p() {
+        // Uses YUV420P (not the deprecated YUVJ420P); color range is set
+        // separately via color_range = AVCOL_RANGE_JPEG in open().
         assert_eq!(
             preferred_pix_fmt(AVCodecID_AV_CODEC_ID_MJPEG),
-            AVPixelFormat_AV_PIX_FMT_YUVJ420P
+            AVPixelFormat_AV_PIX_FMT_YUV420P
         );
     }
 

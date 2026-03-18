@@ -291,6 +291,24 @@ impl FilterGraphBuilder {
         if self.steps.is_empty() {
             return Err(FilterError::BuildFailed);
         }
+
+        // Validate overlay coordinates: negative x or y places the overlay
+        // entirely off-screen, which is almost always a misconfiguration
+        // (e.g. a watermark larger than the video). Catch it early with a
+        // descriptive error rather than silently producing invisible output.
+        for step in &self.steps {
+            if let FilterStep::Overlay { x, y } = step
+                && (*x < 0 || *y < 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!(
+                        "overlay position ({x}, {y}) is off-screen; \
+                         ensure the watermark fits within the video dimensions"
+                    ),
+                });
+            }
+        }
+
         crate::filter_inner::validate_filter_steps(&self.steps)?;
         let output_resolution = self.steps.iter().rev().find_map(|s| {
             if let FilterStep::Scale { width, height } = s {

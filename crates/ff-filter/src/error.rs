@@ -14,6 +14,13 @@ pub enum FilterError {
     #[error("failed to process frame")]
     ProcessFailed,
 
+    /// An invalid configuration was detected during graph construction.
+    #[error("invalid filter configuration: {reason}")]
+    InvalidConfig {
+        /// Human-readable reason for the failure.
+        reason: String,
+    },
+
     /// A frame was pushed to an invalid input slot.
     #[error("invalid input: slot={slot} reason={reason}")]
     InvalidInput {
