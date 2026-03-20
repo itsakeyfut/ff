@@ -22,6 +22,7 @@ use crate::HardwareAccel;
 /// - **Codec errors**: [`UnsupportedCodec`](Self::UnsupportedCodec)
 /// - **Runtime errors**: [`DecodingFailed`](Self::DecodingFailed), [`SeekFailed`](Self::SeekFailed)
 /// - **Hardware errors**: [`HwAccelUnavailable`](Self::HwAccelUnavailable)
+/// - **Configuration errors**: [`InvalidOutputDimensions`](Self::InvalidOutputDimensions)
 /// - **Internal errors**: [`Ffmpeg`](Self::Ffmpeg), [`Io`](Self::Io)
 #[derive(Error, Debug)]
 pub enum DecodeError {
@@ -97,6 +98,20 @@ pub enum DecodeError {
     HwAccelUnavailable {
         /// The unavailable hardware acceleration type.
         accel: HardwareAccel,
+    },
+
+    /// Output dimensions are invalid.
+    ///
+    /// Width and height passed to [`VideoDecoderBuilder::output_size`],
+    /// [`output_width`](VideoDecoderBuilder::output_width), or
+    /// [`output_height`](VideoDecoderBuilder::output_height) must be
+    /// greater than zero and even (required by most pixel formats).
+    #[error("Invalid output dimensions: {width}x{height} (must be > 0 and even)")]
+    InvalidOutputDimensions {
+        /// Requested output width.
+        width: u32,
+        /// Requested output height.
+        height: u32,
     },
 
     /// `FFmpeg` internal error.

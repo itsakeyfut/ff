@@ -41,6 +41,7 @@ use ff_sys::{
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
+use crate::video::builder::OutputScale;
 use ff_common::FramePool;
 
 /// Tolerance in seconds for keyframe/backward seek modes.
@@ -240,10 +241,14 @@ pub(crate) struct VideoDecoderInner {
     codec_ctx: *mut AVCodecContext,
     /// Video stream index in the format context
     stream_index: i32,
-    /// SwScale context for pixel format conversion (optional)
+    /// SwScale context for pixel format conversion and/or scaling (optional)
     sws_ctx: Option<*mut SwsContext>,
+    /// Cache key for the main sws_ctx: (src_w, src_h, src_fmt, dst_w, dst_h, dst_fmt)
+    sws_cache_key: Option<(u32, u32, i32, u32, u32, i32)>,
     /// Target output pixel format (if conversion is needed)
     output_format: Option<PixelFormat>,
+    /// Requested output scale (if resizing is needed)
+    output_scale: Option<OutputScale>,
     /// Whether end of file has been reached
     eof: bool,
     /// Current playback position
@@ -503,6 +508,7 @@ impl VideoDecoderInner {
     pub(crate) fn new(
         path: &Path,
         output_format: Option<PixelFormat>,
+        output_scale: Option<OutputScale>,
         hardware_accel: HardwareAccel,
         thread_count: usize,
         frame_pool: Option<Arc<dyn FramePool>>,
@@ -610,7 +616,9 @@ impl VideoDecoderInner {
                 codec_ctx: codec_ctx_guard.into_raw(),
                 stream_index: stream_index as i32,
                 sws_ctx: None,
+                sws_cache_key: None,
                 output_format,
+                output_scale,
                 eof: false,
                 position: Duration::ZERO,
                 packet: packet_guard.into_raw(),
@@ -944,8 +952,8 @@ impl VideoDecoderInner {
     unsafe fn convert_frame_to_video_frame(&mut self) -> Result<VideoFrame, DecodeError> {
         // SAFETY: Caller ensures self.frame is valid
         unsafe {
-            let width = (*self.frame).width as u32;
-            let height = (*self.frame).height as u32;
+            let src_width = (*self.frame).width as u32;
+            let src_height = (*self.frame).height as u32;
             let src_format = (*self.frame).format;
 
             // Determine output format
@@ -955,35 +963,83 @@ impl VideoDecoderInner {
                 src_format
             };
 
-            // Check if conversion is needed
-            let needs_conversion = src_format != dst_format;
+            // Determine output dimensions
+            let (dst_width, dst_height) = self.resolve_output_dims(src_width, src_height);
+
+            // Check if conversion or scaling is needed
+            let needs_conversion =
+                src_format != dst_format || dst_width != src_width || dst_height != src_height;
 
             if needs_conversion {
-                self.convert_with_sws(width, height, src_format, dst_format)
+                self.convert_with_sws(
+                    src_width, src_height, src_format, dst_width, dst_height, dst_format,
+                )
             } else {
                 self.av_frame_to_video_frame(self.frame)
             }
         }
     }
 
-    /// Converts pixel format using SwScale.
+    /// Computes the destination (width, height) from `output_scale` and source dimensions.
+    ///
+    /// Returns `(src_width, src_height)` when no scale is set.
+    /// All returned dimensions are rounded up to the nearest even number.
+    fn resolve_output_dims(&self, src_width: u32, src_height: u32) -> (u32, u32) {
+        let round_even = |n: u32| (n + 1) & !1;
+
+        match self.output_scale {
+            None => (src_width, src_height),
+            Some(OutputScale::Exact { width, height }) => (round_even(width), round_even(height)),
+            Some(OutputScale::FitWidth(target_w)) => {
+                let target_w = round_even(target_w);
+                if src_width == 0 {
+                    return (target_w, target_w);
+                }
+                let h = (target_w as u64 * src_height as u64 / src_width as u64) as u32;
+                (target_w, round_even(h.max(2)))
+            }
+            Some(OutputScale::FitHeight(target_h)) => {
+                let target_h = round_even(target_h);
+                if src_height == 0 {
+                    return (target_h, target_h);
+                }
+                let w = (target_h as u64 * src_width as u64 / src_height as u64) as u32;
+                (round_even(w.max(2)), target_h)
+            }
+        }
+    }
+
+    /// Converts pixel format and/or scales a frame using `libswscale`.
+    ///
+    /// The `sws_ctx` is cached and recreated only when the source/destination
+    /// parameters change (cache key: `(src_w, src_h, src_fmt, dst_w, dst_h, dst_fmt)`).
     unsafe fn convert_with_sws(
         &mut self,
-        width: u32,
-        height: u32,
+        src_width: u32,
+        src_height: u32,
         src_format: i32,
+        dst_width: u32,
+        dst_height: u32,
         dst_format: i32,
     ) -> Result<VideoFrame, DecodeError> {
         // SAFETY: Caller ensures frame and context pointers are valid
         unsafe {
-            // Get or create SwScale context
-            if self.sws_ctx.is_none() {
+            // Get or create SwScale context, invalidating cache when parameters change.
+            let cache_key = (
+                src_width, src_height, src_format, dst_width, dst_height, dst_format,
+            );
+            if self.sws_cache_key != Some(cache_key) {
+                // Free the old context if it exists.
+                if let Some(old_ctx) = self.sws_ctx.take() {
+                    ff_sys::swscale::free_context(old_ctx);
+                }
+
                 let ctx = ff_sys::swscale::get_context(
-                    width as i32,
-                    height as i32,
+                    src_width as i32,
+                    src_height as i32,
                     src_format,
-                    width as i32,
-                    height as i32,
+                    dst_width as i32,
+                    dst_height as i32,
                     dst_format,
                     ff_sys::swscale::scale_flags::BILINEAR,
                 )
@@ -993,6 +1049,7 @@ impl VideoDecoderInner {
                 })?;
 
                 self.sws_ctx = Some(ctx);
+                self.sws_cache_key = Some(cache_key);
             }
 
             let Some(sws_ctx) = self.sws_ctx else {
@@ -1006,8 +1063,8 @@ impl VideoDecoderInner {
             let dst_frame_guard = AvFrameGuard::new()?;
             let dst_frame = dst_frame_guard.as_ptr();
 
-            (*dst_frame).width = width as i32;
-            (*dst_frame).height = height as i32;
+            (*dst_frame).width = dst_width as i32;
+            (*dst_frame).height = dst_height as i32;
             (*dst_frame).format = dst_format;
 
             // Allocate buffer for destination frame
@@ -1022,13 +1079,13 @@ impl VideoDecoderInner {
                 });
             }
 
-            // Perform conversion
+            // Perform conversion/scaling (src_height is the number of input rows to process)
             ff_sys::swscale::scale(
                 sws_ctx,
                 (*self.frame).data.as_ptr() as *const *const u8,
                 (*self.frame).linesize.as_ptr(),
                 0,
-                height as i32,
+                src_height as i32,
                 (*dst_frame).data.as_ptr() as *const *mut u8,
                 (*dst_frame).linesize.as_ptr(),
             )

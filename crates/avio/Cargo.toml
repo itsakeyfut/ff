@@ -126,6 +126,10 @@ name = "decode_format_convert"
 required-features = ["decode"]
 
 [[example]]
+name = "decode_scaled"
+required-features = ["decode"]
+
+[[example]]
 name = "filter_direct"
 required-features = ["decode", "encode", "filter"]
 

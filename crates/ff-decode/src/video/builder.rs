@@ -27,6 +27,29 @@ use crate::error::DecodeError;
 use crate::video::decoder_inner::VideoDecoderInner;
 use ff_common::FramePool;
 
+/// Requested output scale for decoded frames.
+///
+/// Controls how `libswscale` resizes the frame in the same pass as pixel-format
+/// conversion. The last setter wins — calling `output_width()` after
+/// `output_size()` replaces the earlier setting.
+///
+/// Both width and height are rounded up to the nearest even number if needed,
+/// because most pixel formats (e.g. `yuv420p`) require even dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputScale {
+    /// Scale to an exact width × height.
+    Exact {
+        /// Target width in pixels.
+        width: u32,
+        /// Target height in pixels.
+        height: u32,
+    },
+    /// Scale to the given width; compute height to preserve aspect ratio.
+    FitWidth(u32),
+    /// Scale to the given height; compute width to preserve aspect ratio.
+    FitHeight(u32),
+}
+
 /// Internal configuration for the decoder.
 ///
 /// NOTE: Fields are currently unused but will be used when `FFmpeg` integration
@@ -36,6 +59,8 @@ use ff_common::FramePool;
 pub(crate) struct VideoDecoderConfig {
     /// Output pixel format (None = use source format)
     pub output_format: Option<PixelFormat>,
+    /// Output scale (None = use source dimensions)
+    pub output_scale: Option<OutputScale>,
     /// Hardware acceleration setting
     pub hardware_accel: HardwareAccel,
     /// Number of decoding threads (0 = auto)
@@ -46,6 +71,7 @@ impl Default for VideoDecoderConfig {
     fn default() -> Self {
         Self {
             output_format: None,
+            output_scale: None,
             hardware_accel: HardwareAccel::Auto,
             thread_count: 0, // Auto-detect
         }
@@ -106,6 +132,8 @@ pub struct VideoDecoderBuilder {
     path: PathBuf,
     /// Output pixel format (None = use source format)
     output_format: Option<PixelFormat>,
+    /// Output scale (None = use source dimensions)
+    output_scale: Option<OutputScale>,
     /// Hardware acceleration setting
     hardware_accel: HardwareAccel,
     /// Number of decoding threads (0 = auto)
@@ -122,6 +150,7 @@ impl VideoDecoderBuilder {
         Self {
             path,
             output_format: None,
+            output_scale: None,
             hardware_accel: HardwareAccel::Auto,
             thread_count: 0,
             frame_pool: None,
@@ -152,6 +181,93 @@ impl VideoDecoderBuilder {
     #[must_use]
     pub fn output_format(mut self, format: PixelFormat) -> Self {
         self.output_format = Some(format);
+        self
+    }
+
+    /// Scales decoded frames to the given exact dimensions.
+    ///
+    /// The frame is scaled in the same `libswscale` pass as pixel-format
+    /// conversion, so there is no extra copy. If `output_format` is not set,
+    /// the source pixel format is preserved while scaling.
+    ///
+    /// Width and height must be greater than zero. They are rounded up to the
+    /// nearest even number if necessary (required by most pixel formats).
+    ///
+    /// Calling this method overwrites any previous `output_width` or
+    /// `output_height` call. The last setter wins.
+    ///
+    /// # Errors
+    ///
+    /// [`build()`](Self::build) returns [`DecodeError::InvalidOutputDimensions`]
+    /// if either dimension is zero after rounding.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    ///
+    /// // Decode every frame at 320×240
+    /// let decoder = VideoDecoder::open("video.mp4")?
+    ///     .output_size(320, 240)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn output_size(mut self, width: u32, height: u32) -> Self {
+        self.output_scale = Some(OutputScale::Exact { width, height });
+        self
+    }
+
+    /// Scales decoded frames to the given width, preserving the aspect ratio.
+    ///
+    /// The height is computed from the source aspect ratio and rounded to the
+    /// nearest even number. Calling this method overwrites any previous
+    /// `output_size` or `output_height` call. The last setter wins.
+    ///
+    /// # Errors
+    ///
+    /// [`build()`](Self::build) returns [`DecodeError::InvalidOutputDimensions`]
+    /// if `width` is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    ///
+    /// // Decode at 1280 px wide, preserving aspect ratio
+    /// let decoder = VideoDecoder::open("video.mp4")?
+    ///     .output_width(1280)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn output_width(mut self, width: u32) -> Self {
+        self.output_scale = Some(OutputScale::FitWidth(width));
+        self
+    }
+
+    /// Scales decoded frames to the given height, preserving the aspect ratio.
+    ///
+    /// The width is computed from the source aspect ratio and rounded to the
+    /// nearest even number. Calling this method overwrites any previous
+    /// `output_size` or `output_width` call. The last setter wins.
+    ///
+    /// # Errors
+    ///
+    /// [`build()`](Self::build) returns [`DecodeError::InvalidOutputDimensions`]
+    /// if `height` is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    ///
+    /// // Decode at 720 px tall, preserving aspect ratio
+    /// let decoder = VideoDecoder::open("video.mp4")?
+    ///     .output_height(720)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn output_height(mut self, height: u32) -> Self {
+        self.output_scale = Some(OutputScale::FitHeight(height));
         self
     }
 
@@ -335,6 +451,23 @@ impl VideoDecoderBuilder {
     /// }
     /// ```
     pub fn build(self) -> Result<VideoDecoder, DecodeError> {
+        // Validate output scale dimensions before opening the file.
+        // FitWidth / FitHeight aspect-ratio dimensions are resolved at decode time
+        // from the actual source dimensions, so we only reject an explicit zero here.
+        if let Some(scale) = self.output_scale {
+            let (w, h) = match scale {
+                OutputScale::Exact { width, height } => (width, height),
+                OutputScale::FitWidth(w) => (w, 1), // height will be derived
+                OutputScale::FitHeight(h) => (1, h), // width will be derived
+            };
+            if w == 0 || h == 0 {
+                return Err(DecodeError::InvalidOutputDimensions {
+                    width: w,
+                    height: h,
+                });
+            }
+        }
+
         // Verify the file exists
         if !self.path.exists() {
             return Err(DecodeError::FileNotFound {
@@ -345,6 +478,7 @@ impl VideoDecoderBuilder {
         // Build the internal configuration
         let config = VideoDecoderConfig {
             output_format: self.output_format,
+            output_scale: self.output_scale,
             hardware_accel: self.hardware_accel,
             thread_count: self.thread_count,
         };
@@ -353,6 +487,7 @@ impl VideoDecoderBuilder {
         let (inner, stream_info) = VideoDecoderInner::new(
             &self.path,
             self.output_format,
+            self.output_scale,
             self.hardware_accel,
             self.thread_count,
             self.frame_pool.clone(),
