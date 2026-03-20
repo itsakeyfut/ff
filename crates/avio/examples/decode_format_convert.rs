@@ -149,7 +149,7 @@ fn main() {
             let plane = frame.data();
             println!(
                 "Plane[0]: data_len={}  bytes_per_sample=2",
-                plane.map_or(0, |p| p.len())
+                plane.len()
             );
         }
         Ok(None) => println!("No audio frames in file"),
