@@ -853,9 +853,7 @@ impl AudioDecoderInner {
                 let time_base = (*(*stream)).time_base;
                 Timestamp::new(pts, Rational::new(time_base.num, time_base.den))
             } else {
-                let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
-                let time_base = (*(*stream)).time_base;
-                Timestamp::zero(Rational::new(time_base.num, time_base.den))
+                Timestamp::invalid()
             }
         };
 
@@ -912,7 +910,7 @@ impl AudioDecoderInner {
                     Rational::new(time_base.num as i32, time_base.den as i32),
                 )
             } else {
-                Timestamp::default()
+                Timestamp::invalid()
             };
 
             // Convert frame to planes

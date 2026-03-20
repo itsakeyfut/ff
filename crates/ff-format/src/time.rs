@@ -854,6 +854,48 @@ impl Timestamp {
     pub const fn is_negative(&self) -> bool {
         self.pts < 0
     }
+
+    /// Returns a sentinel `Timestamp` representing "no PTS available".
+    ///
+    /// This mirrors `FFmpeg`'s `AV_NOPTS_VALUE` (`INT64_MIN`). Use [`is_valid`](Self::is_valid)
+    /// to check before calling any conversion method.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::Timestamp;
+    ///
+    /// let ts = Timestamp::invalid();
+    /// assert!(!ts.is_valid());
+    /// ```
+    #[must_use]
+    pub const fn invalid() -> Self {
+        Self {
+            pts: i64::MIN,
+            time_base: Rational::new(1, 1),
+        }
+    }
+
+    /// Returns `true` if this timestamp represents a real PTS value.
+    ///
+    /// Returns `false` when the timestamp was constructed via [`invalid`](Self::invalid),
+    /// which corresponds to `FFmpeg`'s `AV_NOPTS_VALUE`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::{Timestamp, Rational};
+    ///
+    /// let valid = Timestamp::new(1000, Rational::new(1, 48000));
+    /// assert!(valid.is_valid());
+    ///
+    /// let invalid = Timestamp::invalid();
+    /// assert!(!invalid.is_valid());
+    /// ```
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        self.pts != i64::MIN
+    }
 }
 
 impl Default for Timestamp {
@@ -1381,6 +1423,31 @@ mod tests {
             let ts = Timestamp::new(1024, time_base);
             let ms = ts.as_secs_f64() * 1000.0;
             assert!((ms - 21.333).abs() < 0.01); // ~21.33 ms
+        }
+
+        #[test]
+        fn invalid_timestamp_is_not_valid() {
+            let ts = Timestamp::invalid();
+            assert!(!ts.is_valid());
+        }
+
+        #[test]
+        fn zero_timestamp_is_valid() {
+            let ts = Timestamp::zero(Rational::new(1, 48000));
+            assert!(ts.is_valid());
+        }
+
+        #[test]
+        fn real_timestamp_is_valid() {
+            let ts = Timestamp::new(1000, Rational::new(1, 48000));
+            assert!(ts.is_valid());
+        }
+
+        #[test]
+        fn default_timestamp_is_valid() {
+            // Timestamp::default() has pts=0 (not the sentinel)
+            let ts = Timestamp::default();
+            assert!(ts.is_valid());
         }
     }
 
