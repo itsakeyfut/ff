@@ -309,8 +309,7 @@ impl Pipeline {
                     dec.decode()?
                 } else {
                     let mut dec = VideoDecoder::open(path).build()?;
-                    dec.decode_one()?
-                        .ok_or(ff_decode::DecodeError::EndOfStream)?
+                    dec.decode_one()?.ok_or(PipelineError::FrameNotAvailable)?
                 };
                 frames.push(frame);
             }

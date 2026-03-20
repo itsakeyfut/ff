@@ -383,9 +383,6 @@ mod tests {
             codec: "unknown_codec".to_string(),
         };
         assert!(error.to_string().contains("Codec not supported"));
-
-        let error = DecodeError::EndOfStream;
-        assert_eq!(error.to_string(), "End of stream");
     }
 
     #[test]

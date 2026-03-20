@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ff_decode::{DecodeError, SeekMode, VideoDecoder};
+use ff_decode::{SeekMode, VideoDecoder};
 use ff_format::VideoFrame;
 
 use crate::PipelineError;
@@ -176,7 +176,9 @@ fn decode_frames(path: &str, timestamps: &mut [f64]) -> Result<Vec<VideoFrame>, 
             .map(|ts| {
                 let mut decoder = VideoDecoder::open(path).build()?;
                 decoder.seek(Duration::from_secs_f64(*ts), SeekMode::Keyframe)?;
-                let frame = decoder.decode_one()?.ok_or(DecodeError::EndOfStream)?;
+                let frame = decoder
+                    .decode_one()?
+                    .ok_or(PipelineError::FrameNotAvailable)?;
                 Ok(frame)
             })
             .collect()
@@ -190,7 +192,9 @@ fn decode_frames(path: &str, timestamps: &mut [f64]) -> Result<Vec<VideoFrame>, 
         let mut frames = Vec::with_capacity(timestamps.len());
         for ts in timestamps.iter() {
             decoder.seek(Duration::from_secs_f64(*ts), SeekMode::Keyframe)?;
-            let frame = decoder.decode_one()?.ok_or(DecodeError::EndOfStream)?;
+            let frame = decoder
+                .decode_one()?
+                .ok_or(PipelineError::FrameNotAvailable)?;
             frames.push(frame);
         }
 

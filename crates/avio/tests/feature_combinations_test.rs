@@ -42,7 +42,7 @@ fn probe_feature_should_expose_probe_error_and_open() {
 #[cfg(feature = "decode")]
 #[test]
 fn decode_feature_should_expose_decode_error_and_decoders() {
-    let _: avio::DecodeError = avio::DecodeError::EndOfStream;
+    let _: avio::DecodeError = avio::DecodeError::decoding_failed("test");
     let _: avio::SeekMode = avio::SeekMode::Keyframe;
     let _: avio::HardwareAccel = avio::HardwareAccel::None;
     // VecPool::new() returns Arc<VecPool>

@@ -24,9 +24,7 @@
 
 use std::{path::Path, process};
 
-use avio::{
-    AsyncVideoDecoder, AsyncVideoEncoder, DecodeError, VideoCodec, VideoDecoder, VideoEncoder,
-};
+use avio::{AsyncVideoDecoder, AsyncVideoEncoder, VideoCodec, VideoDecoder, VideoEncoder};
 use futures::StreamExt;
 
 #[tokio::main]
@@ -134,7 +132,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 encoder.push(frame).await?;
                 frames += 1;
             }
-            Err(DecodeError::EndOfStream) => break,
             Err(e) => {
                 eprintln!("Decode error: {e}");
                 break;
@@ -183,7 +180,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
                         }
-                        Err(DecodeError::EndOfStream) => break,
                         Err(e) => {
                             eprintln!("Producer decode error: {e}");
                             break;

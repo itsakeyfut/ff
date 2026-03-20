@@ -20,7 +20,7 @@
 
 use std::{path::Path, process};
 
-use avio::{AudioDecoder, DecodeError, ImageDecoder, VideoDecoder};
+use avio::{AudioDecoder, ImageDecoder, VideoDecoder};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -76,7 +76,6 @@ fn main() {
             for result in vdec.frames() {
                 match result {
                     Ok(_frame) => video_frames += 1,
-                    Err(DecodeError::EndOfStream) => break,
                     Err(e) => {
                         eprintln!("Video decode error: {e}");
                         break;
@@ -115,7 +114,6 @@ fn main() {
                         audio_frames += 1;
                         total_samples += frame.samples() as u64;
                     }
-                    Err(DecodeError::EndOfStream) => break,
                     Err(e) => {
                         eprintln!("Audio decode error: {e}");
                         break;
@@ -155,7 +153,6 @@ fn main() {
                                 frame.format(),
                             );
                         }
-                        Err(DecodeError::EndOfStream) => break,
                         Err(e) => {
                             eprintln!("Image decode error: {e}");
                             break;

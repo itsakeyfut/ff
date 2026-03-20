@@ -251,6 +251,7 @@ fn test_thumbnail_generation_performance() {
         decoder
             .thumbnail_at(Duration::from_secs(2), 320, 180)
             .expect("Thumbnail generation failed")
+            .expect("frame should be available")
     });
 
     assert!(!result.planes().is_empty(), "Should generate thumbnail");

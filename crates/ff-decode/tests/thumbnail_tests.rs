@@ -25,7 +25,8 @@ fn test_thumbnail_at_basic() {
 
     let thumbnail = decoder
         .thumbnail_at(position, width, height)
-        .expect("thumbnail_at should succeed");
+        .expect("thumbnail_at should succeed")
+        .expect("frame should be available");
 
     // Verify dimensions
     assert_eq!(
@@ -50,7 +51,8 @@ fn test_thumbnail_at_timestamp() {
     let position = Duration::from_secs(3);
     let thumbnail = decoder
         .thumbnail_at(position, 320, 180)
-        .expect("thumbnail_at should succeed");
+        .expect("thumbnail_at should succeed")
+        .expect("frame should be available");
 
     // Timestamp should be close to requested position
     // (may not be exact due to keyframe seeking)
@@ -71,7 +73,8 @@ fn test_thumbnail_at_beginning() {
 
     let thumbnail = decoder
         .thumbnail_at(Duration::ZERO, 160, 90)
-        .expect("thumbnail_at at beginning should succeed");
+        .expect("thumbnail_at at beginning should succeed")
+        .expect("frame should be available");
 
     assert_eq!(thumbnail.width(), 160, "Width should be 160");
     assert_eq!(thumbnail.height(), 90, "Height should be 90");
@@ -101,7 +104,8 @@ fn test_thumbnail_at_different_sizes() {
             .thumbnail_at(Duration::from_secs(1), width, height)
             .unwrap_or_else(|e| {
                 panic!("thumbnail_at({}x{}) should succeed: {:?}", width, height, e)
-            });
+            })
+            .expect("frame should be available");
 
         assert_eq!(
             thumbnail.width(),
@@ -129,7 +133,8 @@ fn test_thumbnail_at_with_rgba_output() {
 
     let thumbnail = decoder
         .thumbnail_at(Duration::from_secs(1), 320, 180)
-        .expect("thumbnail_at should succeed");
+        .expect("thumbnail_at should succeed")
+        .expect("frame should be available");
 
     // Should be RGBA format
     assert_eq!(
@@ -342,7 +347,8 @@ fn test_thumbnail_aspect_ratio_preservation() {
 
     let thumbnail = decoder
         .thumbnail_at(Duration::from_secs(1), target_width, target_height)
-        .expect("thumbnail_at should succeed");
+        .expect("thumbnail_at should succeed")
+        .expect("frame should be available");
 
     // Thumbnail should preserve aspect ratio by fitting within target dimensions
     // The thumbnail will not be exactly 320x320 but will fit within it
@@ -384,7 +390,8 @@ fn test_thumbnail_small_dimensions() {
     // Very small thumbnail
     let thumbnail = decoder
         .thumbnail_at(Duration::from_secs(1), 64, 36)
-        .expect("Small thumbnail should succeed");
+        .expect("Small thumbnail should succeed")
+        .expect("frame should be available");
 
     assert_eq!(thumbnail.width(), 64, "Width should be 64");
     assert_eq!(thumbnail.height(), 36, "Height should be 36");
@@ -397,7 +404,8 @@ fn test_thumbnail_large_dimensions() {
     // Large thumbnail (upscaling)
     let thumbnail = decoder
         .thumbnail_at(Duration::from_secs(1), 1920, 1080)
-        .expect("Large thumbnail should succeed");
+        .expect("Large thumbnail should succeed")
+        .expect("frame should be available");
 
     assert_eq!(thumbnail.width(), 1920, "Width should be 1920");
     assert_eq!(thumbnail.height(), 1080, "Height should be 1080");
@@ -430,7 +438,8 @@ fn test_thumbnail_at_after_seek() {
     // Generate thumbnail at a different position
     let thumbnail = decoder
         .thumbnail_at(Duration::from_secs(2), 320, 180)
-        .expect("thumbnail_at after seek should succeed");
+        .expect("thumbnail_at after seek should succeed")
+        .expect("frame should be available");
 
     assert_eq!(thumbnail.width(), 320, "Width should be 320");
     assert_eq!(thumbnail.height(), 180, "Height should be 180");
@@ -450,7 +459,8 @@ fn test_multiple_thumbnail_calls() {
     for (i, position) in positions.iter().enumerate() {
         let thumbnail = decoder
             .thumbnail_at(*position, 160, 90)
-            .unwrap_or_else(|e| panic!("Thumbnail {} should succeed: {:?}", i, e));
+            .unwrap_or_else(|e| panic!("Thumbnail {} should succeed: {:?}", i, e))
+            .expect("frame should be available");
 
         assert_eq!(thumbnail.width(), 160, "Thumbnail {} width", i);
         assert_eq!(thumbnail.height(), 90, "Thumbnail {} height", i);

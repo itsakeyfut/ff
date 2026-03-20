@@ -872,7 +872,7 @@ impl VideoDecoder {
     ///
     /// Returns [`DecodeError`] if:
     /// - Seeking to the position fails
-    /// - No frame can be decoded at that position ([`DecodeError::EndOfStream`])
+    /// - No frame can be decoded at that position (returns `Ok(None)`)
     /// - Scaling fails
     ///
     /// # Examples
@@ -905,15 +905,15 @@ impl VideoDecoder {
         position: Duration,
         width: u32,
         height: u32,
-    ) -> Result<VideoFrame, DecodeError> {
+    ) -> Result<Option<VideoFrame>, DecodeError> {
         // 1. Seek to the specified position (keyframe mode for speed)
         self.seek(position, crate::SeekMode::Keyframe)?;
 
-        // 2. Decode one frame
-        let frame = self.decode_one()?.ok_or(DecodeError::EndOfStream)?;
-
-        // 3. Scale the frame to target dimensions
-        self.inner.scale_frame(&frame, width, height)
+        // 2. Decode one frame — Ok(None) means no frame at this position
+        match self.decode_one()? {
+            Some(frame) => self.inner.scale_frame(&frame, width, height).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Generates multiple thumbnails evenly distributed across the video.
@@ -1026,8 +1026,9 @@ impl VideoDecoder {
             let position_nanos_u64 = position_nanos.min(u128::from(u64::MAX)) as u64;
             let position = Duration::from_nanos(position_nanos_u64);
 
-            let thumbnail = self.thumbnail_at(position, width, height)?;
-            thumbnails.push(thumbnail);
+            if let Some(thumbnail) = self.thumbnail_at(position, width, height)? {
+                thumbnails.push(thumbnail);
+            }
         }
 
         Ok(thumbnails)

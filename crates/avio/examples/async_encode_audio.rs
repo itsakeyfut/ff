@@ -31,9 +31,7 @@
 
 use std::{path::Path, process};
 
-use avio::{
-    AsyncAudioDecoder, AsyncAudioEncoder, AudioCodec, AudioDecoder, AudioEncoder, DecodeError,
-};
+use avio::{AsyncAudioDecoder, AsyncAudioEncoder, AudioCodec, AudioDecoder, AudioEncoder};
 use futures::StreamExt;
 
 #[tokio::main]
@@ -159,7 +157,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 encoder.push(frame).await?;
                 frames += 1;
             }
-            Err(DecodeError::EndOfStream) => break,
             Err(e) => {
                 eprintln!("Decode error: {e}");
                 break;
@@ -204,7 +201,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break; // Consumer dropped; stop producing.
                             }
                         }
-                        Err(DecodeError::EndOfStream) => break,
                         Err(e) => {
                             eprintln!("Producer decode error: {e}");
                             break;

@@ -14,6 +14,7 @@
 ///   — returned by [`PipelineBuilder::build`](crate::PipelineBuilder::build)
 /// - **Runtime control**: [`Cancelled`](Self::Cancelled) — returned by
 ///   [`Pipeline::run`](crate::Pipeline::run) when the progress callback returns `false`
+/// - **Availability**: [`FrameNotAvailable`](Self::FrameNotAvailable) — no frame at position
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
     /// A decoding step failed.
@@ -68,6 +69,14 @@ pub enum PipelineError {
     /// An I/O error (e.g. creating the output directory for thumbnails).
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// No frame was available at the requested position.
+    ///
+    /// Returned by thumbnail and seek-and-decode operations when the decoder
+    /// reports `Ok(None)` — the position is past the end of the stream or no
+    /// decodable frame exists at that point.
+    #[error("no frame available at the requested position")]
+    FrameNotAvailable,
 }
 
 #[cfg(test)]
@@ -100,8 +109,8 @@ mod tests {
 
     #[test]
     fn decode_should_prefix_inner_message() {
-        let err = PipelineError::Decode(ff_decode::DecodeError::EndOfStream);
-        assert_eq!(err.to_string(), "decode failed: End of stream");
+        let err = PipelineError::Decode(ff_decode::DecodeError::decoding_failed("test error"));
+        assert!(err.to_string().starts_with("decode failed:"));
     }
 
     #[test]
@@ -123,7 +132,7 @@ mod tests {
 
     #[test]
     fn decode_error_should_convert_into_pipeline_error() {
-        let inner = ff_decode::DecodeError::EndOfStream;
+        let inner = ff_decode::DecodeError::decoding_failed("test error");
         let err: PipelineError = inner.into();
         assert!(matches!(err, PipelineError::Decode(_)));
     }
@@ -146,7 +155,7 @@ mod tests {
 
     #[test]
     fn decode_should_expose_source() {
-        let err = PipelineError::Decode(ff_decode::DecodeError::EndOfStream);
+        let err = PipelineError::Decode(ff_decode::DecodeError::decoding_failed("test error"));
         assert!(err.source().is_some());
     }
 
