@@ -158,6 +158,10 @@ name = "decode_iterator"
 required-features = ["decode"]
 
 [[example]]
+name = "audio_timestamps"
+required-features = ["decode"]
+
+[[example]]
 name = "async_decode_video"
 required-features = ["tokio"]
 
