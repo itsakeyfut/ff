@@ -890,3 +890,44 @@ fn audio_stream_info_codec_name_should_not_be_empty() {
         "codec_name() should not be empty"
     );
 }
+
+// ============================================================================
+// Timestamp Tests
+// ============================================================================
+
+#[test]
+fn audio_frames_should_have_valid_timestamps() {
+    let mut decoder = create_audio_decoder().expect("Failed to create audio decoder");
+
+    for (i, result) in decoder.by_ref().take(10).enumerate() {
+        let frame = result.unwrap_or_else(|e| panic!("Frame {} failed: {:?}", i, e));
+        assert!(
+            frame.timestamp().is_valid(),
+            "Frame {} should have a valid timestamp",
+            i
+        );
+    }
+}
+
+#[test]
+fn audio_timestamps_should_be_monotonically_increasing() {
+    let mut decoder = create_audio_decoder().expect("Failed to create audio decoder");
+    let mut last_pts: Option<i64> = None;
+
+    for (i, result) in decoder.by_ref().take(20).enumerate() {
+        let frame = result.unwrap_or_else(|e| panic!("Frame {} failed: {:?}", i, e));
+        let ts = frame.timestamp();
+        assert!(ts.is_valid(), "Frame {} timestamp should be valid", i);
+
+        if let Some(prev) = last_pts {
+            assert!(
+                ts.pts() > prev,
+                "Frame {} pts should increase: current={} last={}",
+                i,
+                ts.pts(),
+                prev
+            );
+        }
+        last_pts = Some(ts.pts());
+    }
+}
