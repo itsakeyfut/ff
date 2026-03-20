@@ -730,6 +730,21 @@ pub mod avcodec {
     }
 
     pub unsafe fn flush_buffers(_ctx: *mut AVCodecContext) {}
+
+    pub unsafe fn parameters_from_context(
+        _par: *mut AVCodecParameters,
+        _ctx: *const AVCodecContext,
+    ) -> Result<(), c_int> {
+        Err(-1)
+    }
+
+    pub mod codec_caps {
+        pub const EXPERIMENTAL: u32 = 1 << 9;
+        pub const HARDWARE: u32 = 1 << 10;
+        pub const HYBRID: u32 = 1 << 11;
+        pub const VARIABLE_FRAME_SIZE: u32 = 1 << 16;
+        pub const AVOID_PROBING: u32 = 1 << 17;
+    }
 }
 
 /// Stub `swresample` wrapper module.
