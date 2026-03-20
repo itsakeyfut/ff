@@ -90,7 +90,7 @@ fn bench_frame_iterator(c: &mut Criterion) {
         b.iter_batched(
             || create_decoder(),
             |mut decoder| {
-                let frames: Vec<_> = decoder.frames().take(10).filter_map(|r| r.ok()).collect();
+                let frames: Vec<_> = decoder.by_ref().take(10).filter_map(|r| r.ok()).collect();
                 black_box(frames)
             },
             criterion::BatchSize::LargeInput,

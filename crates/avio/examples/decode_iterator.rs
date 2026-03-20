@@ -1,14 +1,14 @@
 //! Decode video, audio, and images using the iterator API.
 //!
 //! Demonstrates:
-//! - `VideoDecoder::frames()` — `for frame in vdec.frames()`
-//! - `AudioDecoder::frames()` — `for frame in adec.frames()`
-//! - `ImageDecoder::frames()` — `for frame in idec.frames()`
+//! - `VideoDecoder` — `for result in &mut vdec`
+//! - `AudioDecoder` — `for result in &mut adec`
+//! - `ImageDecoder::frames()` — `for result in idec.frames()`
 //!
-//! Each decoder exposes `.frames()` which returns an iterator with
-//! `Item = Result<Frame, DecodeError>`. This is an alternative to the manual
-//! `loop { decode_one() }` pattern — it integrates naturally with iterator
-//! adaptors (`take`, `filter_map`, `enumerate`, etc.).
+//! `VideoDecoder` and `AudioDecoder` implement `Iterator` directly, so they
+//! integrate naturally with iterator adaptors (`take`, `filter_map`, `enumerate`,
+//! etc.) and also implement `FusedIterator` (no further items after an error).
+//! `ImageDecoder` still uses the `.frames()` method.
 //!
 //! # Usage
 //!
@@ -51,12 +51,13 @@ fn main() {
     println!("Input: {in_name}");
     println!();
 
-    // ── VideoDecoder::frames() ────────────────────────────────────────────────
+    // ── VideoDecoder ──────────────────────────────────────────────────────────
     //
-    // frames() returns an iterator whose Item is Result<VideoFrame, DecodeError>.
+    // VideoDecoder implements Iterator directly. Item = Result<VideoFrame, DecodeError>.
     //
     // The `for` loop terminates when the iterator returns None (EOF).
     // Errors are surfaced as Err variants inside the loop body.
+    // FusedIterator guarantees None after the first error.
 
     println!("=== Video frames ===");
 
@@ -72,8 +73,8 @@ fn main() {
 
             let mut video_frames: u64 = 0;
 
-            // Iterator form: no manual `loop { decode_one() }` needed.
-            for result in vdec.frames() {
+            // Iterator form: VideoDecoder implements Iterator directly.
+            for result in &mut vdec {
                 match result {
                     Ok(_frame) => video_frames += 1,
                     Err(e) => {
@@ -90,9 +91,9 @@ fn main() {
 
     println!();
 
-    // ── AudioDecoder::frames() ────────────────────────────────────────────────
+    // ── AudioDecoder ──────────────────────────────────────────────────────────
     //
-    // frames() returns an iterator with Item = Result<AudioFrame, DecodeError>.
+    // AudioDecoder implements Iterator directly. Item = Result<AudioFrame, DecodeError>.
 
     println!("=== Audio frames ===");
 
@@ -108,7 +109,7 @@ fn main() {
             let mut audio_frames: u64 = 0;
             let mut total_samples: u64 = 0;
 
-            for result in adec.frames() {
+            for result in &mut adec {
                 match result {
                     Ok(frame) => {
                         audio_frames += 1;

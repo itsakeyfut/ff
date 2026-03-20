@@ -58,7 +58,7 @@
 //! let mut vdec = VideoDecoder::open("video.mp4")
 //!     .output_format(PixelFormat::Rgb24)
 //!     .build()?;
-//! for frame in vdec.frames() { /* ... */ }
+//! for result in &mut vdec { /* ... */ }
 //!
 //! // Audio — resample to 16-bit 44.1 kHz
 //! let mut adec = AudioDecoder::open("video.mp4")
