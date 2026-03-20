@@ -237,6 +237,15 @@ impl AudioFrame {
 
     /// Returns the number of audio channels.
     ///
+    /// The return type is `u32` to match `FFmpeg`'s `AVFrame::ch_layout.nb_channels`
+    /// and professional audio APIs (Core Audio, WASAPI, JACK, Dolby Atmos).
+    ///
+    /// # Integration
+    ///
+    /// Playback libraries such as `rodio` and `cpal` accept channel counts as
+    /// `u16`. Cast with `frame.channels() as u16`; the truncation is always safe
+    /// because no real-world format exceeds `u16::MAX` (65 535) channels.
+    ///
     /// # Examples
     ///
     /// ```
