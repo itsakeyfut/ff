@@ -349,6 +349,10 @@ impl MediaInfo {
     /// Returns the channel count of the primary audio stream.
     ///
     /// Returns `None` if there are no audio streams.
+    ///
+    /// The type is `u32` to match `FFmpeg` and professional audio APIs. For `rodio`
+    /// or `cpal` (which require `u16`), cast with `.map(|c| c as u16)` — channel
+    /// counts never exceed `u16::MAX` in practice.
     #[must_use]
     #[inline]
     pub fn channels(&self) -> Option<u32> {

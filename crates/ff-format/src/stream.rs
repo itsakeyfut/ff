@@ -551,6 +551,11 @@ impl AudioStreamInfo {
     }
 
     /// Returns the number of audio channels.
+    ///
+    /// The type is `u32` to match `FFmpeg`'s `AVCodecParameters::ch_layout.nb_channels`
+    /// and professional audio APIs. When passing to `rodio` or `cpal` (which require
+    /// `u16`), cast with `info.channels() as u16` — channel counts never exceed
+    /// `u16::MAX` in practice.
     #[must_use]
     #[inline]
     pub const fn channels(&self) -> u32 {

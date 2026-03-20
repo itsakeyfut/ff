@@ -352,6 +352,11 @@ impl AudioDecoder {
     }
 
     /// Returns the number of audio channels.
+    ///
+    /// The type is `u32` to match `FFmpeg` and professional audio APIs. When
+    /// integrating with `rodio` or `cpal` (which require `u16`), cast with
+    /// `decoder.channels() as u16` — channel counts never exceed `u16::MAX`
+    /// in practice.
     #[must_use]
     pub fn channels(&self) -> u32 {
         self.stream_info.channels()
