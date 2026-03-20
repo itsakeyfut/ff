@@ -22,7 +22,7 @@
 
 use std::{path::Path, process};
 
-use avio::{AsyncAudioDecoder, DecodeError};
+use avio::AsyncAudioDecoder;
 use futures::StreamExt;
 
 #[tokio::main]
@@ -90,7 +90,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frame_count += 1;
             }
             Ok(None) => break,
-            Err(DecodeError::EndOfStream) => break,
             Err(e) => {
                 eprintln!("Decode error: {e}");
                 break;
@@ -157,7 +156,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(result) = stream.next().await {
             match result {
                 Ok(frame) => total += frame.samples() as u64,
-                Err(DecodeError::EndOfStream) => break,
                 Err(e) => {
                     eprintln!("Background decode error: {e}");
                     break;

@@ -22,7 +22,6 @@ use crate::HardwareAccel;
 /// - **Codec errors**: [`UnsupportedCodec`](Self::UnsupportedCodec)
 /// - **Runtime errors**: [`DecodingFailed`](Self::DecodingFailed), [`SeekFailed`](Self::SeekFailed)
 /// - **Hardware errors**: [`HwAccelUnavailable`](Self::HwAccelUnavailable)
-/// - **Stream state**: [`EndOfStream`](Self::EndOfStream)
 /// - **Internal errors**: [`Ffmpeg`](Self::Ffmpeg), [`Io`](Self::Io)
 #[derive(Error, Debug)]
 pub enum DecodeError {
@@ -99,13 +98,6 @@ pub enum DecodeError {
         /// The unavailable hardware acceleration type.
         accel: HardwareAccel,
     },
-
-    /// End of stream has been reached.
-    ///
-    /// This is returned when attempting to decode past the end of the file.
-    /// It's a normal condition that indicates all frames have been decoded.
-    #[error("End of stream")]
-    EndOfStream,
 
     /// `FFmpeg` internal error.
     ///
@@ -232,21 +224,6 @@ impl DecodeError {
         }
     }
 
-    /// Returns `true` if this error indicates end of stream.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_decode::DecodeError;
-    ///
-    /// assert!(DecodeError::EndOfStream.is_eof());
-    /// assert!(!DecodeError::decoding_failed("test").is_eof());
-    /// ```
-    #[must_use]
-    pub fn is_eof(&self) -> bool {
-        matches!(self, Self::EndOfStream)
-    }
-
     /// Returns `true` if this error is recoverable.
     ///
     /// Recoverable errors are those where the decoder can continue
@@ -265,8 +242,6 @@ impl DecodeError {
     /// // Seek failures are recoverable
     /// assert!(DecodeError::seek_failed(Duration::from_secs(1), "test").is_recoverable());
     ///
-    /// // End of stream is not recoverable
-    /// assert!(!DecodeError::EndOfStream.is_recoverable());
     /// ```
     #[must_use]
     pub fn is_recoverable(&self) -> bool {
@@ -290,8 +265,6 @@ impl DecodeError {
     /// // Unsupported codec is fatal
     /// assert!(DecodeError::UnsupportedCodec { codec: "test".to_string() }.is_fatal());
     ///
-    /// // End of stream is not fatal
-    /// assert!(!DecodeError::EndOfStream.is_fatal());
     /// ```
     #[must_use]
     pub fn is_fatal(&self) -> bool {
@@ -328,9 +301,6 @@ mod tests {
         };
         assert!(error.to_string().contains("Codec not supported"));
         assert!(error.to_string().contains("unknown_codec"));
-
-        let error = DecodeError::EndOfStream;
-        assert_eq!(error.to_string(), "End of stream");
     }
 
     #[test]
@@ -395,22 +365,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_eof() {
-        assert!(DecodeError::EndOfStream.is_eof());
-        assert!(!DecodeError::decoding_failed("test").is_eof());
-        assert!(
-            !DecodeError::FileNotFound {
-                path: PathBuf::new()
-            }
-            .is_eof()
-        );
-    }
-
-    #[test]
     fn test_is_recoverable() {
         assert!(DecodeError::decoding_failed("test").is_recoverable());
         assert!(DecodeError::seek_failed(Duration::from_secs(1), "test").is_recoverable());
-        assert!(!DecodeError::EndOfStream.is_recoverable());
         assert!(
             !DecodeError::FileNotFound {
                 path: PathBuf::new()
@@ -445,7 +402,6 @@ mod tests {
             }
             .is_fatal()
         );
-        assert!(!DecodeError::EndOfStream.is_fatal());
         assert!(!DecodeError::decoding_failed("test").is_fatal());
     }
 

@@ -322,7 +322,7 @@ mod tests {
     #[cfg(feature = "decode")]
     #[test]
     fn decode_error_should_be_accessible() {
-        let _: DecodeError = DecodeError::EndOfStream;
+        let _: DecodeError = DecodeError::decoding_failed("test");
     }
 
     #[cfg(feature = "decode")]
