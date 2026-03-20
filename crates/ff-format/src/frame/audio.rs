@@ -837,7 +837,11 @@ impl AudioFrame {
     /// assert_eq!(pcm.len(), 8); // 4 samples × 2 channels
     /// ```
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::too_many_lines)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::too_many_lines
+    )]
     pub fn to_f32_interleaved(&self) -> Vec<f32> {
         let total = self.sample_count();
         if total == 0 {
