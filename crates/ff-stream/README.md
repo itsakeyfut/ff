@@ -1,33 +1,63 @@
 # ff-stream
 
-![Status](https://img.shields.io/badge/status-in%20development-yellow)
+Produce HLS and DASH adaptive bitrate output from any video source. Define a rendition ladder,
+point it at an input file, and receive a standards-compliant package ready for CDN delivery.
 
-`ff-stream` will provide `HlsOutput`, `DashOutput`, and `AbrLadder` for producing adaptive bitrate streaming content from any video source. Currently a placeholder — the API is under design.
+## Installation
 
-## Planned API
+```toml
+[dependencies]
+ff-stream = "0.6"
+```
 
-```rust,ignore
+## HLS Output
+
+```rust
 use ff_stream::{HlsOutput, AbrLadder, Rendition};
 
-// Define an ABR ladder: multiple quality renditions from one input.
-let ladder = AbrLadder::builder()
-    .rendition(Rendition::new(1920, 1080, 6_000_000))
-    .rendition(Rendition::new(1280, 720,  3_000_000))
-    .rendition(Rendition::new(854,  480,  1_500_000))
-    .rendition(Rendition::new(640,  360,    800_000))
-    .build()?;
+let ladder = AbrLadder::new("source.mp4")
+    .rendition(Rendition { width: 1920, height: 1080, bitrate: 6_000_000 })
+    .rendition(Rendition { width: 1280, height: 720,  bitrate: 3_000_000 })
+    .rendition(Rendition { width: 854,  height: 480,  bitrate: 1_500_000 })
+    .rendition(Rendition { width: 640,  height: 360,  bitrate:   800_000 });
 
-// Write an HLS package to a directory.
-let output = HlsOutput::builder()
-    .input("source.mp4")
-    .output_dir("hls_output/")
-    .segment_duration(6)
-    .ladder(ladder)
-    .build()?;
-
-output.run()?;
-// Writes hls_output/master.m3u8 and per-rendition segment files.
+let output = HlsOutput::new("hls_output/");
+output.run(&ladder)?;
+// Writes hls_output/master.m3u8 and per-rendition segment directories.
 ```
+
+## DASH Output
+
+```rust
+use ff_stream::{DashOutput, AbrLadder, Rendition};
+
+let ladder = AbrLadder::new("source.mp4")
+    .rendition(Rendition { width: 1920, height: 1080, bitrate: 6_000_000 })
+    .rendition(Rendition { width: 1280, height: 720,  bitrate: 3_000_000 });
+
+let output = DashOutput::new("dash_output/");
+output.run(&ladder)?;
+// Writes dash_output/manifest.mpd and per-rendition segment directories.
+```
+
+## Rendition Ladder
+
+`AbrLadder` defines the set of quality levels to produce. Each `Rendition` specifies the
+output resolution and target bitrate. The ladder is shared by both `HlsOutput` and `DashOutput`.
+
+| Field | Type | Description |
+|---|---|---|
+| `width` | `u32` | Output frame width in pixels |
+| `height` | `u32` | Output frame height in pixels |
+| `bitrate` | `u64` | Target video bitrate in bits per second |
+
+## Error Handling
+
+| Variant | When it occurs |
+|---|---|
+| `StreamError::InvalidConfig` | Missing input, empty ladder, or conflicting options |
+| `StreamError::Encode` | Wrapped `EncodeError` from a rendition encode stage |
+| `StreamError::Io` | Write failure on the output directory |
 
 ## MSRV
 

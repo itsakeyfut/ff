@@ -162,6 +162,22 @@
 //!
 //! **Examples:** `async_encode_video`, `async_encode_audio`, `async_transcode`.
 //!
+//! # Real-world Applications
+//!
+//! ## ascii-term — Terminal ASCII Art Video Player
+//!
+//! [`ascii-term`](https://github.com/itsakeyfut/ascii-term) is a terminal media player
+//! that renders video as colored ASCII art with synchronized audio. It was fully migrated
+//! from `ffmpeg-next` / `ffmpeg-sys-next` to `avio`, with no direct `unsafe` `FFmpeg` code
+//! remaining in the application.
+//!
+//! Key patterns used:
+//!
+//! - [`VideoDecoder`] with `.output_format(PixelFormat::Rgb24)` for per-pixel luminance
+//! - [`AudioDecoder`] with [`SampleFormat::F32`] output, converted to interleaved PCM for
+//!   [`rodio`](https://crates.io/crates/rodio) playback
+//! - Dual-thread A/V sync via `crossbeam-channel`
+//!
 //! ### Extension trait
 //!
 //! `VideoCodecEncodeExt` adds encode-specific helpers (`.default_extension()`,

@@ -6,7 +6,7 @@ Wire decode, filter, and encode into a single configured pipeline. Instead of ma
 
 ```toml
 [dependencies]
-ff-pipeline = "0.3"
+ff-pipeline = "0.6"
 ```
 
 ## Building a Pipeline
@@ -58,8 +58,6 @@ The progress callback receives a `Progress` value on each encoded frame:
 | `p.percent()`        | `Option<f64>`     | `(frames_processed / total_frames) * 100` |
 
 Return `false` from the callback to stop processing. The pipeline will drain in-flight frames and return `Err(PipelineError::Cancelled)`.
-
-> **Current status**: `Pipeline::run()` is a stub in this release. The builder, configuration types, and progress tracking types are complete and stable; the decode → filter → encode execution loop will be implemented in the next release.
 
 ## Error Handling
 
