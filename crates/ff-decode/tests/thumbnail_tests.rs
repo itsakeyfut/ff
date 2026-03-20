@@ -416,7 +416,7 @@ fn test_thumbnails_after_decode() {
     let mut decoder = create_decoder().expect("Failed to create decoder");
 
     // Decode some frames first
-    let _frames: Vec<_> = decoder.frames().take(10).collect();
+    let _frames: Vec<_> = decoder.by_ref().take(10).collect();
 
     // Then generate thumbnails
     let thumbnails = decoder

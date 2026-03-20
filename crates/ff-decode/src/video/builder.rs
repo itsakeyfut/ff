@@ -445,8 +445,8 @@ impl VideoDecoderBuilder {
     ///     .build()?;
     ///
     /// // Start decoding
-    /// for frame in decoder.frames().take(100) {
-    ///     let frame = frame?;
+    /// for result in &mut decoder {
+    ///     let frame = result?;
     ///     // Process frame...
     /// }
     /// ```
@@ -499,6 +499,7 @@ impl VideoDecoderBuilder {
             frame_pool: self.frame_pool,
             inner,
             stream_info,
+            fused: false,
         })
     }
 }
@@ -523,7 +524,7 @@ impl VideoDecoderBuilder {
 ///
 /// # Frame Decoding
 ///
-/// Frames can be decoded one at a time or using an iterator:
+/// Frames can be decoded one at a time or using the built-in iterator:
 ///
 /// ```ignore
 /// // Decode one frame
@@ -531,9 +532,9 @@ impl VideoDecoderBuilder {
 ///     println!("Frame at {:?}", frame.timestamp().as_duration());
 /// }
 ///
-/// // Use iterator
-/// for frame in decoder.frames().take(100) {
-///     let frame = frame?;
+/// // Iterator form — VideoDecoder implements Iterator directly
+/// for result in &mut decoder {
+///     let frame = result?;
 ///     // Process frame...
 /// }
 /// ```
@@ -567,6 +568,8 @@ pub struct VideoDecoder {
     inner: VideoDecoderInner,
     /// Video stream information
     stream_info: VideoStreamInfo,
+    /// Set to `true` after a decoding error; causes [`Iterator::next`] to return `None`.
+    fused: bool,
 }
 
 impl VideoDecoder {
@@ -742,28 +745,6 @@ impl VideoDecoder {
         self.inner.decode_one()
     }
 
-    /// Returns an iterator over decoded frames.
-    ///
-    /// This provides a convenient way to iterate over all frames in the video.
-    /// The iterator will continue until end of stream or an error occurs.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use ff_decode::VideoDecoder;
-    ///
-    /// let mut decoder = VideoDecoder::open("video.mp4")?.build()?;
-    ///
-    /// // Process first 100 frames
-    /// for frame in decoder.frames().take(100) {
-    ///     let frame = frame?;
-    ///     // Process frame...
-    /// }
-    /// ```
-    pub fn frames(&mut self) -> impl Iterator<Item = Result<VideoFrame, DecodeError>> + '_ {
-        VideoFrameIterator { decoder: self }
-    }
-
     /// Decodes all frames within a specified time range.
     ///
     /// This method seeks to the start position and decodes all frames until
@@ -777,7 +758,7 @@ impl VideoDecoder {
     /// - The decoder position after this call will be at or past `end`
     ///
     /// For large time ranges or high frame rates, this may allocate significant
-    /// memory. Consider using [`frames()`](Self::frames) with manual filtering
+    /// memory. Consider iterating manually with [`decode_one()`](Self::decode_one)
     /// for very large ranges.
     ///
     /// # Arguments
@@ -845,8 +826,7 @@ impl VideoDecoder {
         // Collect frames in the range
         let mut frames = Vec::new();
 
-        for frame_result in self.frames() {
-            let frame = frame_result?;
+        while let Some(frame) = self.decode_one()? {
             let frame_time = frame.timestamp().as_duration();
 
             // Stop if we've passed the end of the range
@@ -1170,25 +1150,25 @@ impl VideoDecoder {
     }
 }
 
-/// Iterator over decoded video frames.
-///
-/// Created by calling [`VideoDecoder::frames()`]. Yields frames until the end
-/// of the stream is reached or an error occurs.
-pub(crate) struct VideoFrameIterator<'a> {
-    decoder: &'a mut VideoDecoder,
-}
-
-impl Iterator for VideoFrameIterator<'_> {
+impl Iterator for VideoDecoder {
     type Item = Result<VideoFrame, DecodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.decoder.decode_one() {
+        if self.fused {
+            return None;
+        }
+        match self.decode_one() {
             Ok(Some(frame)) => Some(Ok(frame)),
-            Ok(None) => None, // EOF
-            Err(e) => Some(Err(e)),
+            Ok(None) => None,
+            Err(e) => {
+                self.fused = true;
+                Some(Err(e))
+            }
         }
     }
 }
+
+impl std::iter::FusedIterator for VideoDecoder {}
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::expect_used, clippy::float_cmp)]
@@ -1326,14 +1306,6 @@ mod tests {
 
         let default_mode = SeekMode::default();
         assert_eq!(default_mode, SeekMode::Keyframe);
-    }
-
-    #[test]
-    fn test_frame_iterator_structure() {
-        // Test that VideoFrameIterator can be created (compile-time check)
-        // The actual iteration test is in integration tests with real video files
-        let builder = VideoDecoderBuilder::new(PathBuf::from("test.mp4"));
-        let _ = builder; // Ensure it compiles
     }
 
     #[test]

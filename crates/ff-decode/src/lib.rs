@@ -34,8 +34,8 @@
 //! println!("Resolution: {}x{}", decoder.width(), decoder.height());
 //!
 //! // Decode frames sequentially
-//! for frame in decoder.frames().take(100) {
-//!     let frame = frame?;
+//! for result in &mut decoder {
+//!     let frame = result?;
 //!     println!("Frame at {:?}", frame.timestamp().as_duration());
 //! }
 //!
@@ -55,8 +55,8 @@
 //!     .build()?;
 //!
 //! // Decode all audio samples
-//! for frame in decoder.frames().take(100) {
-//!     let frame = frame?;
+//! for result in &mut decoder {
+//!     let frame = result?;
 //!     println!("Audio frame with {} samples", frame.samples());
 //! }
 //! ```

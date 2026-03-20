@@ -300,7 +300,7 @@ fn test_frame_iterator_basic() {
     let mut decoder = create_decoder().expect("Failed to create decoder");
 
     // Use iterator to decode first 10 frames
-    let frames: Vec<_> = decoder.frames().take(10).collect();
+    let frames: Vec<_> = decoder.by_ref().take(10).collect();
 
     assert_eq!(frames.len(), 10, "Should collect 10 frames");
 
@@ -322,7 +322,7 @@ fn test_frame_iterator_timestamps_increase() {
     let mut last_pts = None;
 
     // Iterate over first 20 frames
-    for (i, frame_result) in decoder.frames().take(20).enumerate() {
+    for (i, frame_result) in decoder.by_ref().take(20).enumerate() {
         let frame =
             frame_result.unwrap_or_else(|e| panic!("Failed to decode frame {}: {:?}", i, e));
 
@@ -350,8 +350,8 @@ fn test_frame_iterator_with_filter() {
     let target = Duration::from_secs(2);
 
     let late_frames: Vec<_> = decoder
-        .frames()
-        .filter_map(|r| r.ok())
+        .by_ref()
+        .filter_map(|r: Result<_, _>| r.ok())
         .filter(|f| f.timestamp().as_duration() >= target)
         .take(5)
         .collect();
@@ -373,7 +373,7 @@ fn test_frame_iterator_early_break() {
 
     // Break early in iteration
     let mut count = 0;
-    for frame_result in decoder.frames() {
+    for frame_result in &mut decoder {
         let _ = frame_result.expect("Frame should decode successfully");
         count += 1;
         if count >= 3 {
@@ -397,7 +397,7 @@ fn test_frame_iterator_multiple_iterations() {
     let mut decoder = create_decoder().expect("Failed to create decoder");
 
     // First iteration
-    let first_batch: Vec<_> = decoder.frames().take(5).collect();
+    let first_batch: Vec<_> = decoder.by_ref().take(5).collect();
     assert_eq!(first_batch.len(), 5, "First batch should have 5 frames");
 
     // Seek back to beginning
@@ -406,6 +406,6 @@ fn test_frame_iterator_multiple_iterations() {
         .expect("Seek should succeed");
 
     // Second iteration
-    let second_batch: Vec<_> = decoder.frames().take(5).collect();
+    let second_batch: Vec<_> = decoder.by_ref().take(5).collect();
     assert_eq!(second_batch.len(), 5, "Second batch should have 5 frames");
 }

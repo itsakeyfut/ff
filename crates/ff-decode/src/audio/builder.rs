@@ -203,8 +203,8 @@ impl AudioDecoderBuilder {
     ///     .build()?;
     ///
     /// // Start decoding
-    /// for frame in decoder.frames().take(100) {
-    ///     let frame = frame?;
+    /// for result in &mut decoder {
+    ///     let frame = result?;
     ///     // Process frame...
     /// }
     /// ```
@@ -236,6 +236,7 @@ impl AudioDecoderBuilder {
             config,
             inner,
             stream_info,
+            fused: false,
         })
     }
 }
@@ -269,9 +270,9 @@ impl AudioDecoderBuilder {
 ///     println!("Frame with {} samples", frame.samples());
 /// }
 ///
-/// // Use iterator
-/// for frame in decoder.frames().take(100) {
-///     let frame = frame?;
+/// // Iterator form — AudioDecoder implements Iterator directly
+/// for result in &mut decoder {
+///     let frame = result?;
 ///     // Process frame...
 /// }
 /// ```
@@ -296,6 +297,8 @@ pub struct AudioDecoder {
     inner: AudioDecoderInner,
     /// Audio stream information
     stream_info: AudioStreamInfo,
+    /// Set to `true` after a decoding error; causes [`Iterator::next`] to return `None`.
+    fused: bool,
 }
 
 impl AudioDecoder {
@@ -425,28 +428,6 @@ impl AudioDecoder {
         self.inner.decode_one()
     }
 
-    /// Returns an iterator over decoded frames.
-    ///
-    /// This provides a convenient way to iterate over all frames in the audio.
-    /// The iterator will continue until end of stream or an error occurs.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use ff_decode::AudioDecoder;
-    ///
-    /// let mut decoder = AudioDecoder::open("audio.mp3")?.build()?;
-    ///
-    /// // Process first 100 frames
-    /// for frame in decoder.frames().take(100) {
-    ///     let frame = frame?;
-    ///     // Process frame...
-    /// }
-    /// ```
-    pub fn frames(&mut self) -> impl Iterator<Item = Result<AudioFrame, DecodeError>> + '_ {
-        AudioFrameIterator { decoder: self }
-    }
-
     /// Decodes all frames and returns their raw PCM data.
     ///
     /// This method decodes the entire audio file and returns all samples
@@ -490,9 +471,7 @@ impl AudioDecoder {
     pub fn decode_all(&mut self) -> Result<Vec<u8>, DecodeError> {
         let mut buffer = Vec::new();
 
-        for frame_result in self.frames() {
-            let frame = frame_result?;
-
+        while let Some(frame) = self.decode_one()? {
             // Collect samples from all planes
             for plane in frame.planes() {
                 buffer.extend_from_slice(plane);
@@ -556,8 +535,7 @@ impl AudioDecoder {
         // Collect frames in the range
         let mut buffer = Vec::new();
 
-        for frame_result in self.frames() {
-            let frame = frame_result?;
+        while let Some(frame) = self.decode_one()? {
             let frame_time = frame.timestamp().as_duration();
 
             // Stop if we've passed the end of the range
@@ -628,25 +606,25 @@ impl AudioDecoder {
     }
 }
 
-/// Iterator over decoded audio frames.
-///
-/// Created by calling [`AudioDecoder::frames()`]. Yields frames until the end
-/// of the stream is reached or an error occurs.
-pub(crate) struct AudioFrameIterator<'a> {
-    decoder: &'a mut AudioDecoder,
-}
-
-impl Iterator for AudioFrameIterator<'_> {
+impl Iterator for AudioDecoder {
     type Item = Result<AudioFrame, DecodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.decoder.decode_one() {
+        if self.fused {
+            return None;
+        }
+        match self.decode_one() {
             Ok(Some(frame)) => Some(Ok(frame)),
-            Ok(None) => None, // EOF
-            Err(e) => Some(Err(e)),
+            Ok(None) => None,
+            Err(e) => {
+                self.fused = true;
+                Some(Err(e))
+            }
         }
     }
 }
+
+impl std::iter::FusedIterator for AudioDecoder {}
 
 #[cfg(test)]
 mod tests {
