@@ -106,6 +106,10 @@ name = "video_transcode"
 required-features = ["pipeline", "encode"]
 
 [[example]]
+name = "decode_to_pcm"
+required-features = ["decode"]
+
+[[example]]
 name = "encode_audio_direct"
 required-features = ["decode", "encode"]
 
