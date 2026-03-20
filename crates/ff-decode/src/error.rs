@@ -102,9 +102,9 @@ pub enum DecodeError {
 
     /// Output dimensions are invalid.
     ///
-    /// Width and height passed to [`VideoDecoderBuilder::output_size`],
-    /// [`output_width`](VideoDecoderBuilder::output_width), or
-    /// [`output_height`](VideoDecoderBuilder::output_height) must be
+    /// Width and height passed to [`output_size`](crate::video::builder::VideoDecoderBuilder::output_size),
+    /// [`output_width`](crate::video::builder::VideoDecoderBuilder::output_width), or
+    /// [`output_height`](crate::video::builder::VideoDecoderBuilder::output_height) must be
     /// greater than zero and even (required by most pixel formats).
     #[error("Invalid output dimensions: {width}x{height} (must be > 0 and even)")]
     InvalidOutputDimensions {
