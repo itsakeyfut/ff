@@ -493,36 +493,41 @@ impl AudioFrame {
 
     /// Returns the raw sample data as a contiguous byte slice.
     ///
-    /// For packed formats, this returns a reference to the single plane.
-    /// For planar formats, this returns `None` (use [`channel()`](Self::channel) instead).
+    /// For packed formats (e.g. [`SampleFormat::F32`], [`SampleFormat::I16`]), this returns
+    /// the interleaved sample bytes. For planar formats (e.g. [`SampleFormat::F32p`],
+    /// [`SampleFormat::I16p`]), this returns an empty slice — use [`channel()`](Self::channel)
+    /// or [`channel_as_f32()`](Self::channel_as_f32) to access individual channel planes instead.
     ///
     /// # Examples
     ///
     /// ```
     /// use ff_format::{AudioFrame, SampleFormat};
     ///
-    /// // Packed format - returns data
+    /// // Packed format - returns interleaved sample bytes
     /// let packed = AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap();
-    /// assert!(packed.data().is_some());
-    /// assert_eq!(packed.data().unwrap().len(), 1024 * 2 * 4);
+    /// assert_eq!(packed.data().len(), 1024 * 2 * 4);
     ///
-    /// // Planar format - returns None
+    /// // Planar format - returns empty slice; use channel() instead
     /// let planar = AudioFrame::empty(1024, 2, 48000, SampleFormat::F32p).unwrap();
-    /// assert!(planar.data().is_none());
+    /// assert!(planar.data().is_empty());
+    /// let left = planar.channel(0).unwrap();
+    /// assert_eq!(left.len(), 1024 * 4);
     /// ```
     #[must_use]
     #[inline]
-    pub fn data(&self) -> Option<&[u8]> {
+    pub fn data(&self) -> &[u8] {
         if self.format.is_packed() && self.planes.len() == 1 {
-            Some(&self.planes[0])
+            &self.planes[0]
         } else {
-            None
+            &[]
         }
     }
 
     /// Returns mutable access to the raw sample data.
     ///
-    /// Only available for packed formats.
+    /// For packed formats, returns the interleaved sample bytes as a mutable slice.
+    /// For planar formats, returns an empty mutable slice — use
+    /// [`channel_mut()`](Self::channel_mut) to modify individual channel planes instead.
     ///
     /// # Examples
     ///
@@ -530,17 +535,16 @@ impl AudioFrame {
     /// use ff_format::{AudioFrame, SampleFormat};
     ///
     /// let mut frame = AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap();
-    /// if let Some(data) = frame.data_mut() {
-    ///     data[0] = 128;
-    /// }
+    /// let data = frame.data_mut();
+    /// data[0] = 128;
     /// ```
     #[must_use]
     #[inline]
-    pub fn data_mut(&mut self) -> Option<&mut [u8]> {
+    pub fn data_mut(&mut self) -> &mut [u8] {
         if self.format.is_packed() && self.planes.len() == 1 {
-            Some(&mut self.planes[0])
+            &mut self.planes[0]
         } else {
-            None
+            &mut []
         }
     }
 
@@ -582,14 +586,16 @@ impl AudioFrame {
             return None;
         }
 
-        self.data().map(|bytes| {
-            // SAFETY: We verified the format is F32, and the data was allocated
-            // for F32 samples. Vec<u8> is aligned to at least 1 byte, but in practice
-            // most allocators align to at least 8/16 bytes which is sufficient for f32.
-            let ptr = bytes.as_ptr().cast::<f32>();
-            let len = bytes.len() / std::mem::size_of::<f32>();
-            unsafe { std::slice::from_raw_parts(ptr, len) }
-        })
+        let bytes = self.data();
+        if bytes.is_empty() {
+            return None;
+        }
+        // SAFETY: We verified the format is F32, and the data was allocated
+        // for F32 samples. Vec<u8> is aligned to at least 1 byte, but in practice
+        // most allocators align to at least 8/16 bytes which is sufficient for f32.
+        let ptr = bytes.as_ptr().cast::<f32>();
+        let len = bytes.len() / std::mem::size_of::<f32>();
+        Some(unsafe { std::slice::from_raw_parts(ptr, len) })
     }
 
     /// Returns mutable access to sample data as an f32 slice.
@@ -602,11 +608,13 @@ impl AudioFrame {
             return None;
         }
 
-        self.data_mut().map(|bytes| {
-            let ptr = bytes.as_mut_ptr().cast::<f32>();
-            let len = bytes.len() / std::mem::size_of::<f32>();
-            unsafe { std::slice::from_raw_parts_mut(ptr, len) }
-        })
+        let bytes = self.data_mut();
+        if bytes.is_empty() {
+            return None;
+        }
+        let ptr = bytes.as_mut_ptr().cast::<f32>();
+        let len = bytes.len() / std::mem::size_of::<f32>();
+        Some(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
     }
 
     /// Returns the sample data as an i16 slice.
@@ -631,11 +639,13 @@ impl AudioFrame {
             return None;
         }
 
-        self.data().map(|bytes| {
-            let ptr = bytes.as_ptr().cast::<i16>();
-            let len = bytes.len() / std::mem::size_of::<i16>();
-            unsafe { std::slice::from_raw_parts(ptr, len) }
-        })
+        let bytes = self.data();
+        if bytes.is_empty() {
+            return None;
+        }
+        let ptr = bytes.as_ptr().cast::<i16>();
+        let len = bytes.len() / std::mem::size_of::<i16>();
+        Some(unsafe { std::slice::from_raw_parts(ptr, len) })
     }
 
     /// Returns mutable access to sample data as an i16 slice.
@@ -648,11 +658,13 @@ impl AudioFrame {
             return None;
         }
 
-        self.data_mut().map(|bytes| {
-            let ptr = bytes.as_mut_ptr().cast::<i16>();
-            let len = bytes.len() / std::mem::size_of::<i16>();
-            unsafe { std::slice::from_raw_parts_mut(ptr, len) }
-        })
+        let bytes = self.data_mut();
+        if bytes.is_empty() {
+            return None;
+        }
+        let ptr = bytes.as_mut_ptr().cast::<i16>();
+        let len = bytes.len() / std::mem::size_of::<i16>();
+        Some(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
     }
 
     /// Returns a specific channel's data as an f32 slice.
@@ -863,9 +875,7 @@ impl AudioFrame {
                 out
             }
             SampleFormat::F64 => {
-                let Some(bytes) = self.data() else {
-                    return Vec::new();
-                };
+                let bytes = self.data();
                 bytes
                     .chunks_exact(8)
                     .map(|b| {
@@ -888,9 +898,7 @@ impl AudioFrame {
                 out
             }
             SampleFormat::I16 => {
-                let Some(bytes) = self.data() else {
-                    return Vec::new();
-                };
+                let bytes = self.data();
                 bytes
                     .chunks_exact(2)
                     .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / f32::from(i16::MAX))
@@ -910,9 +918,7 @@ impl AudioFrame {
                 out
             }
             SampleFormat::I32 => {
-                let Some(bytes) = self.data() else {
-                    return Vec::new();
-                };
+                let bytes = self.data();
                 bytes
                     .chunks_exact(4)
                     .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / i32::MAX as f32)
@@ -933,9 +939,7 @@ impl AudioFrame {
                 out
             }
             SampleFormat::U8 => {
-                let Some(bytes) = self.data() else {
-                    return Vec::new();
-                };
+                let bytes = self.data();
                 bytes
                     .iter()
                     .map(|&b| (f32::from(b) - 128.0) / 128.0)
@@ -1004,9 +1008,7 @@ impl AudioFrame {
                 out
             }
             SampleFormat::F32 => {
-                let Some(bytes) = self.data() else {
-                    return Vec::new();
-                };
+                let bytes = self.data();
                 bytes
                     .chunks_exact(4)
                     .map(|b| {
@@ -1030,9 +1032,7 @@ impl AudioFrame {
                 out
             }
             SampleFormat::F64 => {
-                let Some(bytes) = self.data() else {
-                    return Vec::new();
-                };
+                let bytes = self.data();
                 bytes
                     .chunks_exact(8)
                     .map(|b| {
@@ -1059,9 +1059,7 @@ impl AudioFrame {
                 out
             }
             SampleFormat::I32 => {
-                let Some(bytes) = self.data() else {
-                    return Vec::new();
-                };
+                let bytes = self.data();
                 bytes
                     .chunks_exact(4)
                     .map(|b| (i32::from_le_bytes([b[0], b[1], b[2], b[3]]) >> 16) as i16)
@@ -1081,9 +1079,7 @@ impl AudioFrame {
                 out
             }
             SampleFormat::U8 => {
-                let Some(bytes) = self.data() else {
-                    return Vec::new();
-                };
+                let bytes = self.data();
                 bytes.iter().map(|&b| (i16::from(b) - 128) << 8).collect()
             }
             SampleFormat::U8p => {
@@ -1389,25 +1385,23 @@ mod tests {
     #[test]
     fn test_data_packed() {
         let frame = AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap();
-        assert!(frame.data().is_some());
-        assert_eq!(frame.data().unwrap().len(), 1024 * 2 * 4);
+        assert!(!frame.data().is_empty());
+        assert_eq!(frame.data().len(), 1024 * 2 * 4);
     }
 
     #[test]
     fn test_data_planar_returns_none() {
         let frame = AudioFrame::empty(1024, 2, 48000, SampleFormat::F32p).unwrap();
-        assert!(frame.data().is_none());
+        assert!(frame.data().is_empty());
     }
 
     #[test]
     fn test_data_mut() {
         let mut frame = AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap();
 
-        if let Some(data) = frame.data_mut() {
-            data[0] = 123;
-        }
+        frame.data_mut()[0] = 123;
 
-        assert_eq!(frame.data().unwrap()[0], 123);
+        assert_eq!(frame.data()[0], 123);
     }
 
     // ==========================================================================
@@ -1620,7 +1614,7 @@ mod tests {
         for format in formats {
             let frame = AudioFrame::empty(1024, 2, 48000, format).unwrap();
             assert_eq!(frame.num_planes(), 1);
-            assert!(frame.data().is_some());
+            assert!(!frame.data().is_empty());
         }
     }
 
@@ -1637,7 +1631,7 @@ mod tests {
         for format in formats {
             let frame = AudioFrame::empty(1024, 2, 48000, format).unwrap();
             assert_eq!(frame.num_planes(), 2);
-            assert!(frame.data().is_none());
+            assert!(frame.data().is_empty());
             assert!(frame.channel(0).is_some());
             assert!(frame.channel(1).is_some());
         }
@@ -1659,6 +1653,37 @@ mod tests {
             assert!(frame.plane(i).is_some());
         }
         assert!(frame.plane(6).is_none());
+    }
+
+    // ==========================================================================
+    // data() / data_mut() Tests
+    // ==========================================================================
+
+    #[test]
+    fn data_packed_should_return_sample_bytes() {
+        let frame = AudioFrame::empty(4, 2, 48000, SampleFormat::F32).unwrap();
+        // 4 samples * 2 channels * 4 bytes = 32
+        assert_eq!(frame.data().len(), 32);
+    }
+
+    #[test]
+    fn data_planar_should_return_empty_slice() {
+        let frame = AudioFrame::empty(4, 2, 48000, SampleFormat::F32p).unwrap();
+        assert!(frame.data().is_empty());
+    }
+
+    #[test]
+    fn data_mut_packed_should_allow_mutation() {
+        let mut frame = AudioFrame::empty(4, 1, 48000, SampleFormat::I16).unwrap();
+        frame.data_mut()[0] = 0x42;
+        frame.data_mut()[1] = 0x00;
+        assert_eq!(frame.data()[0], 0x42);
+    }
+
+    #[test]
+    fn data_mut_planar_should_return_empty_slice() {
+        let mut frame = AudioFrame::empty(4, 2, 48000, SampleFormat::I16p).unwrap();
+        assert!(frame.data_mut().is_empty());
     }
 
     // ==========================================================================

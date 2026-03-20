@@ -147,10 +147,7 @@ fn main() {
                 frame.format(),
             );
             let plane = frame.data();
-            println!(
-                "Plane[0]: data_len={}  bytes_per_sample=2",
-                plane.map_or(0, |p| p.len())
-            );
+            println!("Plane[0]: data_len={}  bytes_per_sample=2", plane.len());
         }
         Ok(None) => println!("No audio frames in file"),
         Err(e) => println!("Decode error: {e}"),
