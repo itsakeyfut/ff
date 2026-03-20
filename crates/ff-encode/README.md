@@ -6,12 +6,12 @@ Encode video and audio to any format with a builder chain. The encoder validates
 
 ```toml
 [dependencies]
-ff-encode = "0.3"
-ff-format = "0.3"
+ff-encode = "0.6"
+ff-format = "0.6"
 
 # Enable GPL-licensed encoders (libx264, libx265).
 # Requires GPL compliance or MPEG LA licensing in your project.
-# ff-encode = { version = "0.3", features = ["gpl"] }
+# ff-encode = { version = "0.6", features = ["gpl"] }
 ```
 
 By default, only LGPL-compatible encoders are enabled.
@@ -111,7 +111,7 @@ Enable the `gpl` feature to add libx264 and libx265. This changes the license te
 
 ```toml
 [dependencies]
-ff-encode = { version = "0.5", features = ["tokio"] }
+ff-encode = { version = "0.6", features = ["tokio"] }
 ```
 
 When the `tokio` feature is disabled, only the synchronous `VideoEncoder`, `AudioEncoder`, and `ImageEncoder` APIs are compiled. No tokio dependency is pulled in.
