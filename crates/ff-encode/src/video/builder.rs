@@ -368,6 +368,23 @@ impl VideoEncoderBuilder {
             });
         }
 
+        if let Some(VideoCodecOptions::Vp9(ref opts)) = self.codec_options {
+            if opts.cpu_used < -8 || opts.cpu_used > 8 {
+                return Err(EncodeError::InvalidOption {
+                    name: "cpu_used".to_string(),
+                    reason: "must be -8–8".to_string(),
+                });
+            }
+            if let Some(cq) = opts.cq_level
+                && cq > 63
+            {
+                return Err(EncodeError::InvalidOption {
+                    name: "cq_level".to_string(),
+                    reason: "must be 0–63".to_string(),
+                });
+            }
+        }
+
         if has_audio {
             if let Some(rate) = self.audio_sample_rate
                 && rate == 0

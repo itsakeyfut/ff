@@ -15,7 +15,7 @@ mod fixtures;
 use ff_encode::{
     Av1Options, Av1Usage, BitrateMode, EncodeError, H264Options, H264Preset, H264Profile, H264Tune,
     H265Options, H265Profile, H265Tier, Preset, SvtAv1Options, VideoCodec, VideoCodecOptions,
-    VideoEncoder,
+    VideoEncoder, Vp9Options,
 };
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
@@ -777,6 +777,101 @@ fn svtav1_preset_14_should_return_invalid_option_error() {
         .codec_options(VideoCodecOptions::Av1Svt(SvtAv1Options {
             preset: 14,
             ..SvtAv1Options::default()
+        }))
+        .build();
+
+    assert!(
+        matches!(result, Err(EncodeError::InvalidOption { .. })),
+        "Expected InvalidOption error"
+    );
+}
+
+// ============================================================================
+// VP9 codec_options Tests
+// ============================================================================
+
+#[test]
+fn vp9_cpu_used_4_should_produce_valid_output() {
+    let output_path = test_output_path("vp9_cpu_used_4.webm");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let mut encoder = match VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Vp9)
+        .codec_options(VideoCodecOptions::Vp9(Vp9Options {
+            cpu_used: 4,
+            ..Vp9Options::default()
+        }))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping vp9_cpu_used_4 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("vp9_cpu_used_4: codec={codec_name}");
+}
+
+#[test]
+fn vp9_cq_mode_should_produce_valid_output() {
+    let output_path = test_output_path("vp9_cq_mode.webm");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let mut encoder = match VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Vp9)
+        .codec_options(VideoCodecOptions::Vp9(Vp9Options {
+            cpu_used: 4,
+            cq_level: Some(33),
+            ..Vp9Options::default()
+        }))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping vp9_cq_mode test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("vp9_cq_mode: codec={codec_name}");
+}
+
+#[test]
+fn vp9_cpu_used_out_of_range_should_return_invalid_option_error() {
+    let output_path = test_output_path("vp9_cpu_used_oob.webm");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Vp9)
+        .codec_options(VideoCodecOptions::Vp9(Vp9Options {
+            cpu_used: 9,
+            ..Vp9Options::default()
         }))
         .build();
 
