@@ -9,7 +9,7 @@
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
 
-use crate::audio::codec_options::AudioCodecOptions;
+use crate::audio::codec_options::{AudioCodecOptions, Mp3Quality};
 use crate::{AudioCodec, EncodeError};
 use ff_format::AudioFrame;
 use ff_sys::{
@@ -360,21 +360,32 @@ impl AudioEncoderInner {
                 }
             }
             AudioCodecOptions::Mp3(mp3) => {
-                // q (VBR quality, 0-9)
-                let q_str = mp3.quality.to_string();
-                if let Ok(s) = CString::new(q_str.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"q\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
-                    );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=q value={} encoder={encoder_name}",
-                            mp3.quality
-                        );
+                match mp3.quality {
+                    Mp3Quality::Vbr(q) => {
+                        // VBR mode: override bitrate to 0 and set the libmp3lame q scale.
+                        // SAFETY: codec_ctx is non-null; direct field write is safe.
+                        (*codec_ctx).bit_rate = 0;
+                        let q_str = q.to_string();
+                        if let Ok(s) = CString::new(q_str.as_str()) {
+                            // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
+                            let ret = ff_sys::av_opt_set(
+                                (*codec_ctx).priv_data,
+                                b"q\0".as_ptr() as *const i8,
+                                s.as_ptr(),
+                                0,
+                            );
+                            if ret < 0 {
+                                log::warn!(
+                                    "av_opt_set failed option=q value={q} \
+                                     encoder={encoder_name}"
+                                );
+                            }
+                        }
+                    }
+                    Mp3Quality::Cbr(bitrate) => {
+                        // CBR mode: set the fixed bitrate directly on the codec context.
+                        // SAFETY: codec_ctx is non-null; direct field write is safe.
+                        (*codec_ctx).bit_rate = i64::from(bitrate);
                     }
                 }
             }

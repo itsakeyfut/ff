@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use ff_format::AudioFrame;
 
-use super::codec_options::AudioCodecOptions;
+use super::codec_options::{AudioCodecOptions, Mp3Quality};
 use super::encoder_inner::{AudioEncoderConfig, AudioEncoderInner};
 use crate::{AudioCodec, Container, EncodeError};
 
@@ -148,6 +148,15 @@ impl AudioEncoder {
             return Err(EncodeError::InvalidOption {
                 name: "vbr_quality".to_string(),
                 reason: "must be 1–5".to_string(),
+            });
+        }
+        if let Some(AudioCodecOptions::Mp3(ref opts)) = builder.codec_options
+            && let Mp3Quality::Vbr(q) = opts.quality
+            && q > 9
+        {
+            return Err(EncodeError::InvalidOption {
+                name: "vbr_quality".to_string(),
+                reason: "must be 0–9 (0=best)".to_string(),
             });
         }
 

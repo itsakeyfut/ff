@@ -14,6 +14,6 @@ mod encoder_inner;
 pub use async_encoder::AsyncAudioEncoder;
 pub use builder::{AudioEncoder, AudioEncoderBuilder};
 pub use codec_options::{
-    AacOptions, AacProfile, AudioCodecOptions, FlacOptions, Mp3Options, OpusApplication,
-    OpusOptions,
+    AacOptions, AacProfile, AudioCodecOptions, FlacOptions, Mp3Options, Mp3Quality,
+    OpusApplication, OpusOptions,
 };
