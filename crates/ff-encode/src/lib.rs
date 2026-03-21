@@ -213,8 +213,9 @@ pub use image::{ImageEncoder, ImageEncoderBuilder};
 pub use preset::Preset;
 pub use progress::{EncodeProgress, EncodeProgressCallback};
 pub use video::{
-    Av1Options, Av1Usage, DnxhdOptions, H264Options, H264Profile, H265Options, H265Profile,
-    H265Tier, ProResOptions, VideoCodecOptions, VideoEncoder, VideoEncoderBuilder, Vp9Options,
+    Av1Options, Av1Usage, DnxhdOptions, H264Options, H264Preset, H264Profile, H264Tune,
+    H265Options, H265Profile, H265Tier, ProResOptions, VideoCodecOptions, VideoEncoder,
+    VideoEncoderBuilder, Vp9Options,
 };
 
 #[cfg(feature = "tokio")]

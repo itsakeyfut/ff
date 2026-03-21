@@ -13,7 +13,8 @@
 mod fixtures;
 
 use ff_encode::{
-    BitrateMode, H264Options, H264Profile, Preset, VideoCodec, VideoCodecOptions, VideoEncoder,
+    BitrateMode, H264Options, H264Preset, H264Profile, H264Tune, Preset, VideoCodec,
+    VideoCodecOptions, VideoEncoder,
 };
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
@@ -867,6 +868,87 @@ fn h264_baseline_profile_should_produce_valid_output() {
     assert_valid_output_file(&output_path);
     println!(
         "H264 Baseline: codec={codec_name} size={} bytes",
+        get_file_size(&output_path)
+    );
+}
+
+#[test]
+fn h264_veryslow_preset_should_produce_valid_output() {
+    let output_path = test_output_path("h264_veryslow_preset.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let opts = VideoCodecOptions::H264(H264Options {
+        preset: Some(H264Preset::Veryslow),
+        ..H264Options::default()
+    });
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::H264)
+        .codec_options(opts)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: no H.264 encoder available: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!(
+        "H264 veryslow preset: codec={codec_name} size={} bytes",
+        get_file_size(&output_path)
+    );
+}
+
+#[test]
+fn h264_zerolatency_tune_should_produce_valid_output() {
+    let output_path = test_output_path("h264_zerolatency_tune.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let opts = VideoCodecOptions::H264(H264Options {
+        preset: Some(H264Preset::Ultrafast),
+        tune: Some(H264Tune::Zerolatency),
+        ..H264Options::default()
+    });
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::H264)
+        .codec_options(opts)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: no H.264 encoder available: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!(
+        "H264 zerolatency tune: codec={codec_name} size={} bytes",
         get_file_size(&output_path)
     );
 }

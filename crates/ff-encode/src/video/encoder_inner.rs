@@ -325,11 +325,53 @@ impl VideoEncoderInner {
                         }
                     }
                 }
-                // Direct codec context fields (safe: codec_ctx is valid and non-null).
+                // Direct codec context fields.
                 // SAFETY: codec_ctx is a valid allocated AVCodecContext.
                 (*codec_ctx).max_b_frames = h264.bframes as i32;
                 (*codec_ctx).gop_size = h264.gop_size as i32;
                 (*codec_ctx).refs = h264.refs as i32;
+                // preset (libx264-specific; hardware encoders return a negative value
+                // which we log and skip — never returned as an error)
+                if let Some(preset) = h264.preset
+                    && let Ok(s) = CString::new(preset.as_str())
+                {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name
+                    // and value are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"preset\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=preset value={} \
+                             encoder={encoder_name}",
+                            preset.as_str()
+                        );
+                    }
+                }
+                // tune (libx264-specific; hardware encoders return a negative value
+                // which we log and skip — never returned as an error)
+                if let Some(tune) = h264.tune
+                    && let Ok(s) = CString::new(tune.as_str())
+                {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name
+                    // and value are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"tune\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=tune value={} \
+                             encoder={encoder_name}",
+                            tune.as_str()
+                        );
+                    }
+                }
             }
             VideoCodecOptions::H265(h265) => {
                 // profile

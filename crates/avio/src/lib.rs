@@ -231,9 +231,9 @@ pub use ff_decode::{
 #[cfg(feature = "encode")]
 pub use ff_encode::{
     AudioEncoder, Av1Options, Av1Usage, BitrateMode, CRF_MAX, Container, DnxhdOptions, EncodeError,
-    EncodeProgress, EncodeProgressCallback, H264Options, H264Profile, H265Options, H265Profile,
-    H265Tier, HardwareEncoder, ImageEncoder, Preset, ProResOptions, VideoCodecEncodeExt,
-    VideoCodecOptions, VideoEncoder, Vp9Options,
+    EncodeProgress, EncodeProgressCallback, H264Options, H264Preset, H264Profile, H264Tune,
+    H265Options, H265Profile, H265Tier, HardwareEncoder, ImageEncoder, Preset, ProResOptions,
+    VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder, Vp9Options,
 };
 
 // ── tokio feature ─────────────────────────────────────────────────────────────
