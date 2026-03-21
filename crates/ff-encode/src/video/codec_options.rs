@@ -55,7 +55,7 @@ impl Default for H264Options {
         Self {
             profile: H264Profile::High,
             level: None,
-            bframes: 3,
+            bframes: 2,
             gop_size: 250,
             refs: 3,
         }
@@ -249,7 +249,7 @@ mod tests {
         let opts = H264Options::default();
         assert_eq!(opts.profile, H264Profile::High);
         assert_eq!(opts.level, None);
-        assert_eq!(opts.bframes, 3);
+        assert_eq!(opts.bframes, 2);
         assert_eq!(opts.gop_size, 250);
         assert_eq!(opts.refs, 3);
     }

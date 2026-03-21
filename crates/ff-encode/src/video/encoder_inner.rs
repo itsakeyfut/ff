@@ -290,6 +290,8 @@ impl VideoEncoderInner {
             VideoCodecOptions::H264(h264) => {
                 // profile
                 if let Ok(s) = CString::new(h264.profile.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null (set by avcodec_alloc_context3);
+                    // option name and value are valid NUL-terminated C strings.
                     let ret = ff_sys::av_opt_set(
                         (*codec_ctx).priv_data,
                         b"profile\0".as_ptr() as *const i8,
@@ -307,6 +309,8 @@ impl VideoEncoderInner {
                 if let Some(level) = h264.level {
                     let level_str = level.to_string();
                     if let Ok(s) = CString::new(level_str.as_str()) {
+                        // SAFETY: codec_ctx and priv_data are non-null; option name and
+                        // value are valid NUL-terminated C strings.
                         let ret = ff_sys::av_opt_set(
                             (*codec_ctx).priv_data,
                             b"level\0".as_ptr() as *const i8,
@@ -321,7 +325,8 @@ impl VideoEncoderInner {
                         }
                     }
                 }
-                // Direct codec context fields
+                // Direct codec context fields (safe: codec_ctx is valid and non-null).
+                // SAFETY: codec_ctx is a valid allocated AVCodecContext.
                 (*codec_ctx).max_b_frames = h264.bframes as i32;
                 (*codec_ctx).gop_size = h264.gop_size as i32;
                 (*codec_ctx).refs = h264.refs as i32;
@@ -329,6 +334,8 @@ impl VideoEncoderInner {
             VideoCodecOptions::H265(h265) => {
                 // profile
                 if let Ok(s) = CString::new(h265.profile.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
                     let ret = ff_sys::av_opt_set(
                         (*codec_ctx).priv_data,
                         b"profile\0".as_ptr() as *const i8,
@@ -344,6 +351,8 @@ impl VideoEncoderInner {
                 }
                 // tier
                 if let Ok(s) = CString::new(h265.tier.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
                     let ret = ff_sys::av_opt_set(
                         (*codec_ctx).priv_data,
                         b"tier\0".as_ptr() as *const i8,
@@ -361,6 +370,8 @@ impl VideoEncoderInner {
                 if let Some(level) = h265.level {
                     let level_str = level.to_string();
                     if let Ok(s) = CString::new(level_str.as_str()) {
+                        // SAFETY: codec_ctx and priv_data are non-null; option name and
+                        // value are valid NUL-terminated C strings.
                         let ret = ff_sys::av_opt_set(
                             (*codec_ctx).priv_data,
                             b"level\0".as_ptr() as *const i8,
@@ -380,6 +391,8 @@ impl VideoEncoderInner {
                 // cpu-used
                 let cpu_used_str = av1.cpu_used.to_string();
                 if let Ok(s) = CString::new(cpu_used_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
                     let ret = ff_sys::av_opt_set(
                         (*codec_ctx).priv_data,
                         b"cpu-used\0".as_ptr() as *const i8,
@@ -396,6 +409,8 @@ impl VideoEncoderInner {
                 // tile-rows
                 let tile_rows_str = av1.tile_rows.to_string();
                 if let Ok(s) = CString::new(tile_rows_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
                     let ret = ff_sys::av_opt_set(
                         (*codec_ctx).priv_data,
                         b"tile-rows\0".as_ptr() as *const i8,
@@ -412,6 +427,8 @@ impl VideoEncoderInner {
                 // tile-columns
                 let tile_cols_str = av1.tile_cols.to_string();
                 if let Ok(s) = CString::new(tile_cols_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
                     let ret = ff_sys::av_opt_set(
                         (*codec_ctx).priv_data,
                         b"tile-columns\0".as_ptr() as *const i8,
@@ -428,6 +445,8 @@ impl VideoEncoderInner {
                 }
                 // usage
                 if let Ok(s) = CString::new(av1.usage.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
                     let ret = ff_sys::av_opt_set(
                         (*codec_ctx).priv_data,
                         b"usage\0".as_ptr() as *const i8,

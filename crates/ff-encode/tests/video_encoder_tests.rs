@@ -12,7 +12,9 @@
 
 mod fixtures;
 
-use ff_encode::{BitrateMode, Preset, VideoCodec, VideoEncoder};
+use ff_encode::{
+    BitrateMode, H264Options, H264Profile, Preset, VideoCodec, VideoCodecOptions, VideoEncoder,
+};
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
 };
@@ -778,4 +780,93 @@ fn chapter_round_trip_should_preserve_count_titles_and_timestamps() {
             actual.end()
         );
     }
+}
+
+// ============================================================================
+// Codec Options Tests
+// ============================================================================
+
+#[test]
+fn h264_high_profile_level41_should_produce_valid_output() {
+    let output_path = test_output_path("h264_high_profile_level41.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let opts = VideoCodecOptions::H264(H264Options {
+        profile: H264Profile::High,
+        level: Some(41),
+        ..H264Options::default()
+    });
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .preset(Preset::Ultrafast)
+        .codec_options(opts)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: no H.264 encoder available: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..30 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+
+    let file_size = get_file_size(&output_path);
+    assert!(file_size > 1000, "Output too small, likely corrupted");
+    println!("H264 High@4.1: codec={codec_name} size={file_size} bytes");
+}
+
+#[test]
+fn h264_baseline_profile_should_produce_valid_output() {
+    let output_path = test_output_path("h264_baseline_profile.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let opts = VideoCodecOptions::H264(H264Options {
+        profile: H264Profile::Baseline,
+        level: None,
+        bframes: 0, // Baseline does not support B-frames
+        ..H264Options::default()
+    });
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .preset(Preset::Ultrafast)
+        .codec_options(opts)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: no H.264 encoder available: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..30 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!(
+        "H264 Baseline: codec={codec_name} size={} bytes",
+        get_file_size(&output_path)
+    );
 }
