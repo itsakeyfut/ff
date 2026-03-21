@@ -350,6 +350,15 @@ impl VideoEncoderBuilder {
             }
         }
 
+        if let Some(VideoCodecOptions::Av1(ref opts)) = self.codec_options
+            && opts.cpu_used > 8
+        {
+            return Err(EncodeError::InvalidOption {
+                name: "cpu_used".to_string(),
+                reason: "must be 0–8".to_string(),
+            });
+        }
+
         if has_audio {
             if let Some(rate) = self.audio_sample_rate
                 && rate == 0
