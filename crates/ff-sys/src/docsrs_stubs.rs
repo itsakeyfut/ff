@@ -159,6 +159,8 @@ pub struct AVPacket {
     pub duration: i64,
 }
 
+pub type AVColorTransferCharacteristic = c_uint;
+
 pub struct AVCodecContext {
     pub codec_id: AVCodecID,
     pub bit_rate: i64,
@@ -178,6 +180,9 @@ pub struct AVCodecContext {
     pub hw_device_ctx: *mut AVBufferRef,
     pub hw_frames_ctx: *mut AVBufferRef,
     pub priv_data: *mut c_void,
+    pub color_primaries: AVColorPrimaries,
+    pub color_trc: AVColorTransferCharacteristic,
+    pub colorspace: AVColorSpace,
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -314,6 +319,14 @@ pub const AVColorSpace_AVCOL_SPC_SMPTE170M: AVColorSpace = 6;
 pub const AVColorSpace_AVCOL_SPC_BT2020_NCL: AVColorSpace = 9;
 pub const AVColorSpace_AVCOL_SPC_BT2020_CL: AVColorSpace = 10;
 
+// AVColorTransferCharacteristic
+pub const AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084: AVColorTransferCharacteristic = 16;
+
+// AVPacketSideDataType
+pub type AVPacketSideDataType = c_uint;
+pub const AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA: AVPacketSideDataType = 20;
+pub const AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL: AVPacketSideDataType = 22;
+
 // AVHWDeviceType
 pub const AVHWDeviceType_AV_HWDEVICE_TYPE_CUDA: AVHWDeviceType = 2;
 pub const AVHWDeviceType_AV_HWDEVICE_TYPE_VAAPI: AVHWDeviceType = 4;
@@ -374,6 +387,14 @@ pub unsafe fn av_packet_alloc() -> *mut AVPacket {
 pub unsafe fn av_packet_free(_pkt: *mut *mut AVPacket) {}
 
 pub unsafe fn av_packet_unref(_pkt: *mut AVPacket) {}
+
+pub unsafe fn av_packet_new_side_data(
+    _pkt: *mut AVPacket,
+    _type_: AVPacketSideDataType,
+    _size: usize,
+) -> *mut u8 {
+    std::ptr::null_mut()
+}
 
 pub unsafe fn av_buffer_ref(_buf: *mut AVBufferRef) -> *mut AVBufferRef {
     std::ptr::null_mut()

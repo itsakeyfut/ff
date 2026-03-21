@@ -1758,3 +1758,113 @@ fn h264_zerolatency_tune_should_produce_valid_output() {
         get_file_size(&output_path)
     );
 }
+
+// ============================================================================
+// HDR10 Metadata Tests
+// ============================================================================
+
+#[test]
+fn hdr10_metadata_on_h265_main10_should_produce_valid_output() {
+    use ff_format::hdr::{Hdr10Metadata, MasteringDisplay};
+
+    let output_path = test_output_path("hdr10_h265_main10.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let hdr = Hdr10Metadata {
+        max_cll: 1000,
+        max_fall: 400,
+        mastering_display: MasteringDisplay {
+            red_x: 17000,
+            red_y: 8500,
+            green_x: 13250,
+            green_y: 34500,
+            blue_x: 7500,
+            blue_y: 3000,
+            white_x: 15635,
+            white_y: 16450,
+            min_luminance: 50,
+            max_luminance: 10_000_000,
+        },
+    };
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H265)
+        .bitrate_mode(BitrateMode::Crf(28))
+        .preset(Preset::Ultrafast)
+        .pixel_format(PixelFormat::Yuv420p10le)
+        .codec_options(VideoCodecOptions::H265(H265Options {
+            profile: H265Profile::Main10,
+            ..H265Options::default()
+        }))
+        .hdr10_metadata(hdr)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..15 {
+        let frame = create_black_frame(640, 480);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("HDR10 H265 Main10: codec={codec_name}");
+}
+
+#[test]
+fn hdr10_metadata_on_h264_should_produce_valid_output() {
+    use ff_format::hdr::{Hdr10Metadata, MasteringDisplay};
+
+    let output_path = test_output_path("hdr10_h264.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let hdr = Hdr10Metadata {
+        max_cll: 500,
+        max_fall: 200,
+        mastering_display: MasteringDisplay {
+            red_x: 17000,
+            red_y: 8500,
+            green_x: 13250,
+            green_y: 34500,
+            blue_x: 7500,
+            blue_y: 3000,
+            white_x: 15635,
+            white_y: 16450,
+            min_luminance: 50,
+            max_luminance: 5_000_000,
+        },
+    };
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(23))
+        .hdr10_metadata(hdr)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("HDR10 H264: codec={codec_name}");
+}

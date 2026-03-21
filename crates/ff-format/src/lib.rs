@@ -15,6 +15,7 @@
 //! - `container` - Container info ([`ContainerInfo`])
 //! - `media` - Media container info ([`MediaInfo`])
 //! - `color` - Color space definitions ([`ColorSpace`], [`ColorRange`], [`ColorPrimaries`])
+//! - `hdr` - HDR metadata types ([`Hdr10Metadata`], [`MasteringDisplay`])
 //! - `codec` - Codec definitions ([`VideoCodec`], [`AudioCodec`])
 //! - `channel` - Channel layout definitions ([`ChannelLayout`])
 //! - `chapter` - Chapter information ([`ChapterInfo`])
@@ -58,6 +59,7 @@ pub mod color;
 pub mod container;
 pub mod error;
 pub mod frame;
+pub mod hdr;
 pub mod media;
 pub mod pixel;
 pub mod sample;
@@ -72,6 +74,7 @@ pub use container::{ContainerInfo, ContainerInfoBuilder};
 pub use error::{FormatError, FrameError};
 pub use ff_common::PooledBuffer;
 pub use frame::{AudioFrame, VideoFrame};
+pub use hdr::{Hdr10Metadata, MasteringDisplay};
 pub use media::{MediaInfo, MediaInfoBuilder};
 pub use pixel::PixelFormat;
 pub use sample::SampleFormat;
