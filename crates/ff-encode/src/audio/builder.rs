@@ -141,6 +141,15 @@ impl AudioEncoder {
                 reason: "must be one of: 2, 5, 10, 20, 40, 60".to_string(),
             });
         }
+        if let Some(AudioCodecOptions::Aac(ref opts)) = builder.codec_options
+            && let Some(q) = opts.vbr_quality
+            && !(1..=5).contains(&q)
+        {
+            return Err(EncodeError::InvalidOption {
+                name: "vbr_quality".to_string(),
+                reason: "must be 1–5".to_string(),
+            });
+        }
 
         let config = AudioEncoderConfig {
             path: builder.path.clone(),

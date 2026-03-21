@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use ff_decode::AudioDecoder;
 use ff_encode::{
-    AacOptions, AudioCodec, AudioCodecOptions, AudioEncoder, EncodeError, FlacOptions, Mp3Options,
-    OpusApplication, OpusOptions,
+    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioEncoder, EncodeError, FlacOptions,
+    Mp3Options, OpusApplication, OpusOptions,
 };
 use ff_format::{AudioFrame, SampleFormat};
 
@@ -277,10 +277,13 @@ fn opus_audio_options_should_produce_valid_output() {
 }
 
 #[test]
-fn aac_afterburner_options_should_produce_valid_output() {
+fn aac_lc_profile_should_produce_valid_output() {
     let output = FileGuard::new(test_output_path("aac_codec_opts.m4a"));
 
-    let opts = AacOptions { afterburner: true };
+    let opts = AacOptions {
+        profile: AacProfile::Lc,
+        vbr_quality: None,
+    };
     let mut encoder = match AudioEncoder::create(output.path())
         .audio(48000, 2)
         .audio_codec(AudioCodec::Aac)
@@ -437,5 +440,55 @@ fn opus_invalid_frame_duration_should_return_invalid_option_error() {
     assert!(
         matches!(result, Err(EncodeError::InvalidOption { ref name, .. }) if name == "frame_duration_ms"),
         "expected InvalidOption for frame_duration_ms"
+    );
+}
+
+#[test]
+fn aac_vbr_quality_3_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("aac_vbr_quality.m4a"));
+
+    let opts = AacOptions {
+        profile: AacProfile::Lc,
+        vbr_quality: Some(3),
+    };
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Aac)
+        .codec_options(AudioCodecOptions::Aac(opts))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+#[test]
+fn aac_vbr_quality_out_of_range_should_return_invalid_option_error() {
+    let output = test_output_path("aac_vbr_invalid.m4a");
+
+    let opts = AacOptions {
+        profile: AacProfile::Lc,
+        vbr_quality: Some(6),
+    };
+    let result = AudioEncoder::create(&output)
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Aac)
+        .codec_options(AudioCodecOptions::Aac(opts))
+        .build();
+
+    assert!(
+        matches!(result, Err(EncodeError::InvalidOption { ref name, .. }) if name == "vbr_quality"),
+        "expected InvalidOption for vbr_quality"
     );
 }
