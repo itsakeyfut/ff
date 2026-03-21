@@ -8,8 +8,8 @@
 
 /// Container-level metadata extracted from `AVFormatContext`.
 ///
-/// Obtain an instance via [`VideoDecoder::container_info`] or
-/// [`AudioDecoder::container_info`] from `ff-decode`.
+/// Obtain an instance via `VideoDecoder::container_info` or
+/// `AudioDecoder::container_info` from `ff-decode`.
 ///
 /// # Examples
 ///
