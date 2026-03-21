@@ -205,7 +205,7 @@ mod video;
 
 pub use audio::{
     AacOptions, AacProfile, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder, FlacOptions,
-    Mp3Options, OpusApplication, OpusOptions,
+    Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
 };
 pub use bitrate::{BitrateMode, CRF_MAX};
 pub use codec::{AudioCodec, VideoCodec, VideoCodecEncodeExt};

@@ -233,8 +233,9 @@ pub use ff_encode::{
     AacOptions, AacProfile, AudioCodecOptions, AudioEncoder, Av1Options, Av1Usage, BitrateMode,
     CRF_MAX, Container, DnxhdOptions, EncodeError, EncodeProgress, EncodeProgressCallback,
     FlacOptions, H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile,
-    H265Tier, HardwareEncoder, ImageEncoder, Mp3Options, OpusApplication, OpusOptions, Preset,
-    ProResOptions, SvtAv1Options, VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder, Vp9Options,
+    H265Tier, HardwareEncoder, ImageEncoder, Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
+    Preset, ProResOptions, SvtAv1Options, VideoCodecEncodeExt, VideoCodecOptions, VideoEncoder,
+    Vp9Options,
 };
 
 // ── tokio feature ─────────────────────────────────────────────────────────────

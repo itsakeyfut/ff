@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use ff_decode::AudioDecoder;
 use ff_encode::{
     AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioEncoder, EncodeError, FlacOptions,
-    Mp3Options, OpusApplication, OpusOptions,
+    Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
 };
 use ff_format::{AudioFrame, SampleFormat};
 
@@ -339,7 +339,9 @@ fn flac_compression_level_options_should_produce_valid_output() {
 fn mp3_quality_options_should_produce_valid_output() {
     let output = FileGuard::new(test_output_path("mp3_codec_opts.mp3"));
 
-    let opts = Mp3Options { quality: 2 };
+    let opts = Mp3Options {
+        quality: Mp3Quality::Vbr(2),
+    };
     let mut encoder = match AudioEncoder::create(output.path())
         .audio(44100, 2)
         .audio_codec(AudioCodec::Mp3)
@@ -485,6 +487,54 @@ fn aac_vbr_quality_out_of_range_should_return_invalid_option_error() {
         .audio(48000, 2)
         .audio_codec(AudioCodec::Aac)
         .codec_options(AudioCodecOptions::Aac(opts))
+        .build();
+
+    assert!(
+        matches!(result, Err(EncodeError::InvalidOption { ref name, .. }) if name == "vbr_quality"),
+        "expected InvalidOption for vbr_quality"
+    );
+}
+
+#[test]
+fn mp3_cbr_128kbps_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("mp3_cbr_128k.mp3"));
+
+    let opts = Mp3Options {
+        quality: Mp3Quality::Cbr(128_000),
+    };
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Mp3)
+        .codec_options(AudioCodecOptions::Mp3(opts))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(1152, 2, 44100, SampleFormat::F32).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+#[test]
+fn mp3_vbr_quality_out_of_range_should_return_invalid_option_error() {
+    let output = test_output_path("mp3_vbr_invalid.mp3");
+
+    let opts = Mp3Options {
+        quality: Mp3Quality::Vbr(10),
+    };
+    let result = AudioEncoder::create(&output)
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Mp3)
+        .codec_options(AudioCodecOptions::Mp3(opts))
         .build();
 
     assert!(

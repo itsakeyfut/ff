@@ -124,19 +124,30 @@ impl AacProfile {
 
 // ── MP3 ───────────────────────────────────────────────────────────────────────
 
+/// MP3 quality mode: VBR quality scale or CBR fixed bitrate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mp3Quality {
+    /// Variable bitrate — libmp3lame `q` scale (0 = best / V0, 9 = worst / V9).
+    ///
+    /// `build()` returns [`EncodeError::InvalidOption`](crate::EncodeError::InvalidOption)
+    /// if the value exceeds 9.
+    Vbr(u8),
+    /// Constant bitrate in bits/sec (e.g. `128_000` for 128 kbps).
+    Cbr(u32),
+}
+
 /// MP3 (libmp3lame) per-codec options.
 #[derive(Debug, Clone)]
 pub struct Mp3Options {
-    /// VBR quality level (0–9). `0` = best quality, `9` = smallest file.
-    ///
-    /// Only takes effect when the builder is configured for VBR-style encoding.
-    /// Silently ignored if `av_opt_set` does not accept the value.
-    pub quality: u8,
+    /// VBR quality or CBR bitrate selection.
+    pub quality: Mp3Quality,
 }
 
 impl Default for Mp3Options {
     fn default() -> Self {
-        Self { quality: 4 }
+        Self {
+            quality: Mp3Quality::Vbr(4),
+        }
     }
 }
 
@@ -192,9 +203,15 @@ mod tests {
     }
 
     #[test]
-    fn mp3_options_default_should_have_quality_4() {
+    fn mp3_options_default_should_have_vbr_quality_4() {
         let opts = Mp3Options::default();
-        assert_eq!(opts.quality, 4);
+        assert_eq!(opts.quality, Mp3Quality::Vbr(4));
+    }
+
+    #[test]
+    fn mp3_quality_enum_variants_are_accessible() {
+        let _vbr = Mp3Quality::Vbr(0);
+        let _cbr = Mp3Quality::Cbr(192_000);
     }
 
     #[test]
