@@ -31,15 +31,20 @@ pub enum AudioCodecOptions {
 pub struct OpusOptions {
     /// Encoder application mode, optimised for the content type.
     pub application: OpusApplication,
-    /// Variable bit-rate mode.
-    pub vbr: OpusVbr,
+    /// Frame duration in milliseconds.
+    ///
+    /// Must be one of `2`, `5`, `10`, `20`, `40`, or `60`.
+    /// `None` uses the libopus default (20 ms).
+    /// `build()` returns [`EncodeError::InvalidOption`](crate::EncodeError::InvalidOption)
+    /// if the value is not in the allowed set.
+    pub frame_duration_ms: Option<u32>,
 }
 
 impl Default for OpusOptions {
     fn default() -> Self {
         Self {
             application: OpusApplication::Audio,
-            vbr: OpusVbr::On,
+            frame_duration_ms: None,
         }
     }
 }
@@ -51,7 +56,7 @@ pub enum OpusApplication {
     #[default]
     Audio,
     /// Optimised for VoIP / speech clarity at low bitrates.
-    VoIP,
+    Voip,
     /// Minimum latency mode — disables lookahead.
     LowDelay,
 }
@@ -60,30 +65,8 @@ impl OpusApplication {
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Audio => "audio",
-            Self::VoIP => "voip",
+            Self::Voip => "voip",
             Self::LowDelay => "lowdelay",
-        }
-    }
-}
-
-/// Opus variable bit-rate mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OpusVbr {
-    /// Constant bit-rate.
-    Off,
-    /// Variable bit-rate (recommended). Default.
-    #[default]
-    On,
-    /// Constrained VBR — guaranteed never to exceed the target bitrate per packet.
-    Constrained,
-}
-
-impl OpusVbr {
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::On => "on",
-            Self::Constrained => "constrained",
         }
     }
 }
@@ -150,22 +133,15 @@ mod tests {
     #[test]
     fn opus_application_should_return_correct_str() {
         assert_eq!(OpusApplication::Audio.as_str(), "audio");
-        assert_eq!(OpusApplication::VoIP.as_str(), "voip");
+        assert_eq!(OpusApplication::Voip.as_str(), "voip");
         assert_eq!(OpusApplication::LowDelay.as_str(), "lowdelay");
     }
 
     #[test]
-    fn opus_vbr_should_return_correct_str() {
-        assert_eq!(OpusVbr::Off.as_str(), "off");
-        assert_eq!(OpusVbr::On.as_str(), "on");
-        assert_eq!(OpusVbr::Constrained.as_str(), "constrained");
-    }
-
-    #[test]
-    fn opus_options_default_should_have_audio_application() {
+    fn opus_options_default_should_have_audio_application_and_no_frame_duration() {
         let opts = OpusOptions::default();
         assert_eq!(opts.application, OpusApplication::Audio);
-        assert_eq!(opts.vbr, OpusVbr::On);
+        assert!(opts.frame_duration_ms.is_none());
     }
 
     #[test]

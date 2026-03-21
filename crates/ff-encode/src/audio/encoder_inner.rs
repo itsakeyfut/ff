@@ -301,20 +301,23 @@ impl AudioEncoderInner {
                         );
                     }
                 }
-                // vbr
-                if let Ok(s) = CString::new(opus.vbr.as_str()) {
-                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
-                    let ret = ff_sys::av_opt_set(
-                        (*codec_ctx).priv_data,
-                        b"vbr\0".as_ptr() as *const i8,
-                        s.as_ptr(),
-                        0,
-                    );
-                    if ret < 0 {
-                        log::warn!(
-                            "av_opt_set failed option=vbr value={} encoder={encoder_name}",
-                            opus.vbr.as_str()
+                // frame_duration (libopus expects microseconds)
+                if let Some(dur_ms) = opus.frame_duration_ms {
+                    let dur_us_str = (i64::from(dur_ms) * 1000).to_string();
+                    if let Ok(s) = CString::new(dur_us_str.as_str()) {
+                        // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
+                        let ret = ff_sys::av_opt_set(
+                            (*codec_ctx).priv_data,
+                            b"frame_duration\0".as_ptr() as *const i8,
+                            s.as_ptr(),
+                            0,
                         );
+                        if ret < 0 {
+                            log::warn!(
+                                "av_opt_set failed option=frame_duration value={dur_us_str} \
+                                 encoder={encoder_name}"
+                            );
+                        }
                     }
                 }
             }
