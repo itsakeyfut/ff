@@ -542,3 +542,70 @@ fn mp3_vbr_quality_out_of_range_should_return_invalid_option_error() {
         "expected InvalidOption for vbr_quality"
     );
 }
+
+#[test]
+fn flac_compression_level_out_of_range_should_return_invalid_option_error() {
+    let output = test_output_path("flac_level_invalid.flac");
+
+    let opts = FlacOptions {
+        compression_level: 13,
+    };
+    let result = AudioEncoder::create(&output)
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Flac)
+        .codec_options(AudioCodecOptions::Flac(opts))
+        .build();
+
+    assert!(
+        matches!(result, Err(EncodeError::InvalidOption { ref name, .. }) if name == "compression_level"),
+        "expected InvalidOption for compression_level"
+    );
+}
+
+#[test]
+fn flac_level_0_should_produce_larger_file_than_level_12() {
+    let output_level_0 = FileGuard::new(test_output_path("flac_level_0.flac"));
+    let output_level_12 = FileGuard::new(test_output_path("flac_level_12.flac"));
+
+    let encode_flac = |path: &std::path::PathBuf, level: u8| -> bool {
+        let opts = FlacOptions {
+            compression_level: level,
+        };
+        let mut encoder = match AudioEncoder::create(path)
+            .audio(44100, 2)
+            .audio_codec(AudioCodec::Flac)
+            .codec_options(AudioCodecOptions::Flac(opts))
+            .build()
+        {
+            Ok(enc) => enc,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return false;
+            }
+        };
+        // Use a non-silent signal so compression ratio differs meaningfully.
+        for i in 0..20u32 {
+            let mut frame = AudioFrame::empty(4096, 2, 44100, SampleFormat::F32p).unwrap();
+            if let Some(samples) = frame.as_f32_mut() {
+                for (j, s) in samples.iter_mut().enumerate() {
+                    let t = (i * 4096 + j as u32 / 2) as f32 / 44100.0;
+                    *s = (t * 440.0 * 2.0 * std::f32::consts::PI).sin() * 0.5;
+                }
+            }
+            encoder.push(&frame).expect("Failed to push frame");
+        }
+        encoder.finish().expect("Failed to finish encoding");
+        true
+    };
+
+    if !encode_flac(output_level_0.path(), 0) || !encode_flac(output_level_12.path(), 12) {
+        return;
+    }
+
+    let size_0 = std::fs::metadata(output_level_0.path()).unwrap().len();
+    let size_12 = std::fs::metadata(output_level_12.path()).unwrap().len();
+    assert!(
+        size_0 >= size_12,
+        "expected level 0 file ({size_0} bytes) to be >= level 12 file ({size_12} bytes)"
+    );
+}

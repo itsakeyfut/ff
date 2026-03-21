@@ -159,6 +159,14 @@ impl AudioEncoder {
                 reason: "must be 0–9 (0=best)".to_string(),
             });
         }
+        if let Some(AudioCodecOptions::Flac(ref opts)) = builder.codec_options
+            && opts.compression_level > 12
+        {
+            return Err(EncodeError::InvalidOption {
+                name: "compression_level".to_string(),
+                reason: "must be 0–12".to_string(),
+            });
+        }
 
         let config = AudioEncoderConfig {
             path: builder.path.clone(),
