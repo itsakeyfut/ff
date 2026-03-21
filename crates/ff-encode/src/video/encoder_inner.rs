@@ -620,10 +620,107 @@ impl VideoEncoderInner {
                     }
                 }
             }
-            // Vp9, ProRes, Dnxhd: options reserved for future issues
-            VideoCodecOptions::Vp9(_)
-            | VideoCodecOptions::ProRes(_)
-            | VideoCodecOptions::Dnxhd(_) => {}
+            VideoCodecOptions::Vp9(vp9) => {
+                // CQ mode: override bitrate to 0 and set crf
+                if let Some(cq) = vp9.cq_level {
+                    // SAFETY: codec_ctx is non-null; direct field write is safe.
+                    (*codec_ctx).bit_rate = 0;
+                    let cq_str = cq.to_string();
+                    if let Ok(s) = CString::new(cq_str.as_str()) {
+                        // SAFETY: codec_ctx and priv_data are non-null; strings are
+                        // NUL-terminated.
+                        let ret = ff_sys::av_opt_set(
+                            (*codec_ctx).priv_data,
+                            b"crf\0".as_ptr() as *const i8,
+                            s.as_ptr(),
+                            0,
+                        );
+                        if ret < 0 {
+                            log::warn!(
+                                "av_opt_set failed option=crf value={cq} \
+                                 encoder={encoder_name}"
+                            );
+                        }
+                    }
+                }
+                // cpu-used
+                let cpu_used_str = vp9.cpu_used.to_string();
+                if let Ok(s) = CString::new(cpu_used_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; strings are
+                    // NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"cpu-used\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=cpu-used value={} \
+                             encoder={encoder_name}",
+                            vp9.cpu_used
+                        );
+                    }
+                }
+                // tile-columns
+                let tile_cols_str = vp9.tile_columns.to_string();
+                if let Ok(s) = CString::new(tile_cols_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; strings are
+                    // NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"tile-columns\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=tile-columns value={} \
+                             encoder={encoder_name}",
+                            vp9.tile_columns
+                        );
+                    }
+                }
+                // tile-rows
+                let tile_rows_str = vp9.tile_rows.to_string();
+                if let Ok(s) = CString::new(tile_rows_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; strings are
+                    // NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"tile-rows\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=tile-rows value={} \
+                             encoder={encoder_name}",
+                            vp9.tile_rows
+                        );
+                    }
+                }
+                // row-mt
+                let row_mt_str = if vp9.row_mt { "1" } else { "0" };
+                if let Ok(s) = CString::new(row_mt_str) {
+                    // SAFETY: codec_ctx and priv_data are non-null; strings are
+                    // NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"row-mt\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=row-mt value={row_mt_str} \
+                             encoder={encoder_name}"
+                        );
+                    }
+                }
+            }
+            // ProRes, Dnxhd: options reserved for future issues
+            VideoCodecOptions::ProRes(_) | VideoCodecOptions::Dnxhd(_) => {}
         }
     }
 
