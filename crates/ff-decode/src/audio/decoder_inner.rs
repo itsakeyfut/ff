@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use ff_format::channel::ChannelLayout;
 use ff_format::codec::AudioCodec;
+use ff_format::container::ContainerInfo;
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{AudioFrame, AudioStreamInfo, SampleFormat};
 use ff_sys::{
@@ -281,7 +282,7 @@ impl AudioDecoderInner {
         output_format: Option<SampleFormat>,
         output_sample_rate: Option<u32>,
         output_channels: Option<u32>,
-    ) -> Result<(Self, AudioStreamInfo), DecodeError> {
+    ) -> Result<(Self, AudioStreamInfo, ContainerInfo), DecodeError> {
         // Ensure FFmpeg is initialized (thread-safe and idempotent)
         ff_sys::ensure_initialized();
 
@@ -356,6 +357,10 @@ impl AudioDecoderInner {
         let stream_info =
             unsafe { Self::extract_stream_info(format_ctx, stream_index as i32, codec_ctx)? };
 
+        // Extract container information
+        // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
+        let container_info = unsafe { Self::extract_container_info(format_ctx) };
+
         // Allocate packet and frame (with RAII guards)
         // SAFETY: FFmpeg is initialized, guards ensure cleanup
         let packet_guard = unsafe { AvPacketGuard::new()? };
@@ -377,6 +382,7 @@ impl AudioDecoderInner {
                 frame: frame_guard.into_raw(),
             },
             stream_info,
+            container_info,
         ))
     }
 
@@ -472,6 +478,42 @@ impl AudioDecoderInner {
         }
 
         Ok(builder.build())
+    }
+
+    /// Extracts container-level information from the `AVFormatContext`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `format_ctx` is valid and `avformat_find_stream_info` has been called.
+    unsafe fn extract_container_info(format_ctx: *mut AVFormatContext) -> ContainerInfo {
+        // SAFETY: Caller ensures format_ctx is valid
+        unsafe {
+            let format_name = if (*format_ctx).iformat.is_null() {
+                String::new()
+            } else {
+                let ptr = (*(*format_ctx).iformat).name;
+                if ptr.is_null() {
+                    String::new()
+                } else {
+                    CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                }
+            };
+
+            let bit_rate = {
+                let br = (*format_ctx).bit_rate;
+                if br > 0 { Some(br as u64) } else { None }
+            };
+
+            let nb_streams = (*format_ctx).nb_streams as u32;
+
+            let mut builder = ContainerInfo::builder()
+                .format_name(format_name)
+                .nb_streams(nb_streams);
+            if let Some(br) = bit_rate {
+                builder = builder.bit_rate(br);
+            }
+            builder.build()
+        }
     }
 
     /// Converts FFmpeg sample format to our `SampleFormat` enum.

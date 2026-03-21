@@ -162,6 +162,10 @@ name = "audio_timestamps"
 required-features = ["decode"]
 
 [[example]]
+name = "decode_metadata"
+required-features = ["decode"]
+
+[[example]]
 name = "async_decode_video"
 required-features = ["tokio"]
 

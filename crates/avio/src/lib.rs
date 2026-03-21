@@ -198,9 +198,9 @@
 // in from ff-format anyway).
 pub use ff_format::{
     AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo, ChapterInfoBuilder,
-    ColorPrimaries, ColorRange, ColorSpace, MediaInfo, MediaInfoBuilder, PixelFormat, Rational,
-    SampleFormat, SubtitleCodec, SubtitleStreamInfo, Timestamp, VideoCodec, VideoFrame,
-    VideoStreamInfo,
+    ColorPrimaries, ColorRange, ColorSpace, ContainerInfo, MediaInfo, MediaInfoBuilder,
+    PixelFormat, Rational, SampleFormat, SubtitleCodec, SubtitleStreamInfo, Timestamp, VideoCodec,
+    VideoFrame, VideoStreamInfo,
 };
 
 // ── probe feature ─────────────────────────────────────────────────────────────

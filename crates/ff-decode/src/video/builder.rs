@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
+use ff_format::{ContainerInfo, PixelFormat, VideoFrame, VideoStreamInfo};
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
@@ -484,7 +484,7 @@ impl VideoDecoderBuilder {
         };
 
         // Create the decoder inner
-        let (inner, stream_info) = VideoDecoderInner::new(
+        let (inner, stream_info, container_info) = VideoDecoderInner::new(
             &self.path,
             self.output_format,
             self.output_scale,
@@ -499,6 +499,7 @@ impl VideoDecoderBuilder {
             frame_pool: self.frame_pool,
             inner,
             stream_info,
+            container_info,
             fused: false,
         })
     }
@@ -568,6 +569,8 @@ pub struct VideoDecoder {
     inner: VideoDecoderInner,
     /// Video stream information
     stream_info: VideoStreamInfo,
+    /// Container-level metadata
+    container_info: ContainerInfo,
     /// Set to `true` after a decoding error; causes [`Iterator::next`] to return `None`.
     fused: bool,
 }
@@ -643,6 +646,19 @@ impl VideoDecoder {
     #[must_use]
     pub fn duration(&self) -> Duration {
         self.stream_info.duration().unwrap_or(Duration::ZERO)
+    }
+
+    /// Returns the total duration of the video, or `None` for live streams
+    /// or formats that do not carry duration information.
+    #[must_use]
+    pub fn duration_opt(&self) -> Option<Duration> {
+        self.stream_info.duration()
+    }
+
+    /// Returns container-level metadata (format name, bitrate, stream count).
+    #[must_use]
+    pub fn container_info(&self) -> &ContainerInfo {
+        &self.container_info
     }
 
     /// Returns the current playback position.

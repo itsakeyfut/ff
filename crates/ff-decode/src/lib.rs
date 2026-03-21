@@ -109,6 +109,7 @@ pub mod video;
 pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
 pub use ff_common::{FramePool, PooledBuffer};
+pub use ff_format::ContainerInfo;
 pub use image::{ImageDecoder, ImageDecoderBuilder};
 pub use video::{VideoDecoder, VideoDecoderBuilder};
 

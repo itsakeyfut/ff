@@ -31,6 +31,7 @@ use std::time::Duration;
 use ff_format::PooledBuffer;
 use ff_format::codec::VideoCodec;
 use ff_format::color::{ColorPrimaries, ColorRange, ColorSpace};
+use ff_format::container::ContainerInfo;
 use ff_format::time::{Rational, Timestamp};
 use ff_format::{PixelFormat, VideoFrame, VideoStreamInfo};
 use ff_sys::{
@@ -512,7 +513,7 @@ impl VideoDecoderInner {
         hardware_accel: HardwareAccel,
         thread_count: usize,
         frame_pool: Option<Arc<dyn FramePool>>,
-    ) -> Result<(Self, VideoStreamInfo), DecodeError> {
+    ) -> Result<(Self, VideoStreamInfo, ContainerInfo), DecodeError> {
         // Ensure FFmpeg is initialized (thread-safe and idempotent)
         ff_sys::ensure_initialized();
 
@@ -604,6 +605,10 @@ impl VideoDecoderInner {
         let stream_info =
             unsafe { Self::extract_stream_info(format_ctx, stream_index as i32, codec_ctx)? };
 
+        // Extract container information
+        // SAFETY: format_ctx is valid and avformat_find_stream_info has been called
+        let container_info = unsafe { Self::extract_container_info(format_ctx) };
+
         // Allocate packet and frame (with RAII guards)
         // SAFETY: FFmpeg is initialized, guards ensure cleanup
         let packet_guard = unsafe { AvPacketGuard::new()? };
@@ -630,6 +635,7 @@ impl VideoDecoderInner {
                 frame_pool,
             },
             stream_info,
+            container_info,
         ))
     }
 
@@ -754,6 +760,42 @@ impl VideoDecoderInner {
         }
 
         Ok(builder.build())
+    }
+
+    /// Extracts container-level information from the `AVFormatContext`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `format_ctx` is valid and `avformat_find_stream_info` has been called.
+    unsafe fn extract_container_info(format_ctx: *mut AVFormatContext) -> ContainerInfo {
+        // SAFETY: Caller ensures format_ctx is valid
+        unsafe {
+            let format_name = if (*format_ctx).iformat.is_null() {
+                String::new()
+            } else {
+                let ptr = (*(*format_ctx).iformat).name;
+                if ptr.is_null() {
+                    String::new()
+                } else {
+                    CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                }
+            };
+
+            let bit_rate = {
+                let br = (*format_ctx).bit_rate;
+                if br > 0 { Some(br as u64) } else { None }
+            };
+
+            let nb_streams = (*format_ctx).nb_streams as u32;
+
+            let mut builder = ContainerInfo::builder()
+                .format_name(format_name)
+                .nb_streams(nb_streams);
+            if let Some(br) = bit_rate {
+                builder = builder.bit_rate(br);
+            }
+            builder.build()
+        }
     }
 
     /// Converts FFmpeg pixel format to our PixelFormat enum.
