@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use ff_format::{AudioFrame, VideoFrame};
 
+use super::codec_options::VideoCodecOptions;
 use super::encoder_inner::{VideoEncoderConfig, VideoEncoderInner, preset_to_string};
 use crate::{
     AudioCodec, Container, EncodeError, EncodeProgressCallback, HardwareEncoder, Preset, VideoCodec,
@@ -48,6 +49,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) metadata: Vec<(String, String)>,
     pub(crate) chapters: Vec<ff_format::chapter::ChapterInfo>,
     pub(crate) subtitle_passthrough: Option<(String, usize)>,
+    pub(crate) codec_options: Option<VideoCodecOptions>,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -74,6 +76,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("metadata", &self.metadata)
             .field("chapters", &self.chapters)
             .field("subtitle_passthrough", &self.subtitle_passthrough)
+            .field("codec_options", &self.codec_options)
             .finish()
     }
 }
@@ -99,6 +102,7 @@ impl VideoEncoderBuilder {
             metadata: Vec::new(),
             chapters: Vec::new(),
             subtitle_passthrough: None,
+            codec_options: None,
         }
     }
 
@@ -246,6 +250,23 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn subtitle_passthrough(mut self, source_path: &str, stream_index: usize) -> Self {
         self.subtitle_passthrough = Some((source_path.to_string(), stream_index));
+        self
+    }
+
+    // === Per-codec options ===
+
+    /// Set per-codec encoding options.
+    ///
+    /// Applied via `av_opt_set` before `avcodec_open2` during [`build()`](Self::build).
+    /// This is additive — omitting it leaves codec defaults unchanged.
+    /// Any option that the chosen encoder does not support is logged as a
+    /// warning and skipped; it never causes `build()` to return an error.
+    ///
+    /// The [`VideoCodecOptions`] variant should match the codec selected via
+    /// [`video_codec()`](Self::video_codec).  A mismatch is silently ignored.
+    #[must_use]
+    pub fn codec_options(mut self, opts: VideoCodecOptions) -> Self {
+        self.codec_options = Some(opts);
         self
     }
 
@@ -400,6 +421,7 @@ impl VideoEncoder {
             metadata: builder.metadata,
             chapters: builder.chapters,
             subtitle_passthrough: builder.subtitle_passthrough,
+            codec_options: builder.codec_options,
         };
 
         let inner = if config.video_width.is_some() {
@@ -642,6 +664,7 @@ mod tests {
                 metadata: Vec::new(),
                 chapters: Vec::new(),
                 subtitle_passthrough: None,
+                codec_options: None,
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,

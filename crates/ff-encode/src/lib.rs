@@ -212,7 +212,10 @@ pub use hardware::HardwareEncoder;
 pub use image::{ImageEncoder, ImageEncoderBuilder};
 pub use preset::Preset;
 pub use progress::{EncodeProgress, EncodeProgressCallback};
-pub use video::{VideoEncoder, VideoEncoderBuilder};
+pub use video::{
+    Av1Options, Av1Usage, DnxhdOptions, H264Options, H264Profile, H265Options, H265Profile,
+    H265Tier, ProResOptions, VideoCodecOptions, VideoEncoder, VideoEncoderBuilder, Vp9Options,
+};
 
 #[cfg(feature = "tokio")]
 pub use audio::AsyncAudioEncoder;
