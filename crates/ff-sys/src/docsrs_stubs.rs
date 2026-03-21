@@ -263,6 +263,7 @@ pub const AVPixelFormat_AV_PIX_FMT_BGRA: AVPixelFormat = 28;
 pub const AVPixelFormat_AV_PIX_FMT_YUVJ420P: AVPixelFormat = 12;
 pub const AVPixelFormat_AV_PIX_FMT_VAAPI: AVPixelFormat = 51;
 pub const AVPixelFormat_AV_PIX_FMT_DXVA2_VLD: AVPixelFormat = 53;
+pub const AV_OPT_SEARCH_CHILDREN: u32 = 1;
 pub const AVPixelFormat_AV_PIX_FMT_YUV420P10LE: AVPixelFormat = 66;
 pub const AVPixelFormat_AV_PIX_FMT_YUV422P10LE: AVPixelFormat = 64;
 pub const AVPixelFormat_AV_PIX_FMT_YUV444P10LE: AVPixelFormat = 68;

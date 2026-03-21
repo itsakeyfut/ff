@@ -769,8 +769,46 @@ impl VideoEncoderInner {
                     }
                 }
             }
-            // Dnxhd: options reserved for a future issue
-            VideoCodecOptions::Dnxhd(_) => {}
+            VideoCodecOptions::Dnxhd(dnxhd) => {
+                use ff_format::PixelFormat;
+
+                // Set pixel format based on variant before avcodec_open2.
+                // SAFETY: codec_ctx is non-null; direct field write is safe.
+                (*codec_ctx).pix_fmt = match dnxhd.variant.pixel_format() {
+                    PixelFormat::Yuv422p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P,
+                    PixelFormat::Yuv422p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE,
+                    PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
+                    _ => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P,
+                };
+
+                // For DNxHD variants, override bit_rate with the required fixed rate.
+                if let Some(bps) = dnxhd.variant.fixed_bitrate_bps() {
+                    // SAFETY: codec_ctx is non-null; direct field write is safe.
+                    (*codec_ctx).bit_rate = bps;
+                }
+
+                // Apply vprofile via av_opt_set on codec_ctx with AV_OPT_SEARCH_CHILDREN.
+                // Using the codec context (not priv_data) with SEARCH_CHILDREN allows the
+                // option to be found in child objects including priv_data.
+                if let Ok(s) = CString::new(dnxhd.variant.vprofile_str()) {
+                    // SAFETY: codec_ctx is non-null and cast to *mut c_void as required
+                    // by av_opt_set. AV_OPT_SEARCH_CHILDREN (1) searches child objects.
+                    // Strings are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        codec_ctx as *mut std::ffi::c_void,
+                        b"vprofile\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        ff_sys::AV_OPT_SEARCH_CHILDREN as i32,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=vprofile value={} \
+                             encoder={encoder_name}",
+                            dnxhd.variant.vprofile_str()
+                        );
+                    }
+                }
+            }
         }
     }
 

@@ -13,9 +13,9 @@
 mod fixtures;
 
 use ff_encode::{
-    Av1Options, Av1Usage, BitrateMode, EncodeError, H264Options, H264Preset, H264Profile, H264Tune,
-    H265Options, H265Profile, H265Tier, Preset, ProResOptions, ProResProfile, SvtAv1Options,
-    VideoCodec, VideoCodecOptions, VideoEncoder, Vp9Options,
+    Av1Options, Av1Usage, BitrateMode, DnxhdOptions, DnxhdVariant, EncodeError, H264Options,
+    H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier, Preset, ProResOptions,
+    ProResProfile, SvtAv1Options, VideoCodec, VideoCodecOptions, VideoEncoder, Vp9Options,
 };
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
@@ -990,6 +990,99 @@ fn prores_vendor_tag_should_not_crash() {
     println!(
         "ProRes vendor tag: codec={codec_name} size={} bytes",
         get_file_size(&output_path)
+    );
+}
+
+// ============================================================================
+// DNxHD / DNxHR Tests
+// ============================================================================
+
+#[test]
+fn dnxhd_145_1080p_should_produce_valid_output() {
+    let output_path = test_output_path("dnxhd_145.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(1920, 1080, 30.0)
+        .video_codec(VideoCodec::DnxHd)
+        .codec_options(VideoCodecOptions::Dnxhd(DnxhdOptions {
+            variant: DnxhdVariant::Dnxhd145,
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping dnxhd_145 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(1920, 1080);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!(
+        "DNxHD 145: codec={codec_name} size={} bytes",
+        get_file_size(&output_path)
+    );
+}
+
+#[test]
+fn dnxhr_sq_should_produce_valid_output() {
+    let output_path = test_output_path("dnxhr_sq.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::DnxHd)
+        .codec_options(VideoCodecOptions::Dnxhd(DnxhdOptions {
+            variant: DnxhdVariant::DnxhrSq,
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping dnxhr_sq test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!(
+        "DNxHR SQ: codec={codec_name} size={} bytes",
+        get_file_size(&output_path)
+    );
+}
+
+#[test]
+fn dnxhd_invalid_resolution_should_return_error() {
+    let output_path = test_output_path("dnxhd_invalid_res.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::DnxHd)
+        .codec_options(VideoCodecOptions::Dnxhd(DnxhdOptions {
+            variant: DnxhdVariant::Dnxhd145,
+        }))
+        .build();
+
+    assert!(
+        matches!(result, Err(EncodeError::InvalidOption { .. })),
+        "Expected InvalidOption error for DNxHD with non-standard resolution"
     );
 }
 

@@ -385,6 +385,21 @@ impl VideoEncoderBuilder {
             }
         }
 
+        if let Some(VideoCodecOptions::Dnxhd(ref opts)) = self.codec_options
+            && opts.variant.is_dnxhd()
+        {
+            let valid = matches!(
+                (self.video_width, self.video_height),
+                (Some(1920), Some(1080)) | (Some(1280), Some(720))
+            );
+            if !valid {
+                return Err(EncodeError::InvalidOption {
+                    name: "variant".to_string(),
+                    reason: "DNxHD variants require 1920×1080 or 1280×720 resolution".to_string(),
+                });
+            }
+        }
+
         if has_audio {
             if let Some(rate) = self.audio_sample_rate
                 && rate == 0
