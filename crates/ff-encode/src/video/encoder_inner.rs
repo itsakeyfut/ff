@@ -542,6 +542,84 @@ impl VideoEncoderInner {
                     }
                 }
             }
+            VideoCodecOptions::Av1Svt(svt) => {
+                // preset (0–13)
+                let preset_str = svt.preset.to_string();
+                if let Ok(s) = CString::new(preset_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"preset\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=preset value={} \
+                             encoder={encoder_name}",
+                            svt.preset
+                        );
+                    }
+                }
+                // tile-rows
+                let tile_rows_str = svt.tile_rows.to_string();
+                if let Ok(s) = CString::new(tile_rows_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"tile_rows\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=tile_rows value={} \
+                             encoder={encoder_name}",
+                            svt.tile_rows
+                        );
+                    }
+                }
+                // tile-columns
+                let tile_cols_str = svt.tile_cols.to_string();
+                if let Ok(s) = CString::new(tile_cols_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"tile_columns\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=tile_columns value={} \
+                             encoder={encoder_name}",
+                            svt.tile_cols
+                        );
+                    }
+                }
+                // svtav1-params raw passthrough
+                if let Some(ref params) = svt.svtav1_params
+                    && let Ok(s) = CString::new(params.as_str())
+                {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name and
+                    // value are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"svtav1-params\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=svtav1-params value={params} \
+                             encoder={encoder_name}"
+                        );
+                    }
+                }
+            }
             // Vp9, ProRes, Dnxhd: options reserved for future issues
             VideoCodecOptions::Vp9(_)
             | VideoCodecOptions::ProRes(_)
@@ -852,6 +930,21 @@ impl VideoEncoderInner {
         codec: VideoCodec,
         hardware_encoder: crate::HardwareEncoder,
     ) -> Result<String, EncodeError> {
+        // Early check: when Av1Svt is requested, verify that libsvtav1 is registered.
+        if codec == VideoCodec::Av1Svt {
+            // SAFETY: find_encoder_by_name is always safe to call with a valid NUL-terminated
+            // C string literal; the returned pointer is owned by FFmpeg and must not be freed.
+            let has_svt = unsafe {
+                avcodec::find_encoder_by_name(b"libsvtav1\0".as_ptr() as *const i8).is_some()
+            };
+            if !has_svt {
+                return Err(EncodeError::EncoderUnavailable {
+                    codec: "av1/svt".to_string(),
+                    hint: "Requires an FFmpeg build with --enable-libsvtav1 (LGPL)".to_string(),
+                });
+            }
+        }
+
         // Early check: when H265 is requested, verify that at least one HEVC encoder
         // is registered in this FFmpeg build before attempting candidate selection.
         if codec == VideoCodec::H265 {
@@ -874,6 +967,7 @@ impl VideoEncoderInner {
             VideoCodec::H265 => self.select_h265_encoder_candidates(hardware_encoder),
             VideoCodec::Vp9 => vec!["libvpx-vp9"],
             VideoCodec::Av1 => vec!["libaom-av1", "libsvtav1", "av1"],
+            VideoCodec::Av1Svt => vec!["libsvtav1"],
             VideoCodec::ProRes => vec!["prores_ks", "prores"],
             VideoCodec::DnxHd => vec!["dnxhd"],
             VideoCodec::Mpeg4 => vec!["mpeg4"],
@@ -2575,6 +2669,7 @@ fn codec_to_id(codec: VideoCodec) -> AVCodecID {
         VideoCodec::H265 => AVCodecID_AV_CODEC_ID_HEVC,
         VideoCodec::Vp9 => AVCodecID_AV_CODEC_ID_VP9,
         VideoCodec::Av1 => AVCodecID_AV_CODEC_ID_AV1,
+        VideoCodec::Av1Svt => AVCodecID_AV_CODEC_ID_AV1,
         VideoCodec::ProRes => AVCodecID_AV_CODEC_ID_PRORES,
         VideoCodec::DnxHd => AVCodecID_AV_CODEC_ID_DNXHD,
         VideoCodec::Mpeg4 => AVCodecID_AV_CODEC_ID_MPEG4,
