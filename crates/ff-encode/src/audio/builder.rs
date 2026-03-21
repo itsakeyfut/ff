@@ -131,6 +131,17 @@ impl AudioEncoder {
     }
 
     pub(crate) fn from_builder(builder: AudioEncoderBuilder) -> Result<Self, EncodeError> {
+        // Validate per-codec options before constructing the inner encoder.
+        if let Some(AudioCodecOptions::Opus(ref opts)) = builder.codec_options
+            && let Some(dur) = opts.frame_duration_ms
+            && ![2u32, 5, 10, 20, 40, 60].contains(&dur)
+        {
+            return Err(EncodeError::InvalidOption {
+                name: "frame_duration_ms".to_string(),
+                reason: "must be one of: 2, 5, 10, 20, 40, 60".to_string(),
+            });
+        }
+
         let config = AudioEncoderConfig {
             path: builder.path.clone(),
             sample_rate: builder

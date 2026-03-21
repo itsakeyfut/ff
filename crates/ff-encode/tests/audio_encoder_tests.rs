@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use ff_decode::AudioDecoder;
 use ff_encode::{
-    AacOptions, AudioCodec, AudioCodecOptions, AudioEncoder, FlacOptions, Mp3Options,
-    OpusApplication, OpusOptions, OpusVbr,
+    AacOptions, AudioCodec, AudioCodecOptions, AudioEncoder, EncodeError, FlacOptions, Mp3Options,
+    OpusApplication, OpusOptions,
 };
 use ff_format::{AudioFrame, SampleFormat};
 
@@ -252,7 +252,7 @@ fn opus_audio_options_should_produce_valid_output() {
 
     let opts = OpusOptions {
         application: OpusApplication::Audio,
-        vbr: OpusVbr::On,
+        frame_duration_ms: None,
     };
     let mut encoder = match AudioEncoder::create(output.path())
         .audio(48000, 2)
@@ -357,4 +357,85 @@ fn mp3_quality_options_should_produce_valid_output() {
 
     encoder.finish().expect("Failed to finish encoding");
     assert_valid_output_file(output.path());
+}
+
+#[test]
+fn opus_low_delay_application_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("opus_low_delay.opus"));
+
+    let opts = OpusOptions {
+        application: OpusApplication::LowDelay,
+        frame_duration_ms: None,
+    };
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Opus)
+        .codec_options(AudioCodecOptions::Opus(opts))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(960, 2, 48000, SampleFormat::F32).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+#[test]
+fn opus_frame_duration_20ms_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("opus_frame_duration_20ms.opus"));
+
+    let opts = OpusOptions {
+        application: OpusApplication::Audio,
+        frame_duration_ms: Some(20),
+    };
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Opus)
+        .codec_options(AudioCodecOptions::Opus(opts))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    // 20 ms at 48000 Hz = 960 samples per frame
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(960, 2, 48000, SampleFormat::F32).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+#[test]
+fn opus_invalid_frame_duration_should_return_invalid_option_error() {
+    let output = test_output_path("opus_invalid_frame_duration.opus");
+
+    let opts = OpusOptions {
+        application: OpusApplication::Audio,
+        frame_duration_ms: Some(15),
+    };
+    let result = AudioEncoder::create(&output)
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Opus)
+        .codec_options(AudioCodecOptions::Opus(opts))
+        .build();
+
+    assert!(
+        matches!(result, Err(EncodeError::InvalidOption { ref name, .. }) if name == "frame_duration_ms"),
+        "expected InvalidOption for frame_duration_ms"
+    );
 }
