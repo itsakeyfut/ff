@@ -320,7 +320,13 @@ pub const AVColorSpace_AVCOL_SPC_BT2020_NCL: AVColorSpace = 9;
 pub const AVColorSpace_AVCOL_SPC_BT2020_CL: AVColorSpace = 10;
 
 // AVColorTransferCharacteristic
+pub const AVColorTransferCharacteristic_AVCOL_TRC_BT709: AVColorTransferCharacteristic = 1;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_UNSPECIFIED: AVColorTransferCharacteristic = 2;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_LINEAR: AVColorTransferCharacteristic = 8;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_BT2020_10: AVColorTransferCharacteristic = 14;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_BT2020_12: AVColorTransferCharacteristic = 15;
 pub const AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084: AVColorTransferCharacteristic = 16;
+pub const AVColorTransferCharacteristic_AVCOL_TRC_ARIB_STD_B67: AVColorTransferCharacteristic = 18;
 
 // AVPacketSideDataType
 pub type AVPacketSideDataType = c_uint;

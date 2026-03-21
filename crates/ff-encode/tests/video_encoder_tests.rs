@@ -1868,3 +1868,78 @@ fn hdr10_metadata_on_h264_should_produce_valid_output() {
     assert_valid_output_file(&output_path);
     println!("HDR10 H264: codec={codec_name}");
 }
+
+// ============================================================================
+// Color Tagging Tests
+// ============================================================================
+
+#[test]
+fn hlg_color_transfer_on_h265_should_produce_valid_output() {
+    use ff_format::{ColorPrimaries, ColorSpace, ColorTransfer};
+
+    let output_path = test_output_path("hlg_h265.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H265)
+        .bitrate_mode(BitrateMode::Crf(28))
+        .preset(Preset::Ultrafast)
+        .color_space(ColorSpace::Bt2020)
+        .color_transfer(ColorTransfer::Hlg)
+        .color_primaries(ColorPrimaries::Bt2020)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("HLG H265: codec={codec_name}");
+}
+
+#[test]
+fn color_transfer_bt709_on_h264_should_produce_valid_output() {
+    use ff_format::{ColorPrimaries, ColorSpace, ColorTransfer};
+
+    let output_path = test_output_path("bt709_h264.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(23))
+        .color_space(ColorSpace::Bt709)
+        .color_transfer(ColorTransfer::Bt709)
+        .color_primaries(ColorPrimaries::Bt709)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("BT.709 H264: codec={codec_name}");
+}

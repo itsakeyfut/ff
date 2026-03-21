@@ -40,6 +40,8 @@ pub enum ColorSpace {
     Bt601,
     /// ITU-R BT.2020 - UHD/HDR television standard
     Bt2020,
+    /// DCI-P3 - digital cinema wide color gamut
+    DciP3,
     /// sRGB color space - computer graphics and web
     Srgb,
     /// Color space is not specified or unknown
@@ -63,6 +65,7 @@ impl ColorSpace {
             Self::Bt709 => "bt709",
             Self::Bt601 => "bt601",
             Self::Bt2020 => "bt2020",
+            Self::DciP3 => "dcip3",
             Self::Srgb => "srgb",
             Self::Unknown => "unknown",
         }
@@ -111,6 +114,21 @@ impl ColorSpace {
     #[must_use]
     pub const fn is_uhd(&self) -> bool {
         matches!(self, Self::Bt2020)
+    }
+
+    /// Returns `true` if this is a cinema/DCI color space (DCI-P3).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::ColorSpace;
+    ///
+    /// assert!(ColorSpace::DciP3.is_cinema());
+    /// assert!(!ColorSpace::Bt709.is_cinema());
+    /// ```
+    #[must_use]
+    pub const fn is_cinema(&self) -> bool {
+        matches!(self, Self::DciP3)
     }
 
     /// Returns `true` if the color space is unknown.
@@ -347,6 +365,132 @@ impl fmt::Display for ColorPrimaries {
     }
 }
 
+/// Color transfer characteristic (opto-electronic transfer function).
+///
+/// The transfer characteristic defines how scene luminance maps to the signal
+/// level stored in the video bitstream. Different HDR and SDR standards use
+/// different curves.
+///
+/// # Common Usage
+///
+/// - **`Bt709`**: Standard SDR video (HD television)
+/// - **`Pq`**: HDR10 and Dolby Vision (SMPTE ST 2084 / Perceptual Quantizer)
+/// - **`Hlg`**: Hybrid Log-Gamma — broadcast-compatible HDR (ARIB STD-B67)
+/// - **`Bt2020_10`** / **`Bt2020_12`**: BT.2020 SDR at 10/12-bit depth
+/// - **`Linear`**: Linear light, no gamma applied
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum ColorTransfer {
+    /// ITU-R BT.709 transfer characteristic (standard SDR)
+    #[default]
+    Bt709,
+    /// ITU-R BT.2020 for 10-bit content
+    Bt2020_10,
+    /// ITU-R BT.2020 for 12-bit content
+    Bt2020_12,
+    /// Hybrid Log-Gamma (ARIB STD-B67) — broadcast HDR
+    Hlg,
+    /// Perceptual Quantizer / SMPTE ST 2084 — HDR10
+    Pq,
+    /// Linear light transfer (no gamma)
+    Linear,
+    /// Transfer characteristic is not specified or unknown
+    Unknown,
+}
+
+impl ColorTransfer {
+    /// Returns the name of the color transfer characteristic as a string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::ColorTransfer;
+    ///
+    /// assert_eq!(ColorTransfer::Bt709.name(), "bt709");
+    /// assert_eq!(ColorTransfer::Hlg.name(), "hlg");
+    /// assert_eq!(ColorTransfer::Pq.name(), "pq");
+    /// ```
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Bt709 => "bt709",
+            Self::Bt2020_10 => "bt2020-10",
+            Self::Bt2020_12 => "bt2020-12",
+            Self::Hlg => "hlg",
+            Self::Pq => "pq",
+            Self::Linear => "linear",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Returns `true` if this is an HDR transfer characteristic (`Pq` or `Hlg`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::ColorTransfer;
+    ///
+    /// assert!(ColorTransfer::Pq.is_hdr());
+    /// assert!(ColorTransfer::Hlg.is_hdr());
+    /// assert!(!ColorTransfer::Bt709.is_hdr());
+    /// ```
+    #[must_use]
+    pub const fn is_hdr(&self) -> bool {
+        matches!(self, Self::Pq | Self::Hlg)
+    }
+
+    /// Returns `true` if this is Hybrid Log-Gamma (HLG).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::ColorTransfer;
+    ///
+    /// assert!(ColorTransfer::Hlg.is_hlg());
+    /// assert!(!ColorTransfer::Pq.is_hlg());
+    /// ```
+    #[must_use]
+    pub const fn is_hlg(&self) -> bool {
+        matches!(self, Self::Hlg)
+    }
+
+    /// Returns `true` if this is Perceptual Quantizer / SMPTE ST 2084 (PQ).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::ColorTransfer;
+    ///
+    /// assert!(ColorTransfer::Pq.is_pq());
+    /// assert!(!ColorTransfer::Hlg.is_pq());
+    /// ```
+    #[must_use]
+    pub const fn is_pq(&self) -> bool {
+        matches!(self, Self::Pq)
+    }
+
+    /// Returns `true` if the transfer characteristic is unknown.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_format::color::ColorTransfer;
+    ///
+    /// assert!(ColorTransfer::Unknown.is_unknown());
+    /// assert!(!ColorTransfer::Bt709.is_unknown());
+    /// ```
+    #[must_use]
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+}
+
+impl fmt::Display for ColorTransfer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +503,7 @@ mod tests {
             assert_eq!(ColorSpace::Bt709.name(), "bt709");
             assert_eq!(ColorSpace::Bt601.name(), "bt601");
             assert_eq!(ColorSpace::Bt2020.name(), "bt2020");
+            assert_eq!(ColorSpace::DciP3.name(), "dcip3");
             assert_eq!(ColorSpace::Srgb.name(), "srgb");
             assert_eq!(ColorSpace::Unknown.name(), "unknown");
         }
@@ -387,6 +532,13 @@ mod tests {
             assert!(!ColorSpace::Bt2020.is_hd());
             assert!(!ColorSpace::Bt2020.is_sd());
             assert!(ColorSpace::Bt2020.is_uhd());
+        }
+
+        #[test]
+        fn dcip3_is_cinema_should_return_true() {
+            assert!(ColorSpace::DciP3.is_cinema());
+            assert!(!ColorSpace::Bt709.is_cinema());
+            assert!(!ColorSpace::Bt2020.is_cinema());
         }
 
         #[test]
@@ -533,6 +685,76 @@ mod tests {
             set.insert(ColorPrimaries::Bt2020);
             assert!(set.contains(&ColorPrimaries::Bt709));
             assert!(!set.contains(&ColorPrimaries::Bt601));
+        }
+    }
+
+    mod color_transfer_tests {
+        use super::*;
+
+        #[test]
+        fn test_names() {
+            assert_eq!(ColorTransfer::Bt709.name(), "bt709");
+            assert_eq!(ColorTransfer::Bt2020_10.name(), "bt2020-10");
+            assert_eq!(ColorTransfer::Bt2020_12.name(), "bt2020-12");
+            assert_eq!(ColorTransfer::Hlg.name(), "hlg");
+            assert_eq!(ColorTransfer::Pq.name(), "pq");
+            assert_eq!(ColorTransfer::Linear.name(), "linear");
+            assert_eq!(ColorTransfer::Unknown.name(), "unknown");
+        }
+
+        #[test]
+        fn test_display() {
+            assert_eq!(format!("{}", ColorTransfer::Hlg), "hlg");
+            assert_eq!(format!("{}", ColorTransfer::Pq), "pq");
+            assert_eq!(format!("{}", ColorTransfer::Bt709), "bt709");
+        }
+
+        #[test]
+        fn test_default() {
+            assert_eq!(ColorTransfer::default(), ColorTransfer::Bt709);
+        }
+
+        #[test]
+        fn hlg_is_hdr_should_return_true() {
+            assert!(ColorTransfer::Hlg.is_hdr());
+            assert!(ColorTransfer::Hlg.is_hlg());
+            assert!(!ColorTransfer::Hlg.is_pq());
+        }
+
+        #[test]
+        fn pq_is_hdr_should_return_true() {
+            assert!(ColorTransfer::Pq.is_hdr());
+            assert!(ColorTransfer::Pq.is_pq());
+            assert!(!ColorTransfer::Pq.is_hlg());
+        }
+
+        #[test]
+        fn sdr_transfers_are_not_hdr() {
+            assert!(!ColorTransfer::Bt709.is_hdr());
+            assert!(!ColorTransfer::Bt2020_10.is_hdr());
+            assert!(!ColorTransfer::Bt2020_12.is_hdr());
+            assert!(!ColorTransfer::Linear.is_hdr());
+        }
+
+        #[test]
+        fn is_unknown_should_only_match_unknown() {
+            assert!(ColorTransfer::Unknown.is_unknown());
+            assert!(!ColorTransfer::Bt709.is_unknown());
+            assert!(!ColorTransfer::Hlg.is_unknown());
+        }
+
+        #[test]
+        fn test_equality_and_hash() {
+            use std::collections::HashSet;
+
+            assert_eq!(ColorTransfer::Hlg, ColorTransfer::Hlg);
+            assert_ne!(ColorTransfer::Hlg, ColorTransfer::Pq);
+
+            let mut set = HashSet::new();
+            set.insert(ColorTransfer::Hlg);
+            set.insert(ColorTransfer::Pq);
+            assert!(set.contains(&ColorTransfer::Hlg));
+            assert!(!set.contains(&ColorTransfer::Bt709));
         }
     }
 }

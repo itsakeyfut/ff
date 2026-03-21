@@ -197,6 +197,9 @@ pub(super) struct VideoEncoderConfig {
     pub(super) codec_options: Option<crate::video::codec_options::VideoCodecOptions>,
     pub(super) pixel_format: Option<ff_format::PixelFormat>,
     pub(super) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
+    pub(super) color_space: Option<ff_format::ColorSpace>,
+    pub(super) color_transfer: Option<ff_format::ColorTransfer>,
+    pub(super) color_primaries: Option<ff_format::ColorPrimaries>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -934,6 +937,9 @@ impl VideoEncoderInner {
                     config.two_pass,
                     config.codec_options.as_ref(),
                     config.pixel_format.as_ref(),
+                    config.color_space,
+                    config.color_transfer,
+                    config.color_primaries,
                 )?;
             }
 
@@ -1008,6 +1014,9 @@ impl VideoEncoderInner {
         two_pass: bool,
         codec_options: Option<&crate::video::codec_options::VideoCodecOptions>,
         pixel_format: Option<&ff_format::PixelFormat>,
+        color_space: Option<ff_format::ColorSpace>,
+        color_transfer: Option<ff_format::ColorTransfer>,
+        color_primaries: Option<ff_format::ColorPrimaries>,
     ) -> Result<(), EncodeError> {
         use crate::BitrateMode;
         // Select encoder based on codec and availability
@@ -1119,6 +1128,20 @@ impl VideoEncoderInner {
             (*codec_ctx).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
             (*codec_ctx).color_trc = ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
             (*codec_ctx).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
+        }
+
+        // Apply explicit color overrides (take priority over HDR10 automatic defaults).
+        if let Some(cs) = color_space {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).colorspace = color_space_to_av(cs);
+        }
+        if let Some(trc) = color_transfer {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).color_trc = color_transfer_to_av(trc);
+        }
+        if let Some(cp) = color_primaries {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).color_primaries = color_primaries_to_av(cp);
         }
 
         // For two-pass, set the pass-1 flag before opening the codec.
@@ -2613,6 +2636,20 @@ impl VideoEncoderInner {
             (*codec_ctx).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
         }
 
+        // Apply explicit color overrides for pass 2 (mirrors pass 1; take priority over HDR10).
+        if let Some(cs) = config.color_space {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).colorspace = color_space_to_av(cs);
+        }
+        if let Some(trc) = config.color_transfer {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).color_trc = color_transfer_to_av(trc);
+        }
+        if let Some(cp) = config.color_primaries {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).color_primaries = color_primaries_to_av(cp);
+        }
+
         // Set the pass-2 flag and provide stats_in.
         // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
         (*codec_ctx).flags |= AV_CODEC_FLAG_PASS2;
@@ -3166,6 +3203,46 @@ fn from_av_pixel_format(fmt: AVPixelFormat) -> ff_format::PixelFormat {
     }
 }
 
+/// Convert ff-format ColorSpace to the FFmpeg AVColorSpace constant.
+fn color_space_to_av(cs: ff_format::ColorSpace) -> ff_sys::AVColorSpace {
+    use ff_format::ColorSpace;
+    match cs {
+        ColorSpace::Bt709 => ff_sys::AVColorSpace_AVCOL_SPC_BT709,
+        ColorSpace::Bt601 => ff_sys::AVColorSpace_AVCOL_SPC_SMPTE170M,
+        ColorSpace::Bt2020 => ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL,
+        ColorSpace::DciP3 | ColorSpace::Srgb => ff_sys::AVColorSpace_AVCOL_SPC_RGB,
+        ColorSpace::Unknown => ff_sys::AVColorSpace_AVCOL_SPC_UNSPECIFIED,
+        _ => ff_sys::AVColorSpace_AVCOL_SPC_UNSPECIFIED,
+    }
+}
+
+/// Convert ff-format ColorTransfer to the FFmpeg AVColorTransferCharacteristic constant.
+fn color_transfer_to_av(trc: ff_format::ColorTransfer) -> ff_sys::AVColorTransferCharacteristic {
+    use ff_format::ColorTransfer;
+    match trc {
+        ColorTransfer::Bt709 => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_BT709,
+        ColorTransfer::Bt2020_10 => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_BT2020_10,
+        ColorTransfer::Bt2020_12 => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_BT2020_12,
+        ColorTransfer::Hlg => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_ARIB_STD_B67,
+        ColorTransfer::Pq => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084,
+        ColorTransfer::Linear => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_LINEAR,
+        ColorTransfer::Unknown => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_UNSPECIFIED,
+        _ => ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_UNSPECIFIED,
+    }
+}
+
+/// Convert ff-format ColorPrimaries to the FFmpeg AVColorPrimaries constant.
+fn color_primaries_to_av(cp: ff_format::ColorPrimaries) -> ff_sys::AVColorPrimaries {
+    use ff_format::ColorPrimaries;
+    match cp {
+        ColorPrimaries::Bt709 => ff_sys::AVColorPrimaries_AVCOL_PRI_BT709,
+        ColorPrimaries::Bt601 => ff_sys::AVColorPrimaries_AVCOL_PRI_SMPTE170M,
+        ColorPrimaries::Bt2020 => ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020,
+        ColorPrimaries::Unknown => ff_sys::AVColorPrimaries_AVCOL_PRI_UNSPECIFIED,
+        _ => ff_sys::AVColorPrimaries_AVCOL_PRI_UNSPECIFIED,
+    }
+}
+
 // SAFETY: VideoEncoderInner owns all FFmpeg contexts exclusively.
 //         These contexts are not accessed from multiple threads simultaneously;
 //         all access is serialized by whichever thread holds the VideoEncoder.
@@ -3416,6 +3493,70 @@ mod tests {
         assert_eq!(
             from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_NONE),
             ff_format::PixelFormat::Yuv420p
+        );
+    }
+
+    #[test]
+    fn color_space_to_av_bt709_should_return_bt709() {
+        assert_eq!(
+            color_space_to_av(ff_format::ColorSpace::Bt709),
+            ff_sys::AVColorSpace_AVCOL_SPC_BT709
+        );
+    }
+
+    #[test]
+    fn color_space_to_av_bt2020_should_return_bt2020_ncl() {
+        assert_eq!(
+            color_space_to_av(ff_format::ColorSpace::Bt2020),
+            ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL
+        );
+    }
+
+    #[test]
+    fn color_space_to_av_dcip3_should_return_rgb() {
+        assert_eq!(
+            color_space_to_av(ff_format::ColorSpace::DciP3),
+            ff_sys::AVColorSpace_AVCOL_SPC_RGB
+        );
+    }
+
+    #[test]
+    fn color_transfer_to_av_hlg_should_return_arib_std_b67() {
+        assert_eq!(
+            color_transfer_to_av(ff_format::ColorTransfer::Hlg),
+            ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_ARIB_STD_B67
+        );
+    }
+
+    #[test]
+    fn color_transfer_to_av_pq_should_return_smptest2084() {
+        assert_eq!(
+            color_transfer_to_av(ff_format::ColorTransfer::Pq),
+            ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084
+        );
+    }
+
+    #[test]
+    fn color_transfer_to_av_bt709_should_return_bt709() {
+        assert_eq!(
+            color_transfer_to_av(ff_format::ColorTransfer::Bt709),
+            ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_BT709
+        );
+    }
+
+    #[test]
+    fn color_primaries_to_av_bt2020_should_return_bt2020() {
+        assert_eq!(
+            color_primaries_to_av(ff_format::ColorPrimaries::Bt2020),
+            ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020
+        );
+    }
+
+    #[test]
+    fn color_primaries_to_av_bt709_should_return_bt709() {
+        assert_eq!(
+            color_primaries_to_av(ff_format::ColorPrimaries::Bt709),
+            ff_sys::AVColorPrimaries_AVCOL_PRI_BT709
         );
     }
 

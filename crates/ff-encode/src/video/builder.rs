@@ -52,6 +52,9 @@ pub struct VideoEncoderBuilder {
     pub(crate) codec_options: Option<VideoCodecOptions>,
     pub(crate) pixel_format: Option<ff_format::PixelFormat>,
     pub(crate) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
+    pub(crate) color_space: Option<ff_format::ColorSpace>,
+    pub(crate) color_transfer: Option<ff_format::ColorTransfer>,
+    pub(crate) color_primaries: Option<ff_format::ColorPrimaries>,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -81,6 +84,9 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("codec_options", &self.codec_options)
             .field("pixel_format", &self.pixel_format)
             .field("hdr10_metadata", &self.hdr10_metadata)
+            .field("color_space", &self.color_space)
+            .field("color_transfer", &self.color_transfer)
+            .field("color_primaries", &self.color_primaries)
             .finish()
     }
 }
@@ -109,6 +115,9 @@ impl VideoEncoderBuilder {
             codec_options: None,
             pixel_format: None,
             hdr10_metadata: None,
+            color_space: None,
+            color_transfer: None,
+            color_primaries: None,
         }
     }
 
@@ -305,6 +314,40 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn hdr10_metadata(mut self, meta: ff_format::Hdr10Metadata) -> Self {
         self.hdr10_metadata = Some(meta);
+        self
+    }
+
+    // === Color tagging ===
+
+    /// Override the color space (matrix coefficients) written to the codec context.
+    ///
+    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata, if set
+    /// via [`hdr10_metadata()`](Self::hdr10_metadata), automatically selects
+    /// BT.2020 NCL — this setter takes priority over that automatic choice.
+    #[must_use]
+    pub fn color_space(mut self, cs: ff_format::ColorSpace) -> Self {
+        self.color_space = Some(cs);
+        self
+    }
+
+    /// Override the color transfer characteristic (gamma curve) written to the codec context.
+    ///
+    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata
+    /// automatically selects PQ (SMPTE ST 2084) — this setter takes priority.
+    /// Use [`ColorTransfer::Hlg`](ff_format::ColorTransfer::Hlg) for HLG broadcast HDR.
+    #[must_use]
+    pub fn color_transfer(mut self, trc: ff_format::ColorTransfer) -> Self {
+        self.color_transfer = Some(trc);
+        self
+    }
+
+    /// Override the color primaries written to the codec context.
+    ///
+    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata
+    /// automatically selects BT.2020 — this setter takes priority.
+    #[must_use]
+    pub fn color_primaries(mut self, cp: ff_format::ColorPrimaries) -> Self {
+        self.color_primaries = Some(cp);
         self
     }
 
@@ -512,6 +555,9 @@ impl VideoEncoder {
             codec_options: builder.codec_options,
             pixel_format: builder.pixel_format,
             hdr10_metadata: builder.hdr10_metadata,
+            color_space: builder.color_space,
+            color_transfer: builder.color_transfer,
+            color_primaries: builder.color_primaries,
         };
 
         let inner = if config.video_width.is_some() {
@@ -758,6 +804,9 @@ mod tests {
                 codec_options: None,
                 pixel_format: None,
                 hdr10_metadata: None,
+                color_space: None,
+                color_transfer: None,
+                color_primaries: None,
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,
