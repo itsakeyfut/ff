@@ -428,6 +428,45 @@ impl VideoEncoderInner {
                         }
                     }
                 }
+                // preset (libx265-specific; hardware HEVC encoders return a negative value
+                // which we log and skip — never returned as an error)
+                if let Some(ref preset) = h265.preset
+                    && let Ok(s) = CString::new(preset.as_str())
+                {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name
+                    // and value are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"preset\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=preset value={preset} \
+                             encoder={encoder_name}"
+                        );
+                    }
+                }
+                // x265-params raw passthrough (libx265 only)
+                if let Some(ref params) = h265.x265_params
+                    && let Ok(s) = CString::new(params.as_str())
+                {
+                    // SAFETY: codec_ctx and priv_data are non-null; option name
+                    // and value are valid NUL-terminated C strings.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"x265-params\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=x265-params value={params} \
+                             encoder={encoder_name}"
+                        );
+                    }
+                }
             }
             VideoCodecOptions::Av1(av1) => {
                 // cpu-used

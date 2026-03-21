@@ -200,6 +200,19 @@ pub struct H265Options {
     ///
     /// `None` leaves the encoder default.
     pub level: Option<u32>,
+    /// libx265 encoding speed/quality preset (e.g. `"ultrafast"`, `"medium"`, `"slow"`).
+    ///
+    /// `None` leaves the encoder default. Invalid or unsupported values are logged as a
+    /// warning and skipped — `build()` never fails due to an unsupported preset.
+    /// Hardware HEVC encoders (hevc_nvenc, etc.) ignore this option.
+    pub preset: Option<String>,
+    /// Raw x265-params string passed verbatim to libx265 (e.g. `"ctu=32:ref=4"`).
+    ///
+    /// **Note**: H.265 encoding requires an FFmpeg build with `--enable-libx265`.
+    ///
+    /// An invalid parameter string is logged as a warning and skipped. It never causes
+    /// `build()` to return an error.
+    pub x265_params: Option<String>,
 }
 
 impl Default for H265Options {
@@ -208,6 +221,8 @@ impl Default for H265Options {
             profile: H265Profile::Main,
             tier: H265Tier::Main,
             level: None,
+            preset: None,
+            x265_params: None,
         }
     }
 }
@@ -388,6 +403,20 @@ mod tests {
         assert_eq!(opts.profile, H265Profile::Main);
         assert_eq!(opts.tier, H265Tier::Main);
         assert_eq!(opts.level, None);
+        assert!(opts.preset.is_none());
+        assert!(opts.x265_params.is_none());
+    }
+
+    #[test]
+    fn h265_preset_should_be_none_by_default() {
+        let opts = H265Options::default();
+        assert!(opts.preset.is_none());
+    }
+
+    #[test]
+    fn h265_x265_params_should_be_none_by_default() {
+        let opts = H265Options::default();
+        assert!(opts.x265_params.is_none());
     }
 
     #[test]
