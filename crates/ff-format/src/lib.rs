@@ -12,6 +12,7 @@
 //! - `time` - Time primitives ([`Timestamp`], [`Rational`])
 //! - `frame` - Frame types ([`VideoFrame`], [`AudioFrame`])
 //! - `stream` - Stream info ([`VideoStreamInfo`], [`AudioStreamInfo`])
+//! - `container` - Container info ([`ContainerInfo`])
 //! - `media` - Media container info ([`MediaInfo`])
 //! - `color` - Color space definitions ([`ColorSpace`], [`ColorRange`], [`ColorPrimaries`])
 //! - `codec` - Codec definitions ([`VideoCodec`], [`AudioCodec`])
@@ -54,6 +55,7 @@ pub mod channel;
 pub mod chapter;
 pub mod codec;
 pub mod color;
+pub mod container;
 pub mod error;
 pub mod frame;
 pub mod media;
@@ -66,6 +68,7 @@ pub use channel::ChannelLayout;
 pub use chapter::{ChapterInfo, ChapterInfoBuilder};
 pub use codec::{AudioCodec, SubtitleCodec, VideoCodec};
 pub use color::{ColorPrimaries, ColorRange, ColorSpace};
+pub use container::{ContainerInfo, ContainerInfoBuilder};
 pub use error::{FormatError, FrameError};
 pub use ff_common::PooledBuffer;
 pub use frame::{AudioFrame, VideoFrame};

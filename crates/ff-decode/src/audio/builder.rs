@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_format::{AudioFrame, AudioStreamInfo, SampleFormat};
+use ff_format::{AudioFrame, AudioStreamInfo, ContainerInfo, SampleFormat};
 
 use crate::audio::decoder_inner::AudioDecoderInner;
 use crate::error::DecodeError;
@@ -224,7 +224,7 @@ impl AudioDecoderBuilder {
         };
 
         // Create the decoder inner
-        let (inner, stream_info) = AudioDecoderInner::new(
+        let (inner, stream_info, container_info) = AudioDecoderInner::new(
             &self.path,
             self.output_format,
             self.output_sample_rate,
@@ -236,6 +236,7 @@ impl AudioDecoderBuilder {
             config,
             inner,
             stream_info,
+            container_info,
             fused: false,
         })
     }
@@ -297,6 +298,8 @@ pub struct AudioDecoder {
     inner: AudioDecoderInner,
     /// Audio stream information
     stream_info: AudioStreamInfo,
+    /// Container-level metadata
+    container_info: ContainerInfo,
     /// Set to `true` after a decoding error; causes [`Iterator::next`] to return `None`.
     fused: bool,
 }
@@ -371,6 +374,19 @@ impl AudioDecoder {
     #[must_use]
     pub fn duration(&self) -> Duration {
         self.stream_info.duration().unwrap_or(Duration::ZERO)
+    }
+
+    /// Returns the total duration of the audio, or `None` for live streams
+    /// or formats that do not carry duration information.
+    #[must_use]
+    pub fn duration_opt(&self) -> Option<Duration> {
+        self.stream_info.duration()
+    }
+
+    /// Returns container-level metadata (format name, bitrate, stream count).
+    #[must_use]
+    pub fn container_info(&self) -> &ContainerInfo {
+        &self.container_info
     }
 
     /// Returns the current playback position.
