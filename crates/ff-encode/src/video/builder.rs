@@ -50,6 +50,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) chapters: Vec<ff_format::chapter::ChapterInfo>,
     pub(crate) subtitle_passthrough: Option<(String, usize)>,
     pub(crate) codec_options: Option<VideoCodecOptions>,
+    pub(crate) pixel_format: Option<ff_format::PixelFormat>,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -77,6 +78,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("chapters", &self.chapters)
             .field("subtitle_passthrough", &self.subtitle_passthrough)
             .field("codec_options", &self.codec_options)
+            .field("pixel_format", &self.pixel_format)
             .finish()
     }
 }
@@ -103,6 +105,7 @@ impl VideoEncoderBuilder {
             chapters: Vec::new(),
             subtitle_passthrough: None,
             codec_options: None,
+            pixel_format: None,
         }
     }
 
@@ -267,6 +270,18 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn codec_options(mut self, opts: VideoCodecOptions) -> Self {
         self.codec_options = Some(opts);
+        self
+    }
+
+    // === Pixel format ===
+
+    /// Override the pixel format for video encoding.
+    ///
+    /// When omitted the encoder uses `yuv420p` by default, except that
+    /// H.265 `Main10` automatically selects `yuv420p10le`.
+    #[must_use]
+    pub fn pixel_format(mut self, fmt: ff_format::PixelFormat) -> Self {
+        self.pixel_format = Some(fmt);
         self
     }
 
@@ -472,6 +487,7 @@ impl VideoEncoder {
             chapters: builder.chapters,
             subtitle_passthrough: builder.subtitle_passthrough,
             codec_options: builder.codec_options,
+            pixel_format: builder.pixel_format,
         };
 
         let inner = if config.video_width.is_some() {
@@ -715,6 +731,7 @@ mod tests {
                 chapters: Vec::new(),
                 subtitle_passthrough: None,
                 codec_options: None,
+                pixel_format: None,
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,

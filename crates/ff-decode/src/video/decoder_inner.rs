@@ -820,6 +820,14 @@ impl VideoDecoderInner {
             PixelFormat::Nv12
         } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_NV21 {
             PixelFormat::Nv21
+        } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE {
+            PixelFormat::Yuv420p10le
+        } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE {
+            PixelFormat::Yuv422p10le
+        } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE {
+            PixelFormat::Yuv444p10le
+        } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE {
+            PixelFormat::P010le
         } else {
             log::warn!(
                 "pixel_format unsupported, falling back to Yuv420p requested={fmt} fallback=Yuv420p"
@@ -1416,6 +1424,11 @@ impl VideoDecoderInner {
             PixelFormat::Gray8 => ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8,
             PixelFormat::Nv12 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV12,
             PixelFormat::Nv21 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV21,
+            PixelFormat::Yuv420p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE,
+            PixelFormat::Yuv422p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE,
+            PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
+            PixelFormat::Yuva444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE,
+            PixelFormat::P010le => ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE,
             _ => {
                 log::warn!(
                     "pixel_format has no AV mapping, falling back to Yuv420p format={format:?} fallback=AV_PIX_FMT_YUV420P"
@@ -2050,6 +2063,38 @@ mod tests {
     }
 
     #[test]
+    fn pixel_format_yuv420p10le_should_return_yuv420p10le() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE),
+            PixelFormat::Yuv420p10le
+        );
+    }
+
+    #[test]
+    fn pixel_format_yuv422p10le_should_return_yuv422p10le() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE),
+            PixelFormat::Yuv422p10le
+        );
+    }
+
+    #[test]
+    fn pixel_format_yuv444p10le_should_return_yuv444p10le() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE),
+            PixelFormat::Yuv444p10le
+        );
+    }
+
+    #[test]
+    fn pixel_format_p010le_should_return_p010le() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE),
+            PixelFormat::P010le
+        );
+    }
+
+    #[test]
     fn pixel_format_unknown_falls_back_to_yuv420p() {
         assert_eq!(
             VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_NONE),
@@ -2401,9 +2446,9 @@ mod tests {
 
     #[test]
     fn pixel_format_to_av_unknown_falls_back_to_yuv420p_av() {
-        // Yuv420p10le has no explicit mapping in pixel_format_to_av, so it hits the _ arm
+        // Other(999) has no explicit mapping and hits the _ fallback arm.
         assert_eq!(
-            VideoDecoderInner::pixel_format_to_av(PixelFormat::Yuv420p10le),
+            VideoDecoderInner::pixel_format_to_av(PixelFormat::Other(999)),
             ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
         );
     }
