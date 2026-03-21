@@ -203,7 +203,10 @@ mod preset;
 mod progress;
 mod video;
 
-pub use audio::{AudioEncoder, AudioEncoderBuilder};
+pub use audio::{
+    AacOptions, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder, FlacOptions, Mp3Options,
+    OpusApplication, OpusOptions, OpusVbr,
+};
 pub use bitrate::{BitrateMode, CRF_MAX};
 pub use codec::{AudioCodec, VideoCodec, VideoCodecEncodeExt};
 pub use container::Container;

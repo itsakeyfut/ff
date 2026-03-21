@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use ff_format::AudioFrame;
 
+use super::codec_options::AudioCodecOptions;
 use super::encoder_inner::{AudioEncoderConfig, AudioEncoderInner};
 use crate::{AudioCodec, Container, EncodeError};
 
@@ -33,6 +34,7 @@ pub struct AudioEncoderBuilder {
     pub(crate) audio_channels: Option<u32>,
     pub(crate) audio_codec: AudioCodec,
     pub(crate) audio_bitrate: Option<u64>,
+    pub(crate) codec_options: Option<AudioCodecOptions>,
 }
 
 impl AudioEncoderBuilder {
@@ -44,6 +46,7 @@ impl AudioEncoderBuilder {
             audio_channels: None,
             audio_codec: AudioCodec::default(),
             audio_bitrate: None,
+            codec_options: None,
         }
     }
 
@@ -73,6 +76,16 @@ impl AudioEncoderBuilder {
     #[must_use]
     pub fn container(mut self, container: Container) -> Self {
         self.container = Some(container);
+        self
+    }
+
+    /// Set per-codec encoding options.
+    ///
+    /// The variant must match the codec set via [`audio_codec()`](Self::audio_codec).
+    /// A mismatch is silently ignored.
+    #[must_use]
+    pub fn codec_options(mut self, opts: AudioCodecOptions) -> Self {
+        self.codec_options = Some(opts);
         self
     }
 
@@ -132,6 +145,7 @@ impl AudioEncoder {
                 })?,
             codec: builder.audio_codec,
             bitrate: builder.audio_bitrate,
+            codec_options: builder.codec_options,
             _progress_callback: false,
         };
 
