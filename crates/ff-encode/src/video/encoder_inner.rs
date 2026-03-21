@@ -813,6 +813,23 @@ impl VideoEncoderInner {
         codec: VideoCodec,
         hardware_encoder: crate::HardwareEncoder,
     ) -> Result<String, EncodeError> {
+        // Early check: when H265 is requested, verify that at least one HEVC encoder
+        // is registered in this FFmpeg build before attempting candidate selection.
+        if codec == VideoCodec::H265 {
+            // SAFETY: avcodec::find_encoder is always safe to call with a valid codec ID;
+            // the returned pointer is owned by FFmpeg and must not be freed.
+            let has_hevc = unsafe { avcodec::find_encoder(AVCodecID_AV_CODEC_ID_HEVC).is_some() };
+            if !has_hevc {
+                return Err(EncodeError::EncoderUnavailable {
+                    codec: "h265/hevc".to_string(),
+                    hint: "Requires an FFmpeg build with HEVC encoder support \
+                           (hardware: hevc_nvenc/hevc_qsv/etc.; \
+                           software: --enable-libx265, GPL)"
+                        .to_string(),
+                });
+            }
+        }
+
         let candidates: Vec<&str> = match codec {
             VideoCodec::H264 => self.select_h264_encoder_candidates(hardware_encoder),
             VideoCodec::H265 => self.select_h265_encoder_candidates(hardware_encoder),

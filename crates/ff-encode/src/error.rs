@@ -52,6 +52,15 @@ pub enum EncodeError {
         encoder: String,
     },
 
+    /// Specific encoder is unavailable — the hint explains what is needed.
+    #[error("encoder unavailable: codec={codec} hint={hint}")]
+    EncoderUnavailable {
+        /// Requested codec name (e.g. `"h265/hevc"`).
+        codec: String,
+        /// Human-readable guidance (e.g. how to build FFmpeg with this encoder).
+        hint: String,
+    },
+
     /// Muxing failed
     #[error("Muxing failed: {reason}")]
     MuxingFailed {
