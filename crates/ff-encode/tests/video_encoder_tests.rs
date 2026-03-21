@@ -17,6 +17,7 @@ use ff_encode::{
     H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier, Preset, ProResOptions,
     ProResProfile, SvtAv1Options, VideoCodec, VideoCodecOptions, VideoEncoder, Vp9Options,
 };
+use ff_format::PixelFormat;
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
 };
@@ -1084,6 +1085,83 @@ fn dnxhd_invalid_resolution_should_return_error() {
         matches!(result, Err(EncodeError::InvalidOption { .. })),
         "Expected InvalidOption error for DNxHD with non-standard resolution"
     );
+}
+
+// ============================================================================
+// 10-bit Pixel Format Tests
+// ============================================================================
+
+#[test]
+fn h265_main10_with_explicit_yuv420p10le_should_produce_valid_output() {
+    let output_path = test_output_path("h265_main10_yuv420p10le.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H265)
+        .bitrate_mode(BitrateMode::Crf(28))
+        .preset(Preset::Ultrafast)
+        .pixel_format(PixelFormat::Yuv420p10le)
+        .codec_options(VideoCodecOptions::H265(H265Options {
+            profile: H265Profile::Main10,
+            tier: H265Tier::Main,
+            level: None,
+            ..H265Options::default()
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping h265_main10_yuv420p10le test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let frame = create_black_frame(640, 480);
+    for _ in 0..10 {
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("h265_main10_yuv420p10le: codec={codec_name}");
+}
+
+#[test]
+fn pixel_format_yuv420p10le_on_h264_should_be_accepted() {
+    let output_path = test_output_path("h264_yuv420p10le.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(23))
+        .pixel_format(PixelFormat::Yuv420p10le)
+        .build();
+
+    // The builder must not return InvalidOption — 10-bit formats are always accepted.
+    assert!(
+        !matches!(result, Err(EncodeError::InvalidOption { .. })),
+        "pixel_format(Yuv420p10le) must not return InvalidOption"
+    );
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping pixel_format_yuv420p10le_on_h264 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let frame = create_black_frame(640, 480);
+    for _ in 0..5 {
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
 }
 
 // ============================================================================

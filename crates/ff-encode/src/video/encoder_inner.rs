@@ -154,6 +154,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) chapters: Vec<ff_format::chapter::ChapterInfo>,
     pub(super) subtitle_passthrough: Option<(String, usize)>,
     pub(super) codec_options: Option<crate::video::codec_options::VideoCodecOptions>,
+    pub(super) pixel_format: Option<ff_format::PixelFormat>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -390,6 +391,12 @@ impl VideoEncoderInner {
                             h265.profile.as_str()
                         );
                     }
+                }
+                // Auto-select yuv420p10le for Main10 (may be overridden by an explicit
+                // pixel_format() call applied after apply_codec_options returns).
+                if h265.profile == crate::video::codec_options::H265Profile::Main10 {
+                    // SAFETY: codec_ctx is valid; direct field write is safe.
+                    (*codec_ctx).pix_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE;
                 }
                 // tier
                 if let Ok(s) = CString::new(h265.tier.as_str()) {
@@ -883,6 +890,7 @@ impl VideoEncoderInner {
                     config.hardware_encoder,
                     config.two_pass,
                     config.codec_options.as_ref(),
+                    config.pixel_format.as_ref(),
                 )?;
             }
 
@@ -956,6 +964,7 @@ impl VideoEncoderInner {
         hardware_encoder: crate::HardwareEncoder,
         two_pass: bool,
         codec_options: Option<&crate::video::codec_options::VideoCodecOptions>,
+        pixel_format: Option<&ff_format::PixelFormat>,
     ) -> Result<(), EncodeError> {
         use crate::BitrateMode;
         // Select encoder based on codec and availability
@@ -1055,6 +1064,12 @@ impl VideoEncoderInner {
             Self::apply_codec_options(codec_ctx, opts, &encoder_name);
         }
 
+        // Apply explicit pixel format override (takes priority over codec-option auto-select).
+        if let Some(fmt) = pixel_format {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).pix_fmt = pixel_format_to_av(*fmt);
+        }
+
         // For two-pass, set the pass-1 flag before opening the codec.
         if two_pass {
             // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
@@ -1064,7 +1079,11 @@ impl VideoEncoderInner {
         // Open codec
         avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
             .map_err(EncodeError::from_ffmpeg_error)?;
-        log::info!("codec opened codec={encoder_name} width={width} height={height} fps={fps}");
+        let actual_pix_fmt = from_av_pixel_format((*codec_ctx).pix_fmt);
+        log::info!(
+            "codec opened codec={encoder_name} width={width} height={height} fps={fps} \
+             pix_fmt={actual_pix_fmt}"
+        );
 
         // Create stream
         let stream = avformat_new_stream(self.format_ctx, codec_ptr);
@@ -2439,6 +2458,12 @@ impl VideoEncoderInner {
             Self::apply_codec_options(codec_ctx, opts, &encoder_name);
         }
 
+        // Apply explicit pixel format override for pass 2 (mirrors pass 1).
+        if let Some(fmt) = config.pixel_format.as_ref() {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).pix_fmt = pixel_format_to_av(*fmt);
+        }
+
         // Set the pass-2 flag and provide stats_in.
         // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
         (*codec_ctx).flags |= AV_CODEC_FLAG_PASS2;
@@ -2951,6 +2976,47 @@ fn pixel_format_to_av(format: ff_format::PixelFormat) -> AVPixelFormat {
     }
 }
 
+/// Convert FFmpeg AVPixelFormat back to ff-format PixelFormat.
+fn from_av_pixel_format(fmt: AVPixelFormat) -> ff_format::PixelFormat {
+    use ff_format::PixelFormat;
+    if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P {
+        PixelFormat::Yuv420p
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P {
+        PixelFormat::Yuv422p
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P {
+        PixelFormat::Yuv444p
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_RGB24 {
+        PixelFormat::Rgb24
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_BGR24 {
+        PixelFormat::Bgr24
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_RGBA {
+        PixelFormat::Rgba
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_BGRA {
+        PixelFormat::Bgra
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8 {
+        PixelFormat::Gray8
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_NV12 {
+        PixelFormat::Nv12
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_NV21 {
+        PixelFormat::Nv21
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE {
+        PixelFormat::Yuv420p10le
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE {
+        PixelFormat::Yuv422p10le
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE {
+        PixelFormat::Yuv444p10le
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE {
+        PixelFormat::Yuva444p10le
+    } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE {
+        PixelFormat::P010le
+    } else {
+        log::warn!(
+            "pixel_format unsupported, falling back to Yuv420p requested={fmt} fallback=Yuv420p"
+        );
+        PixelFormat::Yuv420p
+    }
+}
+
 // SAFETY: VideoEncoderInner owns all FFmpeg contexts exclusively.
 //         These contexts are not accessed from multiple threads simultaneously;
 //         all access is serialized by whichever thread holds the VideoEncoder.
@@ -3155,6 +3221,52 @@ mod tests {
         assert_eq!(
             pixel_format_to_av(ff_format::PixelFormat::Other(999)),
             ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
+        );
+
+        // 10-bit formats
+        assert_eq!(
+            pixel_format_to_av(ff_format::PixelFormat::Yuv420p10le),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE
+        );
+        assert_eq!(
+            pixel_format_to_av(ff_format::PixelFormat::Yuv422p10le),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE
+        );
+        assert_eq!(
+            pixel_format_to_av(ff_format::PixelFormat::Yuv444p10le),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE
+        );
+    }
+
+    #[test]
+    fn from_av_pixel_format_yuv420p10le_should_return_yuv420p10le() {
+        assert_eq!(
+            from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE),
+            ff_format::PixelFormat::Yuv420p10le
+        );
+    }
+
+    #[test]
+    fn from_av_pixel_format_yuv422p10le_should_return_yuv422p10le() {
+        assert_eq!(
+            from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE),
+            ff_format::PixelFormat::Yuv422p10le
+        );
+    }
+
+    #[test]
+    fn from_av_pixel_format_yuv444p10le_should_return_yuv444p10le() {
+        assert_eq!(
+            from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE),
+            ff_format::PixelFormat::Yuv444p10le
+        );
+    }
+
+    #[test]
+    fn from_av_pixel_format_unknown_should_fall_back_to_yuv420p() {
+        assert_eq!(
+            from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_NONE),
+            ff_format::PixelFormat::Yuv420p
         );
     }
 
