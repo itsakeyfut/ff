@@ -13,8 +13,8 @@
 mod fixtures;
 
 use ff_encode::{
-    BitrateMode, H264Options, H264Preset, H264Profile, H264Tune, Preset, VideoCodec,
-    VideoCodecOptions, VideoEncoder,
+    BitrateMode, H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile,
+    H265Tier, Preset, VideoCodec, VideoCodecOptions, VideoEncoder,
 };
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
@@ -356,6 +356,164 @@ fn crf_h265_should_produce_valid_output() {
 
     encoder.finish().expect("Failed to finish encoding");
     assert_valid_output_file(&output_path);
+}
+
+// ── H265Options integration tests ────────────────────────────────────────────
+
+#[test]
+fn h265_main_profile_should_produce_valid_output() {
+    let output_path = test_output_path("h265_main_profile.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H265)
+        .bitrate_mode(BitrateMode::Crf(28))
+        .preset(Preset::Ultrafast)
+        .codec_options(VideoCodecOptions::H265(H265Options {
+            profile: H265Profile::Main,
+            tier: H265Tier::Main,
+            level: None,
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping h265_main_profile test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("h265_main_profile: codec={codec_name}");
+}
+
+#[test]
+fn h265_main10_profile_should_produce_valid_output() {
+    let output_path = test_output_path("h265_main10_profile.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H265)
+        .bitrate_mode(BitrateMode::Crf(28))
+        .preset(Preset::Ultrafast)
+        .codec_options(VideoCodecOptions::H265(H265Options {
+            profile: H265Profile::Main10,
+            tier: H265Tier::Main,
+            level: None,
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping h265_main10_profile test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("h265_main10_profile: codec={codec_name}");
+}
+
+#[test]
+fn h265_high_tier_should_produce_valid_output() {
+    let output_path = test_output_path("h265_high_tier.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H265)
+        .bitrate_mode(BitrateMode::Crf(28))
+        .preset(Preset::Ultrafast)
+        .codec_options(VideoCodecOptions::H265(H265Options {
+            profile: H265Profile::Main,
+            tier: H265Tier::High,
+            level: None,
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping h265_high_tier test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("h265_high_tier: codec={codec_name}");
+}
+
+#[test]
+fn h265_level51_should_produce_valid_output() {
+    let output_path = test_output_path("h265_level51.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H265)
+        .bitrate_mode(BitrateMode::Crf(28))
+        .preset(Preset::Ultrafast)
+        .codec_options(VideoCodecOptions::H265(H265Options {
+            profile: H265Profile::Main,
+            tier: H265Tier::Main,
+            level: Some(51),
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping h265_level51 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("h265_level51: codec={codec_name}");
 }
 
 // ============================================================================
