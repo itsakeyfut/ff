@@ -153,6 +153,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) metadata: Vec<(String, String)>,
     pub(super) chapters: Vec<ff_format::chapter::ChapterInfo>,
     pub(super) subtitle_passthrough: Option<(String, usize)>,
+    pub(super) codec_options: Option<crate::video::codec_options::VideoCodecOptions>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -267,6 +268,187 @@ impl VideoEncoderInner {
         }
     }
 
+    /// Apply per-codec options to an allocated (not yet opened) codec context.
+    ///
+    /// All `av_opt_set` return values are checked; a negative value is logged
+    /// as a warning and skipped — it never propagates as an error.
+    ///
+    /// # Safety
+    ///
+    /// `codec_ctx` must be a valid non-null pointer to an allocated
+    /// `AVCodecContext` whose `priv_data` has been set by
+    /// `avcodec_alloc_context3`. Must be called **before** `avcodec_open2`.
+    unsafe fn apply_codec_options(
+        codec_ctx: *mut AVCodecContext,
+        opts: &crate::video::codec_options::VideoCodecOptions,
+        encoder_name: &str,
+    ) {
+        use crate::video::codec_options::VideoCodecOptions;
+        use std::ffi::CString;
+
+        match opts {
+            VideoCodecOptions::H264(h264) => {
+                // profile
+                if let Ok(s) = CString::new(h264.profile.as_str()) {
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"profile\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=profile value={} encoder={encoder_name}",
+                            h264.profile.as_str()
+                        );
+                    }
+                }
+                // level (only when explicitly set)
+                if let Some(level) = h264.level {
+                    let level_str = level.to_string();
+                    if let Ok(s) = CString::new(level_str.as_str()) {
+                        let ret = ff_sys::av_opt_set(
+                            (*codec_ctx).priv_data,
+                            b"level\0".as_ptr() as *const i8,
+                            s.as_ptr(),
+                            0,
+                        );
+                        if ret < 0 {
+                            log::warn!(
+                                "av_opt_set failed option=level value={level} \
+                                 encoder={encoder_name}"
+                            );
+                        }
+                    }
+                }
+                // Direct codec context fields
+                (*codec_ctx).max_b_frames = h264.bframes as i32;
+                (*codec_ctx).gop_size = h264.gop_size as i32;
+                (*codec_ctx).refs = h264.refs as i32;
+            }
+            VideoCodecOptions::H265(h265) => {
+                // profile
+                if let Ok(s) = CString::new(h265.profile.as_str()) {
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"profile\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=profile value={} encoder={encoder_name}",
+                            h265.profile.as_str()
+                        );
+                    }
+                }
+                // tier
+                if let Ok(s) = CString::new(h265.tier.as_str()) {
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"tier\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=tier value={} encoder={encoder_name}",
+                            h265.tier.as_str()
+                        );
+                    }
+                }
+                // level (only when explicitly set)
+                if let Some(level) = h265.level {
+                    let level_str = level.to_string();
+                    if let Ok(s) = CString::new(level_str.as_str()) {
+                        let ret = ff_sys::av_opt_set(
+                            (*codec_ctx).priv_data,
+                            b"level\0".as_ptr() as *const i8,
+                            s.as_ptr(),
+                            0,
+                        );
+                        if ret < 0 {
+                            log::warn!(
+                                "av_opt_set failed option=level value={level} \
+                                 encoder={encoder_name}"
+                            );
+                        }
+                    }
+                }
+            }
+            VideoCodecOptions::Av1(av1) => {
+                // cpu-used
+                let cpu_used_str = av1.cpu_used.to_string();
+                if let Ok(s) = CString::new(cpu_used_str.as_str()) {
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"cpu-used\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=cpu-used value={} encoder={encoder_name}",
+                            av1.cpu_used
+                        );
+                    }
+                }
+                // tile-rows
+                let tile_rows_str = av1.tile_rows.to_string();
+                if let Ok(s) = CString::new(tile_rows_str.as_str()) {
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"tile-rows\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=tile-rows value={} encoder={encoder_name}",
+                            av1.tile_rows
+                        );
+                    }
+                }
+                // tile-columns
+                let tile_cols_str = av1.tile_cols.to_string();
+                if let Ok(s) = CString::new(tile_cols_str.as_str()) {
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"tile-columns\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=tile-columns value={} \
+                             encoder={encoder_name}",
+                            av1.tile_cols
+                        );
+                    }
+                }
+                // usage
+                if let Ok(s) = CString::new(av1.usage.as_str()) {
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"usage\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=usage value={} encoder={encoder_name}",
+                            av1.usage.as_str()
+                        );
+                    }
+                }
+            }
+            // Vp9, ProRes, Dnxhd: options reserved for future issues
+            VideoCodecOptions::Vp9(_)
+            | VideoCodecOptions::ProRes(_)
+            | VideoCodecOptions::Dnxhd(_) => {}
+        }
+    }
+
     /// Create a new encoder with the given configuration.
     pub(super) fn new(config: &VideoEncoderConfig) -> Result<Self, EncodeError> {
         unsafe {
@@ -337,6 +519,7 @@ impl VideoEncoderInner {
                     &config.preset,
                     config.hardware_encoder,
                     config.two_pass,
+                    config.codec_options.as_ref(),
                 )?;
             }
 
@@ -409,6 +592,7 @@ impl VideoEncoderInner {
         preset: &str,
         hardware_encoder: crate::HardwareEncoder,
         two_pass: bool,
+        codec_options: Option<&crate::video::codec_options::VideoCodecOptions>,
     ) -> Result<(), EncodeError> {
         use crate::BitrateMode;
         // Select encoder based on codec and availability
@@ -498,6 +682,14 @@ impl VideoEncoderInner {
                      encoder={encoder_name} preset={preset}"
                 );
             }
+        }
+
+        // Apply per-codec options before opening the codec context.
+        if let Some(opts) = codec_options {
+            // SAFETY: codec_ctx is valid and allocated; priv_data is set by
+            // avcodec_alloc_context3. Options are applied before avcodec_open2
+            // so they take effect during codec initialisation.
+            Self::apply_codec_options(codec_ctx, opts, &encoder_name);
         }
 
         // For two-pass, set the pass-1 flag before opening the codec.
@@ -1841,6 +2033,14 @@ impl VideoEncoderInner {
                     config.preset
                 );
             }
+        }
+
+        // Apply per-codec options before opening the pass-2 codec context.
+        if let Some(opts) = config.codec_options.as_ref() {
+            // SAFETY: codec_ctx is valid and allocated; priv_data is set by
+            // avcodec_alloc_context3. Options are applied before avcodec_open2
+            // so they take effect during codec initialisation.
+            Self::apply_codec_options(codec_ctx, opts, &encoder_name);
         }
 
         // Set the pass-2 flag and provide stats_in.

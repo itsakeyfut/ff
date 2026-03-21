@@ -7,8 +7,13 @@
 #[cfg(feature = "tokio")]
 pub mod async_encoder;
 pub mod builder;
+pub mod codec_options;
 mod encoder_inner;
 
 #[cfg(feature = "tokio")]
 pub use async_encoder::AsyncVideoEncoder;
 pub use builder::{VideoEncoder, VideoEncoderBuilder};
+pub use codec_options::{
+    Av1Options, Av1Usage, DnxhdOptions, H264Options, H264Profile, H265Options, H265Profile,
+    H265Tier, ProResOptions, VideoCodecOptions, Vp9Options,
+};

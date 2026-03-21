@@ -230,9 +230,10 @@ pub use ff_decode::{
 // default_extension) on the shared VideoCodec type; import it to call them.
 #[cfg(feature = "encode")]
 pub use ff_encode::{
-    AudioEncoder, BitrateMode, CRF_MAX, Container, EncodeError, EncodeProgress,
-    EncodeProgressCallback, HardwareEncoder, ImageEncoder, Preset, VideoCodecEncodeExt,
-    VideoEncoder,
+    AudioEncoder, Av1Options, Av1Usage, BitrateMode, CRF_MAX, Container, DnxhdOptions, EncodeError,
+    EncodeProgress, EncodeProgressCallback, H264Options, H264Profile, H265Options, H265Profile,
+    H265Tier, HardwareEncoder, ImageEncoder, Preset, ProResOptions, VideoCodecEncodeExt,
+    VideoCodecOptions, VideoEncoder, Vp9Options,
 };
 
 // ── tokio feature ─────────────────────────────────────────────────────────────
