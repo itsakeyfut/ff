@@ -45,6 +45,10 @@ pub enum VideoCodec {
     Vp9,
     /// AV1 - Alliance for Open Media codec, next-gen compression
     Av1,
+    /// AV1 encoded via SVT-AV1 (libsvtav1) — LGPL-licensed, often faster than libaom-av1.
+    ///
+    /// Requires an `FFmpeg` build with `--enable-libsvtav1`.
+    Av1Svt,
     /// Apple's professional editing codec
     ProRes,
     /// Avid DNxHD/DNxHR — professional editing codec for post-production
@@ -77,7 +81,7 @@ impl VideoCodec {
             Self::H265 => "hevc",
             Self::Vp8 => "vp8",
             Self::Vp9 => "vp9",
-            Self::Av1 => "av1",
+            Self::Av1 | Self::Av1Svt => "av1",
             Self::ProRes => "prores",
             Self::DnxHd => "dnxhd",
             Self::Mpeg4 => "mpeg4",
@@ -105,6 +109,7 @@ impl VideoCodec {
             Self::Vp8 => "VP8",
             Self::Vp9 => "VP9",
             Self::Av1 => "AV1",
+            Self::Av1Svt => "AV1 (SVT)",
             Self::ProRes => "Apple ProRes",
             Self::DnxHd => "Avid DNxHD/DNxHR",
             Self::Mpeg4 => "MPEG-4 Part 2",
@@ -568,6 +573,16 @@ mod tests {
             assert!(VideoCodec::DnxHd.is_professional());
             assert!(!VideoCodec::H264.is_professional());
             assert!(!VideoCodec::Unknown.is_professional());
+        }
+
+        #[test]
+        fn av1svt_name_should_return_av1() {
+            assert_eq!(VideoCodec::Av1Svt.name(), "av1");
+        }
+
+        #[test]
+        fn av1svt_display_name_should_return_av1_svt() {
+            assert_eq!(VideoCodec::Av1Svt.display_name(), "AV1 (SVT)");
         }
 
         #[test]

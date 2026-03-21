@@ -359,6 +359,15 @@ impl VideoEncoderBuilder {
             });
         }
 
+        if let Some(VideoCodecOptions::Av1Svt(ref opts)) = self.codec_options
+            && opts.preset > 13
+        {
+            return Err(EncodeError::InvalidOption {
+                name: "preset".to_string(),
+                reason: "must be 0–13".to_string(),
+            });
+        }
+
         if has_audio {
             if let Some(rate) = self.audio_sample_rate
                 && rate == 0

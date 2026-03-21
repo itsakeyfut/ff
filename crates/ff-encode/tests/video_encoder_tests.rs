@@ -14,7 +14,8 @@ mod fixtures;
 
 use ff_encode::{
     Av1Options, Av1Usage, BitrateMode, EncodeError, H264Options, H264Preset, H264Profile, H264Tune,
-    H265Options, H265Profile, H265Tier, Preset, VideoCodec, VideoCodecOptions, VideoEncoder,
+    H265Options, H265Profile, H265Tier, Preset, SvtAv1Options, VideoCodec, VideoCodecOptions,
+    VideoEncoder,
 };
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
@@ -682,6 +683,100 @@ fn av1_cpu_used_9_should_return_invalid_option_error() {
         .codec_options(VideoCodecOptions::Av1(Av1Options {
             cpu_used: 9,
             ..Av1Options::default()
+        }))
+        .build();
+
+    assert!(
+        matches!(result, Err(EncodeError::InvalidOption { .. })),
+        "Expected InvalidOption error"
+    );
+}
+
+// ============================================================================
+// SVT-AV1 codec_options Tests
+// ============================================================================
+
+#[test]
+fn svtav1_preset_8_should_produce_valid_output() {
+    let output_path = test_output_path("svtav1_preset_8.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let mut encoder = match VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Av1Svt)
+        .codec_options(VideoCodecOptions::Av1Svt(SvtAv1Options {
+            preset: 8,
+            ..SvtAv1Options::default()
+        }))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping svtav1_preset_8 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("svtav1_preset_8: codec={codec_name}");
+}
+
+#[test]
+fn svtav1_params_passthrough_should_not_crash() {
+    let output_path = test_output_path("svtav1_params.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let mut encoder = match VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Av1Svt)
+        .codec_options(VideoCodecOptions::Av1Svt(SvtAv1Options {
+            svtav1_params: Some("fast-decode=1".to_string()),
+            ..SvtAv1Options::default()
+        }))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping svtav1_params test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("svtav1_params: codec={codec_name}");
+}
+
+#[test]
+fn svtav1_preset_14_should_return_invalid_option_error() {
+    let output_path = test_output_path("svtav1_preset_14.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Av1Svt)
+        .codec_options(VideoCodecOptions::Av1Svt(SvtAv1Options {
+            preset: 14,
+            ..SvtAv1Options::default()
         }))
         .build();
 
