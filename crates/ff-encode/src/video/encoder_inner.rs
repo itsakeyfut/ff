@@ -719,8 +719,58 @@ impl VideoEncoderInner {
                     }
                 }
             }
-            // ProRes, Dnxhd: options reserved for future issues
-            VideoCodecOptions::ProRes(_) | VideoCodecOptions::Dnxhd(_) => {}
+            VideoCodecOptions::ProRes(prores) => {
+                // Set pixel format based on profile before avcodec_open2.
+                // 4444 profiles need yuva444p10le; 422 profiles need yuv422p10le.
+                // SAFETY: codec_ctx is non-null; direct field write is safe.
+                if prores.profile.is_4444() {
+                    (*codec_ctx).pix_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE;
+                } else {
+                    (*codec_ctx).pix_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE;
+                }
+
+                // Apply profile via av_opt_set on priv_data.
+                let profile_str = prores.profile.profile_id().to_string();
+                if let Ok(s) = CString::new(profile_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; strings are
+                    // NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"profile\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=profile value={} \
+                             encoder={encoder_name}",
+                            prores.profile.profile_id()
+                        );
+                    }
+                }
+
+                // Apply optional vendor tag.
+                if let Some(vendor) = prores.vendor
+                    && let Ok(s) = CString::new(vendor.as_ref())
+                {
+                    // SAFETY: codec_ctx and priv_data are non-null; strings are
+                    // NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"vendor\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=vendor \
+                             encoder={encoder_name}"
+                        );
+                    }
+                }
+            }
+            // Dnxhd: options reserved for a future issue
+            VideoCodecOptions::Dnxhd(_) => {}
         }
     }
 
@@ -2849,6 +2899,9 @@ fn pixel_format_to_av(format: ff_format::PixelFormat) -> AVPixelFormat {
         PixelFormat::Nv12 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV12,
         PixelFormat::Nv21 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV21,
         PixelFormat::Yuv420p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE,
+        PixelFormat::Yuv422p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE,
+        PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
+        PixelFormat::Yuva444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE,
         PixelFormat::P010le => ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE,
         _ => {
             log::warn!(
