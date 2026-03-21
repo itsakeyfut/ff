@@ -51,6 +51,7 @@ pub struct VideoEncoderBuilder {
     pub(crate) subtitle_passthrough: Option<(String, usize)>,
     pub(crate) codec_options: Option<VideoCodecOptions>,
     pub(crate) pixel_format: Option<ff_format::PixelFormat>,
+    pub(crate) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -79,6 +80,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("subtitle_passthrough", &self.subtitle_passthrough)
             .field("codec_options", &self.codec_options)
             .field("pixel_format", &self.pixel_format)
+            .field("hdr10_metadata", &self.hdr10_metadata)
             .finish()
     }
 }
@@ -106,6 +108,7 @@ impl VideoEncoderBuilder {
             subtitle_passthrough: None,
             codec_options: None,
             pixel_format: None,
+            hdr10_metadata: None,
         }
     }
 
@@ -282,6 +285,26 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn pixel_format(mut self, fmt: ff_format::PixelFormat) -> Self {
         self.pixel_format = Some(fmt);
+        self
+    }
+
+    // === HDR metadata ===
+
+    /// Embed HDR10 static metadata in the output.
+    ///
+    /// Sets `color_primaries = BT.2020`, `color_trc = SMPTE ST 2084 (PQ)`,
+    /// and `colorspace = BT.2020 NCL` on the codec context, then attaches
+    /// `AV_PKT_DATA_CONTENT_LIGHT_LEVEL` and
+    /// `AV_PKT_DATA_MASTERING_DISPLAY_METADATA` packet side data to every
+    /// keyframe.
+    ///
+    /// Pair with [`codec_options`](Self::codec_options) using
+    /// `H265Options { profile: H265Profile::Main10, .. }`
+    /// and [`pixel_format(PixelFormat::Yuv420p10le)`](Self::pixel_format) for a
+    /// complete HDR10 pipeline.
+    #[must_use]
+    pub fn hdr10_metadata(mut self, meta: ff_format::Hdr10Metadata) -> Self {
+        self.hdr10_metadata = Some(meta);
         self
     }
 
@@ -488,6 +511,7 @@ impl VideoEncoder {
             subtitle_passthrough: builder.subtitle_passthrough,
             codec_options: builder.codec_options,
             pixel_format: builder.pixel_format,
+            hdr10_metadata: builder.hdr10_metadata,
         };
 
         let inner = if config.video_width.is_some() {
@@ -711,6 +735,7 @@ mod tests {
                 two_pass_config: None,
                 stats_in_cstr: None,
                 subtitle_passthrough: None,
+                hdr10_metadata: None,
             }),
             _config: VideoEncoderConfig {
                 path: "test.mp4".into(),
@@ -732,6 +757,7 @@ mod tests {
                 subtitle_passthrough: None,
                 codec_options: None,
                 pixel_format: None,
+                hdr10_metadata: None,
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,

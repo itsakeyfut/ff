@@ -20,14 +20,50 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
     AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS,
     AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AVFormatContext, AVFrame,
-    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext,
-    SwsContext, av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_mallocz,
-    av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer, avcodec,
+    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
+    AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+    AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc, av_frame_free,
+    av_interleaved_write_frame, av_mallocz, av_packet_alloc, av_packet_free,
+    av_packet_new_side_data, av_packet_unref, av_write_trailer, avcodec,
     avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
     avformat_write_header, swresample, swscale,
 };
 use std::ffi::CString;
 use std::ptr;
+
+/// FFmpeg `AVContentLightMetadata` — matches the C struct layout.
+///
+/// Not exposed by bindgen, so defined here with field order/types matching
+/// the FFmpeg 7.x header `libavutil/mastering_display_metadata.h`.
+#[repr(C)]
+struct AvContentLightMetadata {
+    /// Maximum Content Light Level (nits). Corresponds to `MaxCLL` in C.
+    max_cll: u32,
+    /// Maximum Frame-Average Light Level (nits). Corresponds to `MaxFALL` in C.
+    max_fall: u32,
+}
+
+/// FFmpeg `AVMasteringDisplayMetadata` — matches the C struct layout.
+///
+/// Not exposed by bindgen, so defined here with the exact field names and
+/// types from the FFmpeg 7.x header `libavutil/mastering_display_metadata.h`.
+#[repr(C)]
+struct AvMasteringDisplayMetadata {
+    /// Chromaticity coordinates of the source primaries:
+    /// `display_primaries[R=0/G=1/B=2][x=0/y=1]`.
+    display_primaries: [[ff_sys::AVRational; 2]; 3],
+    /// White point chromaticity: `white_point[x=0/y=1]`.
+    white_point: [ff_sys::AVRational; 2],
+    /// Minimum display luminance (AVRational with denominator 10000).
+    min_luminance: ff_sys::AVRational,
+    /// Maximum display luminance (AVRational with denominator 10000).
+    max_luminance: ff_sys::AVRational,
+    /// Flag: 1 if `display_primaries` is set, 0 otherwise.
+    has_primaries: std::os::raw::c_int,
+    /// Flag: 1 if `min_luminance`/`max_luminance` are set, 0 otherwise.
+    has_luminance: std::os::raw::c_int,
+}
 
 /// Maximum number of planes in AVFrame data/linesize arrays.
 ///
@@ -131,6 +167,11 @@ pub(super) struct VideoEncoderInner {
     /// Set by `init_subtitle_passthrough`; read by `write_subtitle_packets`.
     /// `None` if no subtitle passthrough was requested.
     pub(super) subtitle_passthrough: Option<(String, usize, i32)>,
+
+    /// HDR10 static metadata to embed in keyframe packets.
+    ///
+    /// `None` if no HDR metadata was requested.
+    pub(super) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
 }
 
 /// VideoEncoder configuration (stored from builder).
@@ -155,6 +196,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) subtitle_passthrough: Option<(String, usize)>,
     pub(super) codec_options: Option<crate::video::codec_options::VideoCodecOptions>,
     pub(super) pixel_format: Option<ff_format::PixelFormat>,
+    pub(super) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -874,6 +916,7 @@ impl VideoEncoderInner {
                 two_pass_config: None,
                 stats_in_cstr: None,
                 subtitle_passthrough: None,
+                hdr10_metadata: config.hdr10_metadata.clone(),
             };
 
             // Initialize video encoder if configured
@@ -1068,6 +1111,14 @@ impl VideoEncoderInner {
         if let Some(fmt) = pixel_format {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
             (*codec_ctx).pix_fmt = pixel_format_to_av(*fmt);
+        }
+
+        // Apply HDR10 color context: BT.2020 primaries, PQ transfer, BT.2020 NCL colorspace.
+        if self.hdr10_metadata.is_some() {
+            // SAFETY: codec_ctx is valid and allocated; direct field writes are safe.
+            (*codec_ctx).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
+            (*codec_ctx).color_trc = ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
+            (*codec_ctx).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
         }
 
         // For two-pass, set the pass-1 flag before opening the codec.
@@ -1915,6 +1966,14 @@ impl VideoEncoderInner {
             // Set stream index
             (*packet).stream_index = self.video_stream_index;
 
+            // Attach HDR10 side data to keyframe packets.
+            if let Some(ref meta) = self.hdr10_metadata {
+                const AV_PKT_FLAG_KEY: i32 = 1;
+                if (*packet).flags & AV_PKT_FLAG_KEY != 0 {
+                    self.attach_hdr10_side_data(packet, meta);
+                }
+            }
+
             // Write packet
             let write_ret = av_interleaved_write_frame(self.format_ctx, packet);
             if write_ret < 0 {
@@ -1932,6 +1991,88 @@ impl VideoEncoderInner {
 
         av_packet_free(&mut packet as *mut *mut _);
         Ok(())
+    }
+
+    /// Attach HDR10 static metadata as packet side data to a keyframe packet.
+    ///
+    /// Attaches `AV_PKT_DATA_CONTENT_LIGHT_LEVEL` (MaxCLL/MaxFALL) and
+    /// `AV_PKT_DATA_MASTERING_DISPLAY_METADATA` to `pkt`.  Called from
+    /// `receive_packets` for every keyframe when `hdr10_metadata` is set.
+    ///
+    /// # Safety
+    ///
+    /// `pkt` must be a valid, non-null pointer to an allocated `AVPacket`.
+    unsafe fn attach_hdr10_side_data(&self, pkt: *mut AVPacket, meta: &ff_format::Hdr10Metadata) {
+        // ── Content light level (MaxCLL / MaxFALL) ──────────────────────────
+        let cll_ptr = av_packet_new_side_data(
+            pkt,
+            AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+            std::mem::size_of::<AvContentLightMetadata>(),
+        );
+        if cll_ptr.is_null() {
+            log::warn!(
+                "hdr10 side_data allocation failed, skipping MaxCLL/MaxFALL type=content_light_level"
+            );
+        } else {
+            // SAFETY: av_packet_new_side_data returns memory allocated for exactly
+            // sizeof(AvContentLightMetadata) bytes with alignment suitable for the
+            // data type. We use ptr::write to avoid creating a reference to
+            // potentially-unaligned memory (ptr::write handles any alignment).
+            let cll_value = AvContentLightMetadata {
+                max_cll: u32::from(meta.max_cll),
+                max_fall: u32::from(meta.max_fall),
+            };
+            // SAFETY: write_unaligned does not require the pointer to be aligned;
+            // it copies bytes. FFmpeg's av_packet_new_side_data returns
+            // malloc-aligned memory in practice, but write_unaligned is correct
+            // regardless of alignment.
+            std::ptr::write_unaligned(cll_ptr.cast::<AvContentLightMetadata>(), cll_value);
+        }
+
+        // ── Mastering display colour volume ─────────────────────────────────
+        let md_ptr = av_packet_new_side_data(
+            pkt,
+            AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+            std::mem::size_of::<AvMasteringDisplayMetadata>(),
+        );
+        if md_ptr.is_null() {
+            log::warn!(
+                "hdr10 side_data allocation failed, skipping mastering display type=mastering_display_metadata"
+            );
+        } else {
+            let d = &meta.mastering_display;
+            let r = |n: u16| ff_sys::AVRational {
+                num: i32::from(n),
+                den: 50000,
+            };
+            let lum = |n: u32| ff_sys::AVRational {
+                num: i32::try_from(n).unwrap_or(i32::MAX),
+                den: 10000,
+            };
+            // SAFETY: av_packet_new_side_data returns memory allocated for exactly
+            // sizeof(AvMasteringDisplayMetadata) bytes. We use ptr::write to safely
+            // write the struct without creating a potentially-unaligned reference.
+            let md_value = AvMasteringDisplayMetadata {
+                // Chromaticity coordinates: denominator = 50000 (CIE 1931 xy).
+                // Order: [R, G, B][x, y]
+                display_primaries: [
+                    [r(d.red_x), r(d.red_y)],
+                    [r(d.green_x), r(d.green_y)],
+                    [r(d.blue_x), r(d.blue_y)],
+                ],
+                white_point: [r(d.white_x), r(d.white_y)],
+                // Luminance: denominator = 10000.
+                min_luminance: lum(d.min_luminance),
+                max_luminance: lum(d.max_luminance),
+                has_primaries: 1,
+                has_luminance: 1,
+            };
+            // SAFETY: write_unaligned does not require the pointer to be aligned;
+            // it copies bytes. FFmpeg's av_packet_new_side_data returns
+            // malloc-aligned memory in practice, but write_unaligned is correct
+            // regardless of alignment.
+            std::ptr::write_unaligned(md_ptr.cast::<AvMasteringDisplayMetadata>(), md_value);
+        }
     }
 
     /// Push an audio frame for encoding.
@@ -2462,6 +2603,14 @@ impl VideoEncoderInner {
         if let Some(fmt) = config.pixel_format.as_ref() {
             // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
             (*codec_ctx).pix_fmt = pixel_format_to_av(*fmt);
+        }
+
+        // Apply HDR10 color context for pass 2 (mirrors pass 1).
+        if config.hdr10_metadata.is_some() {
+            // SAFETY: codec_ctx is valid and allocated; direct field writes are safe.
+            (*codec_ctx).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
+            (*codec_ctx).color_trc = ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
+            (*codec_ctx).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
         }
 
         // Set the pass-2 flag and provide stats_in.
@@ -3317,6 +3466,7 @@ mod tests {
             two_pass_config: None,
             stats_in_cstr: None,
             subtitle_passthrough: None,
+            hdr10_metadata: None,
         }
     }
 }
