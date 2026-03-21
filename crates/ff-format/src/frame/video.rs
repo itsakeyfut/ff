@@ -316,6 +316,63 @@ impl VideoFrame {
                 ))
             }
 
+            // 10-bit planar YUV 4:2:2 - 2 bytes per sample
+            PixelFormat::Yuv422p10le => {
+                let y_stride = width as usize * 2;
+                let uv_stride = (width as usize).div_ceil(2) * 2;
+
+                let y_data = vec![0u8; y_stride * height as usize];
+                let u_data = vec![0u8; uv_stride * height as usize];
+                let v_data = vec![0u8; uv_stride * height as usize];
+
+                Ok((
+                    vec![
+                        PooledBuffer::standalone(y_data),
+                        PooledBuffer::standalone(u_data),
+                        PooledBuffer::standalone(v_data),
+                    ],
+                    vec![y_stride, uv_stride, uv_stride],
+                ))
+            }
+
+            // 10-bit planar YUV 4:4:4 - 2 bytes per sample
+            PixelFormat::Yuv444p10le => {
+                let stride = width as usize * 2;
+
+                let y_data = vec![0u8; stride * height as usize];
+                let u_data = vec![0u8; stride * height as usize];
+                let v_data = vec![0u8; stride * height as usize];
+
+                Ok((
+                    vec![
+                        PooledBuffer::standalone(y_data),
+                        PooledBuffer::standalone(u_data),
+                        PooledBuffer::standalone(v_data),
+                    ],
+                    vec![stride, stride, stride],
+                ))
+            }
+
+            // 10-bit planar YUVA 4:4:4 with alpha - 2 bytes per sample
+            PixelFormat::Yuva444p10le => {
+                let stride = width as usize * 2;
+
+                let y_data = vec![0u8; stride * height as usize];
+                let u_data = vec![0u8; stride * height as usize];
+                let v_data = vec![0u8; stride * height as usize];
+                let a_data = vec![0u8; stride * height as usize];
+
+                Ok((
+                    vec![
+                        PooledBuffer::standalone(y_data),
+                        PooledBuffer::standalone(u_data),
+                        PooledBuffer::standalone(v_data),
+                        PooledBuffer::standalone(a_data),
+                    ],
+                    vec![stride, stride, stride, stride],
+                ))
+            }
+
             // 10-bit semi-planar P010
             PixelFormat::P010le => {
                 let y_stride = width as usize * 2;

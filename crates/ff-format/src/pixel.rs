@@ -32,7 +32,7 @@ use std::fmt;
 /// - **Packed RGB**: Data stored contiguously (Rgb24, Rgba, Bgr24, Bgra)
 /// - **Planar YUV**: Separate planes for Y, U, V components (Yuv420p, Yuv422p, Yuv444p)
 /// - **Semi-planar**: Y plane + interleaved UV (Nv12, Nv21)
-/// - **High bit depth**: 10-bit formats for HDR content (Yuv420p10le, P010le)
+/// - **High bit depth**: 10-bit formats for HDR content (Yuv420p10le, Yuv422p10le, Yuv444p10le, Yuva444p10le, P010le)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PixelFormat {
@@ -63,6 +63,12 @@ pub enum PixelFormat {
     // High bit depth
     /// 10-bit YUV 4:2:0 planar - HDR content
     Yuv420p10le,
+    /// 10-bit YUV 4:2:2 planar - `ProRes` 422 profiles
+    Yuv422p10le,
+    /// 10-bit YUV 4:4:4 planar - `ProRes` 4444 (no alpha)
+    Yuv444p10le,
+    /// 10-bit YUVA 4:4:4 planar with alpha - `ProRes` 4444 with alpha
+    Yuva444p10le,
     /// 10-bit semi-planar NV12 - HDR hardware decoding
     P010le,
 
@@ -99,6 +105,9 @@ impl PixelFormat {
             Self::Nv12 => "nv12",
             Self::Nv21 => "nv21",
             Self::Yuv420p10le => "yuv420p10le",
+            Self::Yuv422p10le => "yuv422p10le",
+            Self::Yuv444p10le => "yuv444p10le",
+            Self::Yuva444p10le => "yuva444p10le",
             Self::P010le => "p010le",
             Self::Gray8 => "gray8",
             Self::Other(_) => "unknown",
@@ -124,8 +133,14 @@ impl PixelFormat {
     #[must_use]
     pub const fn num_planes(&self) -> usize {
         match self {
-            // Planar YUV - Y, U, V planes
-            Self::Yuv420p | Self::Yuv422p | Self::Yuv444p | Self::Yuv420p10le => 3,
+            // Planar YUV - Y, U, V planes (and YUVA with alpha as 4th plane)
+            Self::Yuv420p
+            | Self::Yuv422p
+            | Self::Yuv444p
+            | Self::Yuv420p10le
+            | Self::Yuv422p10le
+            | Self::Yuv444p10le => 3,
+            Self::Yuva444p10le => 4,
             // Semi-planar - Y plane + interleaved UV plane
             Self::Nv12 | Self::Nv21 | Self::P010le => 2,
             // Packed formats and unknown - single plane
@@ -206,7 +221,7 @@ impl PixelFormat {
     /// ```
     #[must_use]
     pub const fn has_alpha(&self) -> bool {
-        matches!(self, Self::Rgba | Self::Bgra)
+        matches!(self, Self::Rgba | Self::Bgra | Self::Yuva444p10le)
     }
 
     /// Returns `true` if this is an RGB-based format.
@@ -247,6 +262,9 @@ impl PixelFormat {
                 | Self::Nv12
                 | Self::Nv21
                 | Self::Yuv420p10le
+                | Self::Yuv422p10le
+                | Self::Yuv444p10le
+                | Self::Yuva444p10le
                 | Self::P010le
         )
     }
@@ -310,13 +328,14 @@ impl PixelFormat {
             | Self::Nv21
             | Self::Yuv420p10le
             | Self::P010le
-            | Self::Yuv422p => 2,
+            | Self::Yuv422p
+            | Self::Yuv422p10le => 2,
 
-            // RGB24/BGR24 and YUV 4:4:4 - 3 bytes per pixel
-            Self::Rgb24 | Self::Bgr24 | Self::Yuv444p => 3,
+            // RGB24/BGR24 and YUV 4:4:4 (8-bit and 10-bit) - 3 bytes per pixel
+            Self::Rgb24 | Self::Bgr24 | Self::Yuv444p | Self::Yuv444p10le => 3,
 
-            // RGBA/BGRA and unknown formats - 4 bytes per pixel
-            Self::Rgba | Self::Bgra | Self::Other(_) => 4,
+            // RGBA/BGRA, YUVA 4:4:4 with alpha, and unknown formats - 4 bytes per pixel
+            Self::Yuva444p10le | Self::Rgba | Self::Bgra | Self::Other(_) => 4,
         }
     }
 
@@ -333,7 +352,14 @@ impl PixelFormat {
     /// ```
     #[must_use]
     pub const fn is_high_bit_depth(&self) -> bool {
-        matches!(self, Self::Yuv420p10le | Self::P010le)
+        matches!(
+            self,
+            Self::Yuv420p10le
+                | Self::Yuv422p10le
+                | Self::Yuv444p10le
+                | Self::Yuva444p10le
+                | Self::P010le
+        )
     }
 
     /// Returns the bit depth per component.
@@ -352,7 +378,11 @@ impl PixelFormat {
     #[must_use]
     pub const fn bit_depth(&self) -> usize {
         match self {
-            Self::Yuv420p10le | Self::P010le => 10,
+            Self::Yuv420p10le
+            | Self::Yuv422p10le
+            | Self::Yuv444p10le
+            | Self::Yuva444p10le
+            | Self::P010le => 10,
             // All other formats including unknown are 8-bit
             _ => 8,
         }

@@ -14,8 +14,8 @@ mod fixtures;
 
 use ff_encode::{
     Av1Options, Av1Usage, BitrateMode, EncodeError, H264Options, H264Preset, H264Profile, H264Tune,
-    H265Options, H265Profile, H265Tier, Preset, SvtAv1Options, VideoCodec, VideoCodecOptions,
-    VideoEncoder, Vp9Options,
+    H265Options, H265Profile, H265Tier, Preset, ProResOptions, ProResProfile, SvtAv1Options,
+    VideoCodec, VideoCodecOptions, VideoEncoder, Vp9Options,
 };
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
@@ -878,6 +878,118 @@ fn vp9_cpu_used_out_of_range_should_return_invalid_option_error() {
     assert!(
         matches!(result, Err(EncodeError::InvalidOption { .. })),
         "Expected InvalidOption error"
+    );
+}
+
+// ============================================================================
+// ProRes Tests
+// ============================================================================
+
+#[test]
+fn prores_hq_should_produce_valid_output() {
+    let output_path = test_output_path("prores_hq.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::ProRes)
+        .codec_options(VideoCodecOptions::ProRes(ProResOptions {
+            profile: ProResProfile::Hq,
+            vendor: None,
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping prores_hq test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!(
+        "ProRes HQ: codec={codec_name} size={} bytes",
+        get_file_size(&output_path)
+    );
+}
+
+#[test]
+fn prores_4444_should_produce_valid_output() {
+    let output_path = test_output_path("prores_4444.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::ProRes)
+        .codec_options(VideoCodecOptions::ProRes(ProResOptions {
+            profile: ProResProfile::P4444,
+            vendor: None,
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping prores_4444 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!(
+        "ProRes 4444: codec={codec_name} size={} bytes",
+        get_file_size(&output_path)
+    );
+}
+
+#[test]
+fn prores_vendor_tag_should_not_crash() {
+    let output_path = test_output_path("prores_vendor.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::ProRes)
+        .codec_options(VideoCodecOptions::ProRes(ProResOptions {
+            profile: ProResProfile::Standard,
+            vendor: Some([b'a', b'p', b'p', b'l']),
+        }))
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping prores_vendor test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!(
+        "ProRes vendor tag: codec={codec_name} size={} bytes",
+        get_file_size(&output_path)
     );
 }
 
