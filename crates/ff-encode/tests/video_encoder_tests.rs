@@ -13,8 +13,8 @@
 mod fixtures;
 
 use ff_encode::{
-    BitrateMode, H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile,
-    H265Tier, Preset, VideoCodec, VideoCodecOptions, VideoEncoder,
+    Av1Options, Av1Usage, BitrateMode, EncodeError, H264Options, H264Preset, H264Profile, H264Tune,
+    H265Options, H265Profile, H265Tier, Preset, VideoCodec, VideoCodecOptions, VideoEncoder,
 };
 use fixtures::{
     FileGuard, assert_valid_output_file, create_black_frame, get_file_size, test_output_path,
@@ -594,6 +594,101 @@ fn h265_x265_params_log_level_none_should_not_crash() {
     encoder.finish().expect("Failed to finish encoding");
     assert_valid_output_file(&output_path);
     println!("h265_x265_params: codec={codec_name}");
+}
+
+// ============================================================================
+// AV1 codec_options Tests
+// ============================================================================
+
+#[test]
+fn av1_cpu_used_8_should_produce_valid_output() {
+    let output_path = test_output_path("av1_cpu_used_8.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let mut encoder = match VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Av1)
+        .codec_options(VideoCodecOptions::Av1(Av1Options {
+            cpu_used: 8,
+            ..Av1Options::default()
+        }))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping av1_cpu_used_8 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("av1_cpu_used_8: codec={codec_name}");
+}
+
+#[test]
+fn av1_realtime_usage_should_produce_valid_output() {
+    let output_path = test_output_path("av1_realtime.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let mut encoder = match VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Av1)
+        .codec_options(VideoCodecOptions::Av1(Av1Options {
+            usage: Av1Usage::RealTime,
+            cpu_used: 8,
+            ..Av1Options::default()
+        }))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping av1_realtime_usage test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    let codec_name = encoder.actual_video_codec().to_string();
+
+    for _ in 0..10 {
+        let frame = create_black_frame(640, 480);
+        encoder
+            .push_video(&frame)
+            .expect("Failed to push video frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("av1_realtime_usage: codec={codec_name}");
+}
+
+#[test]
+fn av1_cpu_used_9_should_return_invalid_option_error() {
+    let output_path = test_output_path("av1_cpu_used_9.mp4");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Av1)
+        .codec_options(VideoCodecOptions::Av1(Av1Options {
+            cpu_used: 9,
+            ..Av1Options::default()
+        }))
+        .build();
+
+    assert!(
+        matches!(result, Err(EncodeError::InvalidOption { .. })),
+        "Expected InvalidOption error"
+    );
 }
 
 // ============================================================================

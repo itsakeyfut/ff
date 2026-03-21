@@ -81,6 +81,15 @@ pub enum EncodeError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Invalid option value
+    #[error("Invalid option: {name} — {reason}")]
+    InvalidOption {
+        /// Option name
+        name: String,
+        /// Description of the constraint that was violated
+        reason: String,
+    },
+
     /// Encoding cancelled by user
     #[error("Encoding cancelled by user")]
     Cancelled,
