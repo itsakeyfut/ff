@@ -204,8 +204,8 @@ mod progress;
 mod video;
 
 pub use audio::{
-    AacOptions, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder, FlacOptions, Mp3Options,
-    OpusApplication, OpusOptions,
+    AacOptions, AacProfile, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder, FlacOptions,
+    Mp3Options, OpusApplication, OpusOptions,
 };
 pub use bitrate::{BitrateMode, CRF_MAX};
 pub use codec::{AudioCodec, VideoCodec, VideoCodecEncodeExt};

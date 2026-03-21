@@ -322,21 +322,40 @@ impl AudioEncoderInner {
                 }
             }
             AudioCodecOptions::Aac(aac) => {
-                // afterburner (libfdk_aac specific)
-                let val = if aac.afterburner { "1" } else { "0" };
-                if let Ok(s) = CString::new(val) {
+                // profile (aac_low / aac_he / aac_he_v2)
+                let profile_str = aac.profile.as_str();
+                if let Ok(s) = CString::new(profile_str) {
                     // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
                     let ret = ff_sys::av_opt_set(
                         (*codec_ctx).priv_data,
-                        b"afterburner\0".as_ptr() as *const i8,
+                        b"profile\0".as_ptr() as *const i8,
                         s.as_ptr(),
                         0,
                     );
                     if ret < 0 {
                         log::warn!(
-                            "av_opt_set failed option=afterburner value={val} \
-                             encoder={encoder_name}"
+                            "AAC profile={profile_str} not supported by encoder \
+                             ret={ret} encoder={encoder_name}"
                         );
+                    }
+                }
+                // vbr (libfdk_aac VBR quality 1–5)
+                if let Some(q) = aac.vbr_quality {
+                    let q_str = q.to_string();
+                    if let Ok(s) = CString::new(q_str.as_str()) {
+                        // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
+                        let ret = ff_sys::av_opt_set(
+                            (*codec_ctx).priv_data,
+                            b"vbr\0".as_ptr() as *const i8,
+                            s.as_ptr(),
+                            0,
+                        );
+                        if ret < 0 {
+                            log::warn!(
+                                "av_opt_set failed option=vbr value={q} \
+                                 encoder={encoder_name}"
+                            );
+                        }
                     }
                 }
             }

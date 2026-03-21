@@ -76,16 +76,49 @@ impl OpusApplication {
 /// AAC per-codec options.
 #[derive(Debug, Clone)]
 pub struct AacOptions {
-    /// Enable the afterburner quality enhancement pass (libfdk_aac only).
+    /// AAC encoding profile.
     ///
-    /// Increases quality at the cost of slightly higher CPU usage. Silently
-    /// ignored when using the native `aac` encoder (logged as a warning).
-    pub afterburner: bool,
+    /// `He` and `Hev2` typically require `libfdk_aac` (non-free). The built-in
+    /// FFmpeg `aac` encoder may not support them — the failure is logged as a
+    /// warning and encoding continues with the encoder's default profile.
+    pub profile: AacProfile,
+    /// VBR quality mode (1–5). `Some(q)` enables VBR; `None` uses CBR.
+    ///
+    /// Only supported by `libfdk_aac`. The built-in `aac` encoder ignores this
+    /// option (logged as a warning). `build()` returns
+    /// [`EncodeError::InvalidOption`](crate::EncodeError::InvalidOption) if the
+    /// value is outside 1–5.
+    pub vbr_quality: Option<u8>,
 }
 
 impl Default for AacOptions {
     fn default() -> Self {
-        Self { afterburner: true }
+        Self {
+            profile: AacProfile::Lc,
+            vbr_quality: None,
+        }
+    }
+}
+
+/// AAC encoding profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AacProfile {
+    /// AAC-LC (Low Complexity) — widest compatibility. Default.
+    #[default]
+    Lc,
+    /// HE-AAC v1 — with Spectral Band Replication (SBR). Typically requires `libfdk_aac`.
+    He,
+    /// HE-AAC v2 — with SBR + Parametric Stereo (PS). Typically requires `libfdk_aac`.
+    Hev2,
+}
+
+impl AacProfile {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Lc => "aac_low",
+            Self::He => "aac_he",
+            Self::Hev2 => "aac_he_v2",
+        }
     }
 }
 
@@ -145,9 +178,17 @@ mod tests {
     }
 
     #[test]
-    fn aac_options_default_should_have_afterburner_enabled() {
+    fn aac_profile_should_return_correct_str() {
+        assert_eq!(AacProfile::Lc.as_str(), "aac_low");
+        assert_eq!(AacProfile::He.as_str(), "aac_he");
+        assert_eq!(AacProfile::Hev2.as_str(), "aac_he_v2");
+    }
+
+    #[test]
+    fn aac_options_default_should_have_lc_profile_and_no_vbr() {
         let opts = AacOptions::default();
-        assert!(opts.afterburner);
+        assert_eq!(opts.profile, AacProfile::Lc);
+        assert!(opts.vbr_quality.is_none());
     }
 
     #[test]
