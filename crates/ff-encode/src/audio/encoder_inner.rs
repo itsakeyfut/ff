@@ -9,6 +9,7 @@
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
 
+use crate::audio::codec_options::AudioCodecOptions;
 use crate::{AudioCodec, EncodeError};
 use ff_format::AudioFrame;
 use ff_sys::{
@@ -63,6 +64,7 @@ pub(super) struct AudioEncoderConfig {
     pub(super) channels: u32,
     pub(super) codec: AudioCodec,
     pub(super) bitrate: Option<u64>,
+    pub(super) codec_options: Option<AudioCodecOptions>,
     pub(super) _progress_callback: bool,
 }
 
@@ -215,6 +217,14 @@ impl AudioEncoderInner {
         (*codec_ctx).time_base.num = 1;
         (*codec_ctx).time_base.den = config.sample_rate as i32;
 
+        // Apply per-codec options before opening the codec context.
+        if let Some(opts) = &config.codec_options {
+            // SAFETY: codec_ctx is valid and allocated; priv_data is set by
+            // avcodec_alloc_context3. Options are applied before avcodec_open2
+            // so they take effect during codec initialisation.
+            Self::apply_codec_options(codec_ctx, opts, &encoder_name);
+        }
+
         // Open codec
         avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
             .map_err(EncodeError::from_ffmpeg_error)?;
@@ -262,6 +272,111 @@ impl AudioEncoderInner {
         self.codec_ctx = Some(codec_ctx);
 
         Ok(())
+    }
+
+    /// Apply per-codec options via `av_opt_set` before `avcodec_open2`.
+    ///
+    /// All `av_opt_set` return values are checked; a negative value is logged
+    /// as a warning and the option is skipped (never returns an error).
+    unsafe fn apply_codec_options(
+        codec_ctx: *mut AVCodecContext,
+        opts: &AudioCodecOptions,
+        encoder_name: &str,
+    ) {
+        match opts {
+            AudioCodecOptions::Opus(opus) => {
+                // application
+                if let Ok(s) = CString::new(opus.application.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"application\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=application value={} encoder={encoder_name}",
+                            opus.application.as_str()
+                        );
+                    }
+                }
+                // vbr
+                if let Ok(s) = CString::new(opus.vbr.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"vbr\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=vbr value={} encoder={encoder_name}",
+                            opus.vbr.as_str()
+                        );
+                    }
+                }
+            }
+            AudioCodecOptions::Aac(aac) => {
+                // afterburner (libfdk_aac specific)
+                let val = if aac.afterburner { "1" } else { "0" };
+                if let Ok(s) = CString::new(val) {
+                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"afterburner\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=afterburner value={val} \
+                             encoder={encoder_name}"
+                        );
+                    }
+                }
+            }
+            AudioCodecOptions::Mp3(mp3) => {
+                // q (VBR quality, 0-9)
+                let q_str = mp3.quality.to_string();
+                if let Ok(s) = CString::new(q_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"q\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=q value={} encoder={encoder_name}",
+                            mp3.quality
+                        );
+                    }
+                }
+            }
+            AudioCodecOptions::Flac(flac) => {
+                // compression_level
+                let level_str = flac.compression_level.to_string();
+                if let Ok(s) = CString::new(level_str.as_str()) {
+                    // SAFETY: codec_ctx and priv_data are non-null; string is NUL-terminated.
+                    let ret = ff_sys::av_opt_set(
+                        (*codec_ctx).priv_data,
+                        b"compression_level\0".as_ptr() as *const i8,
+                        s.as_ptr(),
+                        0,
+                    );
+                    if ret < 0 {
+                        log::warn!(
+                            "av_opt_set failed option=compression_level value={} \
+                             encoder={encoder_name}",
+                            flac.compression_level
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Select best available audio encoder for the given codec.

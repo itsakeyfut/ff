@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 
 use ff_decode::AudioDecoder;
-use ff_encode::{AudioCodec, AudioEncoder};
+use ff_encode::{
+    AacOptions, AudioCodec, AudioCodecOptions, AudioEncoder, FlacOptions, Mp3Options,
+    OpusApplication, OpusOptions, OpusVbr,
+};
 use ff_format::{AudioFrame, SampleFormat};
 
 mod fixtures;
@@ -239,4 +242,119 @@ fn aac_encoder_with_non_multiple_frame_count_should_succeed() {
 
     encoder.finish().expect("Failed to finish encoding");
     assert_valid_output_file(&output);
+}
+
+// ── AudioCodecOptions integration tests ──────────────────────────────────────
+
+#[test]
+fn opus_audio_options_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("opus_codec_opts.opus"));
+
+    let opts = OpusOptions {
+        application: OpusApplication::Audio,
+        vbr: OpusVbr::On,
+    };
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Opus)
+        .codec_options(AudioCodecOptions::Opus(opts))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(960, 2, 48000, SampleFormat::F32).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+#[test]
+fn aac_afterburner_options_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("aac_codec_opts.m4a"));
+
+    let opts = AacOptions { afterburner: true };
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Aac)
+        .codec_options(AudioCodecOptions::Aac(opts))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+#[test]
+fn flac_compression_level_options_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("flac_codec_opts.flac"));
+
+    let opts = FlacOptions {
+        compression_level: 5,
+    };
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Flac)
+        .codec_options(AudioCodecOptions::Flac(opts))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(4096, 2, 44100, SampleFormat::F32p).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+#[test]
+fn mp3_quality_options_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("mp3_codec_opts.mp3"));
+
+    let opts = Mp3Options { quality: 2 };
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Mp3)
+        .codec_options(AudioCodecOptions::Mp3(opts))
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(1152, 2, 44100, SampleFormat::F32).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
 }
