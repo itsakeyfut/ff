@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.1] - 2026-03-22
+
+### Fixed
+
+#### ff-sys
+- `docsrs_stubs`: add all symbols referenced by v0.7.0 feature additions that were missing, causing docs.rs build failures for `ff-encode`, `ff-pipeline`, `ff-stream`, and `avio`:
+  - `AVAudioFifo` opaque struct and `swresample::audio_fifo` module (`alloc`, `free`, `write`, `read`, `size`)
+  - `AVCodec.sample_fmts` and `AVCodec.capabilities` fields (struct was previously opaque)
+  - `AVFilterContext.hw_device_ctx` field (struct was previously opaque)
+  - `AVCodecContext` fields: `frame_size`, `color_range`, `refs`, `rc_max_rate`, `rc_buffer_size`, `flags`, `stats_out`, `stats_in`
+  - `AVPixelFormat_AV_PIX_FMT_YUVJ422P` and `AVPixelFormat_AV_PIX_FMT_YUVJ444P` pixel format constants
+
+---
+
 ## [0.7.0] - 2026-03-22
 
 ### Added
