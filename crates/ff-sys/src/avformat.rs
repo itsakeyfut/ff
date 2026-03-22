@@ -156,6 +156,66 @@ pub unsafe fn open_input(path: &Path) -> Result<*mut AVFormatContext, c_int> {
     Ok(ctx)
 }
 
+/// Open an image sequence using the `image2` demuxer.
+///
+/// Sets `framerate` in the demuxer options so FFmpeg assigns the correct PTS
+/// to each frame. The returned pointer must be freed using [`close_input()`].
+///
+/// # Errors
+///
+/// Returns a negative error code if the path is invalid, the sequence cannot
+/// be opened, or the `image2` demuxer is unavailable.
+///
+/// # Safety
+///
+/// The caller must call `close_input()` on the returned context when done.
+pub unsafe fn open_input_image_sequence(
+    path: &Path,
+    framerate: u32,
+) -> Result<*mut AVFormatContext, c_int> {
+    ensure_initialized();
+
+    let path_str = match path.to_str() {
+        Some(s) => s,
+        None => return Err(crate::error_codes::EINVAL),
+    };
+    let c_path = match CString::new(path_str) {
+        Ok(s) => s,
+        Err(_) => return Err(crate::error_codes::EINVAL),
+    };
+
+    // Locate the image2 demuxer.  Always present in standard FFmpeg builds;
+    // passing null falls back to FFmpeg's auto-detection from file extension.
+    // SAFETY: string literal has no null bytes
+    let image2_name = CString::new("image2").unwrap();
+    let input_fmt = crate::av_find_input_format(image2_name.as_ptr());
+
+    // Build options dictionary: framerate=<n>
+    let mut opts: *mut crate::AVDictionary = ptr::null_mut();
+    // SAFETY: string literals have no null bytes
+    let framerate_key = CString::new("framerate").unwrap();
+    let framerate_str = CString::new(framerate.to_string()).unwrap();
+    crate::av_dict_set(
+        ptr::addr_of_mut!(opts),
+        framerate_key.as_ptr(),
+        framerate_str.as_ptr(),
+        0,
+    );
+
+    let mut ctx: *mut AVFormatContext = ptr::null_mut();
+    let ret = ffi_avformat_open_input(&mut ctx, c_path.as_ptr(), input_fmt, &mut opts);
+
+    // Free any options that FFmpeg did not consume.
+    if !opts.is_null() {
+        crate::av_dict_free(ptr::addr_of_mut!(opts));
+    }
+
+    if ret < 0 {
+        return Err(ret);
+    }
+    Ok(ctx)
+}
+
 /// Close an opened media file and free its resources.
 ///
 /// This function closes the input file, frees the format context and all its
