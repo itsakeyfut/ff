@@ -45,6 +45,7 @@ impl VideoCodecEncodeExt for VideoCodec {
             self,
             VideoCodec::Vp9
                 | VideoCodec::Av1
+                | VideoCodec::Av1Svt
                 | VideoCodec::Mpeg4
                 | VideoCodec::ProRes
                 | VideoCodec::DnxHd

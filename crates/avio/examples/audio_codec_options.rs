@@ -3,12 +3,17 @@
 //! Demonstrates the `AudioCodecOptions` enum and the codec-specific option
 //! structs added in v0.7.0:
 //!
-//! - `OpusOptions` — application mode (`Voip` / `Audio` / `LowDelay`), bitrate,
-//!   frame duration
+//! - `OpusOptions` — application mode (`Voip` / `Audio` / `LowDelay`),
+//!   frame duration; stored in an OGG container via `Container::Ogg`
 //! - `AacOptions` — profile (`LC` / `HE` / `HEv2`), VBR quality mode
 //! - `Mp3Options` — VBR quality (`V0`–`V9`) or fixed bitrate
 //! - `FlacOptions` — compression level (`0` = fastest / largest …
-//!   `12` = slowest / smallest)
+//!   `12` = slowest / smallest); stored in a FLAC container via
+//!   `Container::Flac`
+//!
+//! Also demonstrates `AudioEncoder::create().container()` — explicit
+//! container selection for audio-only formats (`Container::Flac`,
+//! `Container::Ogg`).
 //!
 //! # Usage
 //!
@@ -22,8 +27,8 @@
 use std::{path::Path, process};
 
 use avio::{
-    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioDecoder, AudioEncoder, FlacOptions,
-    Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
+    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioDecoder, AudioEncoder, Container,
+    FlacOptions, Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
 };
 
 fn main() {
@@ -85,73 +90,90 @@ fn main() {
     // AudioCodecOptions is the v0.7.0 API for per-codec audio configuration.
     // Each variant holds a typed options struct specific to that codec.
 
-    let (audio_codec, codec_options, bitrate, description) = match codec_str.to_lowercase().as_str()
-    {
-        "opus" => {
-            // OpusOptions: application mode controls the psychoacoustic model.
-            //   Audio    — general music and voice (default)
-            //   Voip     — optimised for low-latency voice
-            //   LowDelay — minimal algorithmic delay
-            let opts = OpusOptions {
-                application: OpusApplication::Audio,
-                frame_duration_ms: Some(20),
-            };
-            (
-                AudioCodec::Opus,
-                AudioCodecOptions::Opus(opts),
-                128_000u64,
-                "Opus, Audio application, 128 kbps, 20 ms frames",
-            )
-        }
-        "aac" => {
-            // AacOptions: profile selects the AAC variant.
-            //   Lc   — Low Complexity, compatible with all devices (default)
-            //   He   — HE-AAC v1 (SBR) — better quality at low bitrates
-            //   Hev2 — HE-AAC v2 (SBR + PS) — stereo only, very low bitrates
-            let opts = AacOptions {
-                profile: AacProfile::Lc,
-                vbr_quality: None, // None = CBR at the specified bitrate
-            };
-            (
-                AudioCodec::Aac,
-                AudioCodecOptions::Aac(opts),
-                192_000u64,
-                "AAC-LC, CBR 192 kbps",
-            )
-        }
-        "mp3" => {
-            // Mp3Options: VBR quality scale 0 (best) … 9 (smallest).
-            // Vbr(2) corresponds to libmp3lame -V2, ~190 kbps average.
-            // Use Mp3Quality::Cbr(bitrate) for a fixed bitrate instead.
-            let opts = Mp3Options {
-                quality: Mp3Quality::Vbr(2), // ~190 kbps average
-            };
-            (
-                AudioCodec::Mp3,
-                AudioCodecOptions::Mp3(opts),
-                0u64, // irrelevant in VBR mode
-                "MP3, VBR quality V2 (~190 kbps average)",
-            )
-        }
-        "flac" => {
-            // FlacOptions: compression level 0 (fastest encode, largest file)
-            // through 12 (slowest encode, smallest lossless file).
-            // Default is 5 — a good balance for most use cases.
-            let opts = FlacOptions {
-                compression_level: 6,
-            };
-            (
-                AudioCodec::Flac,
-                AudioCodecOptions::Flac(opts),
-                0u64, // lossless — bitrate is determined by content
-                "FLAC, compression level 6",
-            )
-        }
-        other => {
-            eprintln!("Unknown codec '{other}' (try opus, aac, mp3, flac)");
-            process::exit(1);
-        }
-    };
+    // Each arm returns (codec, options, bitrate, container, description).
+    // container — Some(c) sets the muxer explicitly; None infers from the
+    //   output file extension.  Audio-only containers (Container::Flac,
+    //   Container::Ogg) are typically paired with their native codec.
+    let (audio_codec, codec_options, bitrate, container, description) =
+        match codec_str.to_lowercase().as_str() {
+            "opus" => {
+                // OpusOptions: application mode controls the psychoacoustic model.
+                //   Audio    — general music and voice (default)
+                //   Voip     — optimised for low-latency voice
+                //   LowDelay — minimal algorithmic delay
+                //
+                // Opus is stored natively in an OGG container.
+                // Container::Ogg is set explicitly here so that the muxer is
+                // always correct regardless of the output file extension.
+                let opts = OpusOptions {
+                    application: OpusApplication::Audio,
+                    frame_duration_ms: Some(20),
+                };
+                (
+                    AudioCodec::Opus,
+                    AudioCodecOptions::Opus(opts),
+                    128_000u64,
+                    Some(Container::Ogg),
+                    "Opus, Audio application, 128 kbps, 20 ms frames, OGG container",
+                )
+            }
+            "aac" => {
+                // AacOptions: profile selects the AAC variant.
+                //   Lc   — Low Complexity, compatible with all devices (default)
+                //   He   — HE-AAC v1 (SBR) — better quality at low bitrates
+                //   Hev2 — HE-AAC v2 (SBR + PS) — stereo only, very low bitrates
+                let opts = AacOptions {
+                    profile: AacProfile::Lc,
+                    vbr_quality: None, // None = CBR at the specified bitrate
+                };
+                (
+                    AudioCodec::Aac,
+                    AudioCodecOptions::Aac(opts),
+                    192_000u64,
+                    None, // infer container from extension (e.g. .m4a, .mp4)
+                    "AAC-LC, CBR 192 kbps",
+                )
+            }
+            "mp3" => {
+                // Mp3Options: VBR quality scale 0 (best) … 9 (smallest).
+                // Vbr(2) corresponds to libmp3lame -V2, ~190 kbps average.
+                // Use Mp3Quality::Cbr(bitrate) for a fixed bitrate instead.
+                let opts = Mp3Options {
+                    quality: Mp3Quality::Vbr(2), // ~190 kbps average
+                };
+                (
+                    AudioCodec::Mp3,
+                    AudioCodecOptions::Mp3(opts),
+                    0u64, // irrelevant in VBR mode
+                    None, // infer container from .mp3 extension
+                    "MP3, VBR quality V2 (~190 kbps average)",
+                )
+            }
+            "flac" => {
+                // FlacOptions: compression level 0 (fastest encode, largest file)
+                // through 12 (slowest encode, smallest lossless file).
+                // Default is 5 — a good balance for most use cases.
+                //
+                // FLAC has a dedicated container (Container::Flac) that wraps
+                // the raw FLAC stream — the same format produced by a standalone
+                // FLAC encoder.  Container::Ogg can also hold FLAC streams in
+                // an Ogg wrapper, but the native FLAC container is more common.
+                let opts = FlacOptions {
+                    compression_level: 6,
+                };
+                (
+                    AudioCodec::Flac,
+                    AudioCodecOptions::Flac(opts),
+                    0u64, // lossless — bitrate is determined by content
+                    Some(Container::Flac),
+                    "FLAC, compression level 6, FLAC container",
+                )
+            }
+            other => {
+                eprintln!("Unknown codec '{other}' (try opus, aac, mp3, flac)");
+                process::exit(1);
+            }
+        };
 
     println!("Codec:  {description}");
     println!("Output: {out_name}");
@@ -161,15 +183,20 @@ fn main() {
     //
     // .codec_options() applies the per-codec option struct.
     // .audio_bitrate() sets the target bitrate (ignored by lossless codecs and
-    // VBR-quality modes such as Mp3Quality::V2).
+    // VBR-quality modes such as Mp3Quality::Vbr).
+    // .container() overrides the muxer; None lets FFmpeg infer from the path.
 
-    let mut encoder = match AudioEncoder::create(&output)
+    let mut enc_builder = AudioEncoder::create(&output)
         .audio(sample_rate, channels)
         .audio_codec(audio_codec)
         .audio_bitrate(bitrate)
-        .codec_options(codec_options)
-        .build()
-    {
+        .codec_options(codec_options);
+
+    if let Some(c) = container {
+        enc_builder = enc_builder.container(c);
+    }
+
+    let mut encoder = match enc_builder.build() {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Error building encoder: {e}");

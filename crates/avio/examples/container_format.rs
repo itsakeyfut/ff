@@ -1,7 +1,9 @@
 //! Encode video with an explicitly selected output container format.
 //!
 //! Demonstrates:
-//! - `Container` enum — `Mp4`, `Mkv`, `WebM`, `Avi`, `Mov`
+//! - `Container` enum — full set of supported muxers:
+//!   - **Video** containers: `Mp4`, `Mkv`, `WebM`, `Avi`, `Mov`
+//!   - **Audio** containers: `Flac` (lossless), `Ogg` (Vorbis/Opus)
 //! - `Container::as_str()` — `FFmpeg` format name
 //! - `Container::default_extension()` — canonical file extension
 //! - `VideoEncoder::create().container()` — override the container inferred
@@ -10,6 +12,11 @@
 //! By default the container is auto-detected from the output extension.
 //! Use `container()` when the extension does not match the desired format
 //! or when you need to guarantee a specific muxer regardless of the path.
+//!
+//! Audio-only containers (`Container::Flac`, `Container::Ogg`) are used the
+//! same way with `AudioEncoder::create().container(Container::Flac)`.
+//! See the `audio_codec_options` example for a complete audio encoding
+//! workflow that demonstrates explicit container selection.
 //!
 //! # Usage
 //!
