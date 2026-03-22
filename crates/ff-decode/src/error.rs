@@ -65,6 +65,19 @@ pub enum DecodeError {
         codec: String,
     },
 
+    /// The decoder for a known codec is absent from this `FFmpeg` build.
+    ///
+    /// Unlike [`UnsupportedCodec`](Self::UnsupportedCodec), the codec ID is
+    /// recognised by `FFmpeg` but the decoder was not compiled in (e.g.
+    /// `--enable-decoder=exr` was omitted from the build).
+    #[error("Decoder unavailable: {codec} — {hint}")]
+    DecoderUnavailable {
+        /// Short name of the codec (e.g. `"exr"`).
+        codec: String,
+        /// Human-readable suggestion for the caller.
+        hint: String,
+    },
+
     /// Decoding operation failed at a specific point.
     ///
     /// This can occur due to corrupted data, unexpected stream format,
@@ -214,6 +227,20 @@ impl DecodeError {
         }
     }
 
+    /// Creates a new [`DecodeError::DecoderUnavailable`].
+    ///
+    /// # Arguments
+    ///
+    /// * `codec` — Short codec name (e.g. `"exr"`).
+    /// * `hint` — Human-readable suggestion for the user.
+    #[must_use]
+    pub fn decoder_unavailable(codec: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::DecoderUnavailable {
+            codec: codec.into(),
+            hint: hint.into(),
+        }
+    }
+
     /// Creates a new [`DecodeError::Ffmpeg`].
     ///
     /// # Arguments
@@ -289,6 +316,7 @@ impl DecodeError {
                 | Self::NoVideoStream { .. }
                 | Self::NoAudioStream { .. }
                 | Self::UnsupportedCodec { .. }
+                | Self::DecoderUnavailable { .. }
         )
     }
 }
@@ -377,6 +405,23 @@ mod tests {
     fn ffmpeg_with_zero_code_should_be_constructible() {
         let error = DecodeError::ffmpeg(0, "allocation failed");
         assert!(matches!(error, DecodeError::Ffmpeg { code: 0, .. }));
+    }
+
+    #[test]
+    fn decoder_unavailable_should_include_codec_and_hint() {
+        let e = DecodeError::decoder_unavailable(
+            "exr",
+            "Requires FFmpeg built with EXR support (--enable-decoder=exr)",
+        );
+        assert!(e.to_string().contains("exr"));
+        assert!(e.to_string().contains("Requires FFmpeg"));
+    }
+
+    #[test]
+    fn decoder_unavailable_should_be_fatal() {
+        let e = DecodeError::decoder_unavailable("exr", "hint");
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
     }
 
     #[test]

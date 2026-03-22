@@ -576,8 +576,19 @@ impl VideoDecoderInner {
         let codec_name = unsafe { Self::extract_codec_name(codec_id) };
         let codec = unsafe {
             ff_sys::avcodec::find_decoder(codec_id).ok_or_else(|| {
-                DecodeError::UnsupportedCodec {
-                    codec: format!("{codec_name} (codec_id={codec_id:?})"),
+                // Distinguish between a totally unknown codec ID and a known codec
+                // whose decoder was not compiled into this FFmpeg build.
+                if codec_id == ff_sys::AVCodecID_AV_CODEC_ID_EXR {
+                    DecodeError::DecoderUnavailable {
+                        codec: "exr".to_string(),
+                        hint: "Requires FFmpeg built with EXR support \
+                               (--enable-decoder=exr)"
+                            .to_string(),
+                    }
+                } else {
+                    DecodeError::UnsupportedCodec {
+                        codec: format!("{codec_name} (codec_id={codec_id:?})"),
+                    }
                 }
             })?
         };
@@ -859,6 +870,8 @@ impl VideoDecoderInner {
             PixelFormat::Yuv444p10le
         } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE {
             PixelFormat::P010le
+        } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_GBRPF32LE {
+            PixelFormat::Gbrpf32le
         } else {
             log::warn!(
                 "pixel_format unsupported, falling back to Yuv420p requested={fmt} fallback=Yuv420p"
@@ -2500,6 +2513,14 @@ mod tests {
         let name =
             unsafe { VideoDecoderInner::extract_codec_name(ff_sys::AVCodecID_AV_CODEC_ID_NONE) };
         assert_eq!(name, "none");
+    }
+
+    #[test]
+    fn convert_pixel_format_should_map_gbrpf32le() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_GBRPF32LE),
+            PixelFormat::Gbrpf32le
+        );
     }
 
     #[test]

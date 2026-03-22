@@ -224,6 +224,7 @@ pub const AVCodecID_AV_CODEC_ID_PNG: AVCodecID = 61;
 pub const AVCodecID_AV_CODEC_ID_BMP: AVCodecID = 76;
 pub const AVCodecID_AV_CODEC_ID_TIFF: AVCodecID = 90;
 pub const AVCodecID_AV_CODEC_ID_WEBP: AVCodecID = 219;
+pub const AVCodecID_AV_CODEC_ID_EXR: AVCodecID = 178;
 
 // AVCodecID — subtitle
 pub const AVCodecID_AV_CODEC_ID_DVB_SUBTITLE: AVCodecID = 94209;
@@ -287,6 +288,7 @@ pub const AVPixelFormat_AV_PIX_FMT_QSV: AVPixelFormat = 123;
 pub const AVPixelFormat_AV_PIX_FMT_VIDEOTOOLBOX: AVPixelFormat = 135;
 pub const AVPixelFormat_AV_PIX_FMT_MEDIACODEC: AVPixelFormat = 165;
 pub const AVPixelFormat_AV_PIX_FMT_P010LE: AVPixelFormat = 161;
+pub const AVPixelFormat_AV_PIX_FMT_GBRPF32LE: AVPixelFormat = 175;
 pub const AVPixelFormat_AV_PIX_FMT_D3D11: AVPixelFormat = 174;
 pub const AVPixelFormat_AV_PIX_FMT_OPENCL: AVPixelFormat = 180;
 pub const AVPixelFormat_AV_PIX_FMT_VULKAN: AVPixelFormat = 193;
