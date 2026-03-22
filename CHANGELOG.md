@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.2] - 2026-03-22
+
+### Fixed
+
+#### ff-sys
+- `docsrs_stubs`: add `av_rescale_q`, `AVPictureType_AV_PICTURE_TYPE_NONE`, and `AVPictureType_AV_PICTURE_TYPE_I`, fixing the docs.rs build failure for `ff-stream`
+
+---
+
 ## [0.7.1] - 2026-03-22
 
 ### Fixed
