@@ -576,8 +576,19 @@ impl VideoDecoderInner {
         let codec_name = unsafe { Self::extract_codec_name(codec_id) };
         let codec = unsafe {
             ff_sys::avcodec::find_decoder(codec_id).ok_or_else(|| {
-                DecodeError::UnsupportedCodec {
-                    codec: format!("{codec_name} (codec_id={codec_id:?})"),
+                // Distinguish between a totally unknown codec ID and a known codec
+                // whose decoder was not compiled into this FFmpeg build.
+                if codec_id == ff_sys::AVCodecID_AV_CODEC_ID_EXR {
+                    DecodeError::DecoderUnavailable {
+                        codec: "exr".to_string(),
+                        hint: "Requires FFmpeg built with EXR support \
+                               (--enable-decoder=exr)"
+                            .to_string(),
+                    }
+                } else {
+                    DecodeError::UnsupportedCodec {
+                        codec: format!("{codec_name} (codec_id={codec_id:?})"),
+                    }
                 }
             })?
         };
@@ -859,6 +870,8 @@ impl VideoDecoderInner {
             PixelFormat::Yuv444p10le
         } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE {
             PixelFormat::P010le
+        } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_GBRPF32LE {
+            PixelFormat::Gbrpf32le
         } else {
             log::warn!(
                 "pixel_format unsupported, falling back to Yuv420p requested={fmt} fallback=Yuv420p"
@@ -1430,6 +1443,32 @@ impl VideoDecoderInner {
                     planes.push(uv_data);
                     strides.push(uv_stride);
                 }
+                PixelFormat::Gbrpf32le => {
+                    // Planar GBR float: 3 full-resolution planes, 4 bytes per sample (f32)
+                    const BYTES_PER_SAMPLE: usize = 4;
+                    let row_size = width as usize * BYTES_PER_SAMPLE;
+                    let size = row_size * height as usize;
+
+                    for plane_idx in 0..3usize {
+                        let src_linesize = (*frame).linesize[plane_idx] as usize;
+                        let mut plane_data = self.allocate_buffer(size);
+                        for y in 0..height as usize {
+                            let src_offset = y * src_linesize;
+                            let dst_offset = y * row_size;
+                            let src_ptr = (*frame).data[plane_idx].add(src_offset);
+                            let dst_slice = plane_data.as_mut();
+                            // SAFETY: Copying one row of a planar float plane. Source is valid
+                            // FFmpeg frame data, destination has sufficient capacity, no overlap.
+                            std::ptr::copy_nonoverlapping(
+                                src_ptr,
+                                dst_slice[dst_offset..].as_mut_ptr(),
+                                row_size,
+                            );
+                        }
+                        planes.push(plane_data);
+                        strides.push(row_size);
+                    }
+                }
                 _ => {
                     return Err(DecodeError::Ffmpeg {
                         code: 0,
@@ -1460,6 +1499,7 @@ impl VideoDecoderInner {
             PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
             PixelFormat::Yuva444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE,
             PixelFormat::P010le => ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE,
+            PixelFormat::Gbrpf32le => ff_sys::AVPixelFormat_AV_PIX_FMT_GBRPF32LE,
             _ => {
                 log::warn!(
                     "pixel_format has no AV mapping, falling back to Yuv420p format={format:?} fallback=AV_PIX_FMT_YUV420P"
@@ -2500,6 +2540,14 @@ mod tests {
         let name =
             unsafe { VideoDecoderInner::extract_codec_name(ff_sys::AVCodecID_AV_CODEC_ID_NONE) };
         assert_eq!(name, "none");
+    }
+
+    #[test]
+    fn convert_pixel_format_should_map_gbrpf32le() {
+        assert_eq!(
+            VideoDecoderInner::convert_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_GBRPF32LE),
+            PixelFormat::Gbrpf32le
+        );
     }
 
     #[test]

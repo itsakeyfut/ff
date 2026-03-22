@@ -391,6 +391,20 @@ impl VideoFrame {
                 ))
             }
 
+            // Planar GBR float (gbrpf32le) - three planes, 4 bytes per sample (f32)
+            PixelFormat::Gbrpf32le => {
+                let stride = width as usize * 4; // 4 bytes per f32 sample
+                let size = stride * height as usize;
+                Ok((
+                    vec![
+                        PooledBuffer::standalone(vec![0u8; size]),
+                        PooledBuffer::standalone(vec![0u8; size]),
+                        PooledBuffer::standalone(vec![0u8; size]),
+                    ],
+                    vec![stride, stride, stride],
+                ))
+            }
+
             // Unknown format - cannot determine memory layout
             PixelFormat::Other(_) => Err(FrameError::UnsupportedPixelFormat(format)),
         }

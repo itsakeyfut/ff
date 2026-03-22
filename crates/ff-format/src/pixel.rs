@@ -76,6 +76,10 @@ pub enum PixelFormat {
     /// 8-bit grayscale
     Gray8,
 
+    // Float formats
+    /// 32-bit float planar GBR — native output of the `OpenEXR` decoder
+    Gbrpf32le,
+
     // Extensibility
     /// Unknown or unsupported format with `FFmpeg`'s `AVPixelFormat` value
     Other(u32),
@@ -110,6 +114,7 @@ impl PixelFormat {
             Self::Yuva444p10le => "yuva444p10le",
             Self::P010le => "p010le",
             Self::Gray8 => "gray8",
+            Self::Gbrpf32le => "gbrpf32le",
             Self::Other(_) => "unknown",
         }
     }
@@ -139,7 +144,8 @@ impl PixelFormat {
             | Self::Yuv444p
             | Self::Yuv420p10le
             | Self::Yuv422p10le
-            | Self::Yuv444p10le => 3,
+            | Self::Yuv444p10le
+            | Self::Gbrpf32le => 3,
             Self::Yuva444p10le => 4,
             // Semi-planar - Y plane + interleaved UV plane
             Self::Nv12 | Self::Nv21 | Self::P010le => 2,
@@ -238,7 +244,10 @@ impl PixelFormat {
     /// ```
     #[must_use]
     pub const fn is_rgb(&self) -> bool {
-        matches!(self, Self::Rgb24 | Self::Rgba | Self::Bgr24 | Self::Bgra)
+        matches!(
+            self,
+            Self::Rgb24 | Self::Rgba | Self::Bgr24 | Self::Bgra | Self::Gbrpf32le
+        )
     }
 
     /// Returns `true` if this is a YUV-based format.
@@ -334,6 +343,9 @@ impl PixelFormat {
             // RGB24/BGR24 and YUV 4:4:4 (8-bit and 10-bit) - 3 bytes per pixel
             Self::Rgb24 | Self::Bgr24 | Self::Yuv444p | Self::Yuv444p10le => 3,
 
+            // 32-bit float planar GBR - 12 bytes per pixel (3 channels × 4 bytes)
+            Self::Gbrpf32le => 12,
+
             // RGBA/BGRA, YUVA 4:4:4 with alpha, and unknown formats - 4 bytes per pixel
             Self::Yuva444p10le | Self::Rgba | Self::Bgra | Self::Other(_) => 4,
         }
@@ -359,6 +371,7 @@ impl PixelFormat {
                 | Self::Yuv444p10le
                 | Self::Yuva444p10le
                 | Self::P010le
+                | Self::Gbrpf32le
         )
     }
 
@@ -383,6 +396,7 @@ impl PixelFormat {
             | Self::Yuv444p10le
             | Self::Yuva444p10le
             | Self::P010le => 10,
+            Self::Gbrpf32le => 32,
             // All other formats including unknown are 8-bit
             _ => 8,
         }
@@ -602,5 +616,53 @@ mod tests {
         // Both original and copy are still usable (Copy semantics)
         assert_eq!(format, copied);
         assert_eq!(format.name(), copied.name());
+    }
+
+    #[test]
+    fn gbrpf32le_name_should_return_gbrpf32le() {
+        assert_eq!(PixelFormat::Gbrpf32le.name(), "gbrpf32le");
+    }
+
+    #[test]
+    fn gbrpf32le_should_have_three_planes() {
+        assert_eq!(PixelFormat::Gbrpf32le.num_planes(), 3);
+        assert_eq!(PixelFormat::Gbrpf32le.plane_count(), 3);
+    }
+
+    #[test]
+    fn gbrpf32le_should_be_planar_not_packed() {
+        assert!(!PixelFormat::Gbrpf32le.is_packed());
+        assert!(PixelFormat::Gbrpf32le.is_planar());
+    }
+
+    #[test]
+    fn gbrpf32le_should_be_rgb_family() {
+        assert!(PixelFormat::Gbrpf32le.is_rgb());
+        assert!(!PixelFormat::Gbrpf32le.is_yuv());
+    }
+
+    #[test]
+    fn gbrpf32le_should_not_have_alpha() {
+        assert!(!PixelFormat::Gbrpf32le.has_alpha());
+    }
+
+    #[test]
+    fn gbrpf32le_should_have_twelve_bytes_per_pixel() {
+        assert_eq!(PixelFormat::Gbrpf32le.bytes_per_pixel(), 12);
+    }
+
+    #[test]
+    fn gbrpf32le_should_be_high_bit_depth() {
+        assert!(PixelFormat::Gbrpf32le.is_high_bit_depth());
+    }
+
+    #[test]
+    fn gbrpf32le_should_have_bit_depth_32() {
+        assert_eq!(PixelFormat::Gbrpf32le.bit_depth(), 32);
+    }
+
+    #[test]
+    fn gbrpf32le_bits_per_pixel_should_be_none() {
+        assert_eq!(PixelFormat::Gbrpf32le.bits_per_pixel(), None);
     }
 }
