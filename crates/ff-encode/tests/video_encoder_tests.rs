@@ -13,9 +13,10 @@
 mod fixtures;
 
 use ff_encode::{
-    Av1Options, Av1Usage, BitrateMode, DnxhdOptions, DnxhdVariant, EncodeError, H264Options,
-    H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier, Preset, ProResOptions,
-    ProResProfile, SvtAv1Options, VideoCodec, VideoCodecOptions, VideoEncoder, Vp9Options,
+    AudioCodec, Av1Options, Av1Usage, BitrateMode, Container, DnxhdOptions, DnxhdVariant,
+    EncodeError, H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile,
+    H265Tier, Preset, ProResOptions, ProResProfile, SvtAv1Options, VideoCodec, VideoCodecOptions,
+    VideoEncoder, Vp9Options,
 };
 use ff_format::PixelFormat;
 use fixtures::{
@@ -2021,4 +2022,105 @@ fn attachment_builder_setter_should_not_panic() {
         .video(320, 240, 30.0)
         .add_attachment(vec![1, 2, 3], "application/octet-stream", "data.bin")
         .add_attachment(vec![4, 5, 6], "image/png", "icon.png");
+}
+
+// ============================================================================
+// WebM Container Tests
+// ============================================================================
+
+#[test]
+fn webm_vp9_should_produce_valid_output() {
+    let output_path = test_output_path("webm_vp9.webm");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Vp9)
+        .bitrate_mode(BitrateMode::Crf(33))
+        .preset(Preset::Ultrafast)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping webm_vp9 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("webm_vp9: codec={codec_name}");
+}
+
+#[test]
+fn webm_auto_default_codec_should_use_vp9_opus() {
+    // When no codec is explicitly set, .webm path should auto-select VP9+Opus.
+    let output_path = test_output_path("webm_auto_default.webm");
+    let _guard = FileGuard::new(output_path.clone());
+
+    // Without calling video_codec() or audio_codec(), build should not fail
+    // with UnsupportedContainerCodecCombination.
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .build();
+
+    assert!(!matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn webm_with_incompatible_video_codec_should_return_error() {
+    let output_path = test_output_path("webm_h264_error.webm");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn webm_with_incompatible_audio_codec_should_return_error() {
+    let output_path = test_output_path("webm_aac_error.webm");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Vp9)
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn container_enum_webm_with_incompatible_codec_should_return_error() {
+    let result = VideoEncoder::create("output.mkv")
+        .video(640, 480, 30.0)
+        .container(Container::WebM)
+        .video_codec(VideoCodec::H265)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
 }
