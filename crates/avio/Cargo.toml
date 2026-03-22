@@ -189,6 +189,26 @@ required-features = ["tokio"]
 name = "async_transcode"
 required-features = ["tokio"]
 
+[[example]]
+name = "codec_options"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "audio_codec_options"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "professional_formats"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "hdr10_encode"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "image_sequence"
+required-features = ["decode", "encode"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
