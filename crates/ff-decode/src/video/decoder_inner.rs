@@ -1443,6 +1443,32 @@ impl VideoDecoderInner {
                     planes.push(uv_data);
                     strides.push(uv_stride);
                 }
+                PixelFormat::Gbrpf32le => {
+                    // Planar GBR float: 3 full-resolution planes, 4 bytes per sample (f32)
+                    const BYTES_PER_SAMPLE: usize = 4;
+                    let row_size = width as usize * BYTES_PER_SAMPLE;
+                    let size = row_size * height as usize;
+
+                    for plane_idx in 0..3usize {
+                        let src_linesize = (*frame).linesize[plane_idx] as usize;
+                        let mut plane_data = self.allocate_buffer(size);
+                        for y in 0..height as usize {
+                            let src_offset = y * src_linesize;
+                            let dst_offset = y * row_size;
+                            let src_ptr = (*frame).data[plane_idx].add(src_offset);
+                            let dst_slice = plane_data.as_mut();
+                            // SAFETY: Copying one row of a planar float plane. Source is valid
+                            // FFmpeg frame data, destination has sufficient capacity, no overlap.
+                            std::ptr::copy_nonoverlapping(
+                                src_ptr,
+                                dst_slice[dst_offset..].as_mut_ptr(),
+                                row_size,
+                            );
+                        }
+                        planes.push(plane_data);
+                        strides.push(row_size);
+                    }
+                }
                 _ => {
                     return Err(DecodeError::Ffmpeg {
                         code: 0,
@@ -1473,6 +1499,7 @@ impl VideoDecoderInner {
             PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
             PixelFormat::Yuva444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE,
             PixelFormat::P010le => ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE,
+            PixelFormat::Gbrpf32le => ff_sys::AVPixelFormat_AV_PIX_FMT_GBRPF32LE,
             _ => {
                 log::warn!(
                     "pixel_format has no AV mapping, falling back to Yuv420p format={format:?} fallback=AV_PIX_FMT_YUV420P"
