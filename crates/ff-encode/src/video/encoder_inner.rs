@@ -200,6 +200,8 @@ pub(super) struct VideoEncoderConfig {
     pub(super) color_space: Option<ff_format::ColorSpace>,
     pub(super) color_transfer: Option<ff_format::ColorTransfer>,
     pub(super) color_primaries: Option<ff_format::ColorPrimaries>,
+    /// Binary attachments: (raw data, MIME type, filename).
+    pub(super) attachments: Vec<(Vec<u8>, String, String)>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -963,6 +965,11 @@ impl VideoEncoderInner {
             // Register subtitle passthrough stream (must happen before avformat_write_header).
             if let Some((ref path, stream_index)) = config.subtitle_passthrough {
                 encoder.init_subtitle_passthrough(path, stream_index);
+            }
+
+            // Register attachment streams (must happen before avformat_write_header).
+            if !config.attachments.is_empty() {
+                encoder.init_attachments(&config.attachments);
             }
 
             // For two-pass encoding the output file is opened in run_pass2() after
@@ -2799,6 +2806,80 @@ impl VideoEncoderInner {
     /// stream with copied codec parameters, and close the source.
     ///
     /// Stores `(source_path, source_stream_index, output_stream_index)` in
+    /// Register binary attachment streams in the output container.
+    ///
+    /// Each attachment is stored as an `AVMEDIA_TYPE_ATTACHMENT` stream with
+    /// `AV_CODEC_ID_BIN_DATA`. The attachment data is placed in `extradata`
+    /// so the MKV muxer can write it into the container's `Attachments` element.
+    ///
+    /// Failures per entry are non-fatal: a warning is logged and the entry is
+    /// skipped so the rest of encoding can continue.
+    ///
+    /// # Safety
+    ///
+    /// `self.format_ctx` must be a valid, non-null `AVFormatContext` pointer.
+    /// Must be called before `avformat_write_header`.
+    unsafe fn init_attachments(&mut self, attachments: &[(Vec<u8>, String, String)]) {
+        for (data, mime_type, filename) in attachments {
+            // Create a new stream for the attachment.
+            // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
+            let out_stream = avformat_new_stream(self.format_ctx, std::ptr::null());
+            if out_stream.is_null() {
+                log::warn!("attachment: avformat_new_stream failed, skipping filename={filename}");
+                continue;
+            }
+
+            let codecpar = (*out_stream).codecpar;
+            (*codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_ATTACHMENT;
+            (*codecpar).codec_id = ff_sys::AVCodecID_AV_CODEC_ID_BIN_DATA;
+
+            // Allocate extradata with FFmpeg's allocator so it can be freed by
+            // avcodec_parameters_free. The padding bytes are zeroed by av_mallocz.
+            let alloc_size = data.len() + ff_sys::AV_INPUT_BUFFER_PADDING_SIZE as usize;
+            let extradata = ff_sys::av_mallocz(alloc_size) as *mut u8;
+            if extradata.is_null() {
+                log::warn!(
+                    "attachment: av_mallocz failed for extradata, skipping filename={filename}"
+                );
+                continue;
+            }
+            // SAFETY: extradata has at least `data.len()` bytes; data slice is valid.
+            std::ptr::copy_nonoverlapping(data.as_ptr(), extradata, data.len());
+            (*codecpar).extradata = extradata;
+            (*codecpar).extradata_size = data.len() as i32;
+
+            // Set stream metadata so the muxer records the filename and MIME type.
+            let Ok(c_filename) = std::ffi::CString::new(filename.as_str()) else {
+                log::warn!("attachment: filename contains null byte, skipping filename={filename}");
+                continue;
+            };
+            let Ok(c_mime) = std::ffi::CString::new(mime_type.as_str()) else {
+                log::warn!(
+                    "attachment: mime_type contains null byte, skipping filename={filename}"
+                );
+                continue;
+            };
+            // SAFETY: out_stream->metadata pointer is valid (initialized by avformat_new_stream).
+            ff_sys::av_dict_set(
+                &mut (*out_stream).metadata,
+                b"filename\0".as_ptr() as *const i8,
+                c_filename.as_ptr(),
+                0,
+            );
+            ff_sys::av_dict_set(
+                &mut (*out_stream).metadata,
+                b"mimetype\0".as_ptr() as *const i8,
+                c_mime.as_ptr(),
+                0,
+            );
+
+            log::info!(
+                "attachment: registered filename={filename} mime={mime_type} size={}",
+                data.len()
+            );
+        }
+    }
+
     /// `self.subtitle_passthrough` on success. On any failure it logs a warning and returns
     /// without modifying state, so encoding can continue without subtitles.
     ///

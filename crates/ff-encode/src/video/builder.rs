@@ -55,6 +55,8 @@ pub struct VideoEncoderBuilder {
     pub(crate) color_space: Option<ff_format::ColorSpace>,
     pub(crate) color_transfer: Option<ff_format::ColorTransfer>,
     pub(crate) color_primaries: Option<ff_format::ColorPrimaries>,
+    /// Binary attachments: (raw data, MIME type, filename).
+    pub(crate) attachments: Vec<(Vec<u8>, String, String)>,
 }
 
 impl std::fmt::Debug for VideoEncoderBuilder {
@@ -87,6 +89,7 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("color_space", &self.color_space)
             .field("color_transfer", &self.color_transfer)
             .field("color_primaries", &self.color_primaries)
+            .field("attachments_count", &self.attachments.len())
             .finish()
     }
 }
@@ -118,6 +121,7 @@ impl VideoEncoderBuilder {
             color_space: None,
             color_transfer: None,
             color_primaries: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -351,6 +355,28 @@ impl VideoEncoderBuilder {
         self
     }
 
+    // === Attachments ===
+
+    /// Embed a binary attachment in the output container.
+    ///
+    /// Attachments are supported in MKV/WebM containers and are used for
+    /// fonts (required by ASS/SSA subtitle rendering), cover art, or other
+    /// binary files that consumers of the file may need.
+    ///
+    /// - `data` — raw bytes of the attachment
+    /// - `mime_type` — MIME type string (e.g. `"application/x-truetype-font"`,
+    ///   `"image/jpeg"`)
+    /// - `filename` — the name reported inside the container (e.g. `"Arial.ttf"`)
+    ///
+    /// Multiple calls accumulate entries; each attachment becomes its own stream
+    /// with `AVMEDIA_TYPE_ATTACHMENT` codec parameters.
+    #[must_use]
+    pub fn add_attachment(mut self, data: Vec<u8>, mime_type: &str, filename: &str) -> Self {
+        self.attachments
+            .push((data, mime_type.to_string(), filename.to_string()));
+        self
+    }
+
     // === Build ===
 
     /// Validate builder state and open the output file.
@@ -558,6 +584,7 @@ impl VideoEncoder {
             color_space: builder.color_space,
             color_transfer: builder.color_transfer,
             color_primaries: builder.color_primaries,
+            attachments: builder.attachments,
         };
 
         let inner = if config.video_width.is_some() {
@@ -807,6 +834,7 @@ mod tests {
                 color_space: None,
                 color_transfer: None,
                 color_primaries: None,
+                attachments: Vec::new(),
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,
@@ -1004,5 +1032,25 @@ mod tests {
                 "is_hw for {codec_name}"
             );
         }
+    }
+
+    #[test]
+    fn add_attachment_should_accumulate_entries() {
+        let builder = VideoEncoder::create("output.mkv")
+            .video(320, 240, 30.0)
+            .add_attachment(vec![1, 2, 3], "application/x-truetype-font", "font.ttf")
+            .add_attachment(vec![4, 5, 6], "image/jpeg", "cover.jpg");
+        assert_eq!(builder.attachments.len(), 2);
+        assert_eq!(builder.attachments[0].0, vec![1u8, 2, 3]);
+        assert_eq!(builder.attachments[0].1, "application/x-truetype-font");
+        assert_eq!(builder.attachments[0].2, "font.ttf");
+        assert_eq!(builder.attachments[1].1, "image/jpeg");
+        assert_eq!(builder.attachments[1].2, "cover.jpg");
+    }
+
+    #[test]
+    fn add_attachment_with_no_attachments_should_start_empty() {
+        let builder = VideoEncoder::create("output.mkv").video(320, 240, 30.0);
+        assert!(builder.attachments.is_empty());
     }
 }
