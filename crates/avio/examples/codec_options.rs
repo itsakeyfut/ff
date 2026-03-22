@@ -7,6 +7,8 @@
 //!   B-frames, GOP, refs, and libx264 `preset` / `tune`
 //! - `H265Options` — profile (`main` / `main10`), tier, libx265 `preset`
 //! - `Av1Options` — `cpu_used` (0 = best, 8 = fastest), tile layout, usage
+//! - `SvtAv1Options` — SVT-AV1 (`libsvtav1`) preset (0–13), tile layout,
+//!   raw `svtav1_params` string; skips gracefully when libsvtav1 is absent
 //! - `Vp9Options` — `cpu_used`, constrained-quality (`cq_level`), tile layout
 //!
 //! All options are applied via `av_opt_set` / direct field assignment before
@@ -19,15 +21,15 @@
 //! cargo run --example codec_options --features "decode encode" -- \
 //!   --input   input.mp4   \
 //!   --output  output.mp4  \
-//!   --codec   h264        # h264 | h265 | av1 | vp9  (default: h264)
+//!   --codec   h264        # h264 | h265 | av1 | svt-av1 | vp9  (default: h264)
 //! ```
 
 use std::{path::Path, process};
 
 use avio::{
     Av1Options, Av1Usage, BitrateMode, H264Options, H264Preset, H264Profile, H265Options,
-    H265Profile, PixelFormat, VideoCodec, VideoCodecOptions, VideoDecoder, VideoEncoder,
-    Vp9Options,
+    H265Profile, PixelFormat, SvtAv1Options, VideoCodec, VideoCodecOptions, VideoDecoder,
+    VideoEncoder, Vp9Options,
 };
 
 fn main() {
@@ -51,7 +53,7 @@ fn main() {
     let input = input.unwrap_or_else(|| {
         eprintln!(
             "Usage: codec_options --input <file> --output <file> \
-             [--codec h264|h265|av1|vp9]"
+             [--codec h264|h265|av1|svt-av1|vp9]"
         );
         process::exit(1);
     });
@@ -142,6 +144,31 @@ fn main() {
                     "AV1 (libaom), cpu_used=6, 2×2 tiles, VoD mode",
                 )
             }
+            "svt-av1" => {
+                // SvtAv1Options: preset controls the speed/quality tradeoff.
+                //   0  = best quality / slowest encode
+                //   13 = fastest encode / lowest quality
+                //
+                // tile_rows / tile_cols are log2 counts (0 = 1 tile, 1 = 2, 2 = 4, …).
+                //
+                // svtav1_params allows passing raw key=value pairs from the
+                // libsvtav1 parameter interface (e.g. "fast-decode=1").
+                //
+                // Requires an FFmpeg build with --enable-libsvtav1.
+                // build() returns EncodeError::EncoderUnavailable if absent.
+                let opts = SvtAv1Options {
+                    preset: 8, // balanced speed/quality
+                    tile_rows: 1,
+                    tile_cols: 1,
+                    svtav1_params: None,
+                };
+                (
+                    VideoCodec::Av1Svt,
+                    VideoCodecOptions::Av1Svt(opts),
+                    None,
+                    "AV1 (SVT-AV1 / libsvtav1), preset=8, 2×2 tiles",
+                )
+            }
             "vp9" => {
                 // Vp9Options: cpu_used, constrained-quality mode (cq_level),
                 // and tile configuration.
@@ -160,7 +187,7 @@ fn main() {
                 )
             }
             other => {
-                eprintln!("Unknown codec '{other}' (try h264, h265, av1, vp9)");
+                eprintln!("Unknown codec '{other}' (try h264, h265, av1, svt-av1, vp9)");
                 process::exit(1);
             }
         };
