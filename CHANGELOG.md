@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.3] - 2026-03-22
+
+### Fixed
+
+#### ff-sys
+- `docsrs_stubs`: add `AVFormatContext.priv_data` field, fixing the docs.rs build failure for `ff-stream` (used by `av_opt_set` calls in `hls_inner.rs` and `dash_inner.rs`)
+
+### Changed
+
+#### CI
+- Add `docsrs-stubs` job (`DOCS_RS=1 cargo build --workspace`) to catch missing `ff-sys` stub symbols before publishing
+
+---
+
 ## [0.7.2] - 2026-03-22
 
 ### Fixed
