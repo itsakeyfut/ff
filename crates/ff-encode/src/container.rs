@@ -21,6 +21,12 @@ pub enum Container {
 
     /// MOV
     Mov,
+
+    /// FLAC (lossless audio container)
+    Flac,
+
+    /// OGG (audio container for Vorbis/Opus)
+    Ogg,
 }
 
 impl Container {
@@ -33,6 +39,8 @@ impl Container {
             Self::Mkv => "matroska",
             Self::Avi => "avi",
             Self::Mov => "mov",
+            Self::Flac => "flac",
+            Self::Ogg => "ogg",
         }
     }
 
@@ -45,6 +53,8 @@ impl Container {
             Self::Mkv => "mkv",
             Self::Avi => "avi",
             Self::Mov => "mov",
+            Self::Flac => "flac",
+            Self::Ogg => "ogg",
         }
     }
 }
@@ -65,5 +75,17 @@ mod tests {
         assert_eq!(Container::Mp4.default_extension(), "mp4");
         assert_eq!(Container::WebM.default_extension(), "webm");
         assert_eq!(Container::Mkv.default_extension(), "mkv");
+        assert_eq!(Container::Flac.default_extension(), "flac");
+        assert_eq!(Container::Ogg.default_extension(), "ogg");
+    }
+
+    #[test]
+    fn flac_as_str_should_return_flac() {
+        assert_eq!(Container::Flac.as_str(), "flac");
+    }
+
+    #[test]
+    fn ogg_as_str_should_return_ogg() {
+        assert_eq!(Container::Ogg.as_str(), "ogg");
     }
 }
