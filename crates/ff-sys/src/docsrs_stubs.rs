@@ -95,6 +95,8 @@ pub struct AVCodecParameters {
     pub codec_type: AVMediaType,
     pub codec_id: AVCodecID,
     pub codec_tag: c_uint,
+    pub extradata: *mut u8,
+    pub extradata_size: c_int,
     pub format: c_int,
     pub bit_rate: i64,
     pub width: c_int,
@@ -194,8 +196,11 @@ pub const AV_TIME_BASE: u32 = 1_000_000;
 pub const AVMediaType_AVMEDIA_TYPE_VIDEO: AVMediaType = 0;
 pub const AVMediaType_AVMEDIA_TYPE_AUDIO: AVMediaType = 1;
 pub const AVMediaType_AVMEDIA_TYPE_SUBTITLE: AVMediaType = 3;
+pub const AVMediaType_AVMEDIA_TYPE_ATTACHMENT: AVMediaType = 4;
 
 pub const AV_DISPOSITION_FORCED: u32 = 0x0040;
+pub const AV_DISPOSITION_ATTACHED_PIC: u32 = 0x0400;
+pub const AV_INPUT_BUFFER_PADDING_SIZE: u32 = 64;
 
 pub const AVChannelOrder_AV_CHANNEL_ORDER_UNSPEC: AVChannelOrder = 0;
 pub const AVChannelOrder_AV_CHANNEL_ORDER_NATIVE: AVChannelOrder = 1;
@@ -228,6 +233,9 @@ pub const AVCodecID_AV_CODEC_ID_SRT: AVCodecID = 94216;
 pub const AVCodecID_AV_CODEC_ID_SUBRIP: AVCodecID = 94248;
 pub const AVCodecID_AV_CODEC_ID_WEBVTT: AVCodecID = 94249;
 pub const AVCodecID_AV_CODEC_ID_ASS: AVCodecID = 94253;
+
+// AVCodecID — attachment / data
+pub const AVCodecID_AV_CODEC_ID_BIN_DATA: AVCodecID = 98314;
 
 // AVCodecID — audio
 pub const AVCodecID_AV_CODEC_ID_PCM_S16LE: AVCodecID = 65536;
@@ -526,6 +534,16 @@ pub unsafe fn av_channel_layout_uninit(_ch_layout: *mut AVChannelLayout) {}
 
 pub unsafe fn av_mallocz(_size: usize) -> *mut c_void {
     std::ptr::null_mut()
+}
+
+pub unsafe fn av_malloc(_size: usize) -> *mut c_void {
+    std::ptr::null_mut()
+}
+
+pub unsafe fn av_free(_ptr: *mut c_void) {}
+
+pub unsafe fn av_new_packet(_pkt: *mut AVPacket, _size: c_int) -> c_int {
+    -1
 }
 
 pub unsafe fn avcodec_parameters_copy(

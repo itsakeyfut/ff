@@ -1943,3 +1943,82 @@ fn color_transfer_bt709_on_h264_should_produce_valid_output() {
     assert_valid_output_file(&output_path);
     println!("BT.709 H264: codec={codec_name}");
 }
+
+// ============================================================================
+// Attachment Tests
+// ============================================================================
+
+#[test]
+fn attachment_embedding_mkv_should_produce_valid_output() {
+    let output_path = test_output_path("attachment_mkv.mkv");
+    let _guard = FileGuard::new(output_path.clone());
+
+    // Minimal synthetic font bytes (not a real font, just binary data for testing).
+    let font_data = vec![0x00u8; 512];
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .add_attachment(font_data, "application/x-truetype-font", "test_font.ttf")
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping attachment_embedding test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+}
+
+#[test]
+fn attachment_embedding_with_multiple_attachments_should_produce_valid_output() {
+    let output_path = test_output_path("attachment_multi_mkv.mkv");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let font_data = vec![0xFFu8; 256];
+    let image_data = vec![0xABu8; 128];
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::Mpeg4)
+        .preset(Preset::Ultrafast)
+        .add_attachment(font_data, "application/x-truetype-font", "font.ttf")
+        .add_attachment(image_data, "image/jpeg", "cover.jpg")
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping multi-attachment test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..5 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+}
+
+#[test]
+fn attachment_builder_setter_should_not_panic() {
+    // Verify that add_attachment() is chainable and does not panic.
+    // Field-level assertions live in the crate's unit tests.
+    let _builder = VideoEncoder::create("output.mkv")
+        .video(320, 240, 30.0)
+        .add_attachment(vec![1, 2, 3], "application/octet-stream", "data.bin")
+        .add_attachment(vec![4, 5, 6], "image/png", "icon.png");
+}
