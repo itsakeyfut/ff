@@ -423,6 +423,44 @@ impl VideoEncoderBuilder {
             }
         }
 
+        let is_avi = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("avi"))
+            || self
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::Avi);
+
+        if is_avi {
+            if !self.video_codec_explicit {
+                self.video_codec = VideoCodec::H264;
+            }
+            if !self.audio_codec_explicit {
+                self.audio_codec = AudioCodec::Mp3;
+            }
+        }
+
+        let is_mov = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("mov"))
+            || self
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::Mov);
+
+        if is_mov {
+            if !self.video_codec_explicit {
+                self.video_codec = VideoCodec::H264;
+            }
+            if !self.audio_codec_explicit {
+                self.audio_codec = AudioCodec::Aac;
+            }
+        }
+
         self
     }
 
@@ -573,6 +611,81 @@ impl VideoEncoderBuilder {
                     container: "webm".to_string(),
                     codec: self.audio_codec.name().to_string(),
                     hint: "WebM supports VP9, AV1 (video) and Vorbis, Opus (audio)".to_string(),
+                });
+            }
+        }
+
+        // AVI container codec enforcement.
+        let is_avi = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("avi"))
+            || self
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::Avi);
+
+        if is_avi {
+            let avi_video_ok = matches!(self.video_codec, VideoCodec::H264 | VideoCodec::Mpeg4);
+            if !avi_video_ok {
+                return Err(EncodeError::UnsupportedContainerCodecCombination {
+                    container: "avi".to_string(),
+                    codec: self.video_codec.name().to_string(),
+                    hint: "AVI supports H264 and MPEG-4 (video); MP3, AAC, and PCM 16-bit (audio)"
+                        .to_string(),
+                });
+            }
+
+            let avi_audio_ok = matches!(
+                self.audio_codec,
+                AudioCodec::Mp3 | AudioCodec::Aac | AudioCodec::Pcm | AudioCodec::Pcm16
+            );
+            if !avi_audio_ok {
+                return Err(EncodeError::UnsupportedContainerCodecCombination {
+                    container: "avi".to_string(),
+                    codec: self.audio_codec.name().to_string(),
+                    hint: "AVI supports H264 and MPEG-4 (video); MP3, AAC, and PCM 16-bit (audio)"
+                        .to_string(),
+                });
+            }
+        }
+
+        // MOV container codec enforcement.
+        let is_mov = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("mov"))
+            || self
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::Mov);
+
+        if is_mov {
+            let mov_video_ok = matches!(
+                self.video_codec,
+                VideoCodec::H264 | VideoCodec::H265 | VideoCodec::ProRes
+            );
+            if !mov_video_ok {
+                return Err(EncodeError::UnsupportedContainerCodecCombination {
+                    container: "mov".to_string(),
+                    codec: self.video_codec.name().to_string(),
+                    hint: "MOV supports H264, H265, and ProRes (video); AAC and PCM (audio)"
+                        .to_string(),
+                });
+            }
+
+            let mov_audio_ok = matches!(
+                self.audio_codec,
+                AudioCodec::Aac | AudioCodec::Pcm | AudioCodec::Pcm16 | AudioCodec::Pcm24
+            );
+            if !mov_audio_ok {
+                return Err(EncodeError::UnsupportedContainerCodecCombination {
+                    container: "mov".to_string(),
+                    codec: self.audio_codec.name().to_string(),
+                    hint: "MOV supports H264, H265, and ProRes (video); AAC and PCM (audio)"
+                        .to_string(),
                 });
             }
         }
@@ -1204,6 +1317,144 @@ mod tests {
         assert!(!matches!(
             result,
             Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn avi_extension_without_explicit_codec_should_default_to_h264_mp3() {
+        let builder = VideoEncoder::create("output.avi").video(640, 480, 30.0);
+        let normalized = builder.apply_container_defaults();
+        assert_eq!(normalized.video_codec, VideoCodec::H264);
+        assert_eq!(normalized.audio_codec, AudioCodec::Mp3);
+    }
+
+    #[test]
+    fn mov_extension_without_explicit_codec_should_default_to_h264_aac() {
+        let builder = VideoEncoder::create("output.mov").video(640, 480, 30.0);
+        let normalized = builder.apply_container_defaults();
+        assert_eq!(normalized.video_codec, VideoCodec::H264);
+        assert_eq!(normalized.audio_codec, AudioCodec::Aac);
+    }
+
+    #[test]
+    fn avi_with_incompatible_video_codec_should_return_error() {
+        let result = VideoEncoder::create("output.avi")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::Vp9)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn avi_with_incompatible_audio_codec_should_return_error() {
+        let result = VideoEncoder::create("output.avi")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::H264)
+            .audio(48000, 2)
+            .audio_codec(AudioCodec::Opus)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn mov_with_incompatible_video_codec_should_return_error() {
+        let result = VideoEncoder::create("output.mov")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::Vp9)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn mov_with_incompatible_audio_codec_should_return_error() {
+        let result = VideoEncoder::create("output.mov")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::H264)
+            .audio(48000, 2)
+            .audio_codec(AudioCodec::Opus)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn avi_container_enum_with_incompatible_codec_should_return_error() {
+        let result = VideoEncoder::create("output.mp4")
+            .video(640, 480, 30.0)
+            .container(Container::Avi)
+            .video_codec(VideoCodec::Vp9)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn mov_container_enum_with_incompatible_codec_should_return_error() {
+        let result = VideoEncoder::create("output.mp4")
+            .video(640, 480, 30.0)
+            .container(Container::Mov)
+            .video_codec(VideoCodec::Vp9)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn avi_with_pcm_audio_should_pass_validation() {
+        // AudioCodec::Pcm (backward-compat alias for 16-bit PCM) must be accepted in AVI.
+        let result = VideoEncoder::create("output.avi")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::H264)
+            .audio(48000, 2)
+            .audio_codec(AudioCodec::Pcm)
+            .build();
+        assert!(!matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn mov_with_pcm24_audio_should_pass_validation() {
+        let result = VideoEncoder::create("output.mov")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::H264)
+            .audio(48000, 2)
+            .audio_codec(AudioCodec::Pcm24)
+            .build();
+        assert!(!matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn non_avi_mov_extension_should_not_enforce_avi_mov_codecs() {
+        // Vp9 on .webm should not trigger AVI/MOV validation
+        let result = VideoEncoder::create("output.webm")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::Vp9)
+            .build();
+        assert!(!matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination {
+                ref container, ..
+            }) if container == "avi" || container == "mov"
         ));
     }
 }

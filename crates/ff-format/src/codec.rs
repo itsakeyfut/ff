@@ -245,6 +245,10 @@ pub enum AudioCodec {
     Flac,
     /// PCM (Pulse Code Modulation) - uncompressed audio
     Pcm,
+    /// PCM signed 16-bit little-endian — uncompressed, explicit bit depth
+    Pcm16,
+    /// PCM signed 24-bit little-endian — uncompressed, professional audio
+    Pcm24,
     /// Vorbis - open lossy codec, used in Ogg containers
     Vorbis,
     /// AC3 (Dolby Digital) - surround sound codec
@@ -278,6 +282,8 @@ impl AudioCodec {
             Self::Opus => "opus",
             Self::Flac => "flac",
             Self::Pcm => "pcm",
+            Self::Pcm16 => "pcm_s16le",
+            Self::Pcm24 => "pcm_s24le",
             Self::Vorbis => "vorbis",
             Self::Ac3 => "ac3",
             Self::Eac3 => "eac3",
@@ -305,6 +311,8 @@ impl AudioCodec {
             Self::Opus => "Opus",
             Self::Flac => "FLAC",
             Self::Pcm => "PCM",
+            Self::Pcm16 => "PCM 16-bit",
+            Self::Pcm24 => "PCM 24-bit",
             Self::Vorbis => "Vorbis",
             Self::Ac3 => "Dolby Digital (AC-3)",
             Self::Eac3 => "Dolby Digital Plus (E-AC-3)",
@@ -351,7 +359,10 @@ impl AudioCodec {
     /// ```
     #[must_use]
     pub const fn is_lossless(&self) -> bool {
-        matches!(self, Self::Flac | Self::Pcm | Self::Alac)
+        matches!(
+            self,
+            Self::Flac | Self::Pcm | Self::Pcm16 | Self::Pcm24 | Self::Alac
+        )
     }
 
     /// Returns `true` if this is a surround sound codec.
@@ -791,6 +802,28 @@ mod tests {
             assert!(AudioCodec::Dts.is_surround());
             assert!(!AudioCodec::Aac.is_surround());
             assert!(!AudioCodec::Flac.is_surround());
+        }
+
+        #[test]
+        fn pcm16_name_should_return_pcm_s16le() {
+            assert_eq!(AudioCodec::Pcm16.name(), "pcm_s16le");
+        }
+
+        #[test]
+        fn pcm24_name_should_return_pcm_s24le() {
+            assert_eq!(AudioCodec::Pcm24.name(), "pcm_s24le");
+        }
+
+        #[test]
+        fn pcm16_should_be_lossless() {
+            assert!(AudioCodec::Pcm16.is_lossless());
+            assert!(!AudioCodec::Pcm16.is_lossy());
+        }
+
+        #[test]
+        fn pcm24_should_be_lossless() {
+            assert!(AudioCodec::Pcm24.is_lossless());
+            assert!(!AudioCodec::Pcm24.is_lossy());
         }
 
         #[test]

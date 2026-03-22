@@ -2124,3 +2124,177 @@ fn container_enum_webm_with_incompatible_codec_should_return_error() {
         Err(EncodeError::UnsupportedContainerCodecCombination { .. })
     ));
 }
+
+// ============================================================================
+// AVI Container Tests
+// ============================================================================
+
+#[test]
+fn avi_h264_mp3_should_produce_valid_output() {
+    let output_path = test_output_path("avi_h264_mp3.avi");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(23))
+        .preset(Preset::Ultrafast)
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Mp3)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping avi_h264_mp3 test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("avi_h264_mp3: codec={codec_name}");
+}
+
+#[test]
+fn avi_auto_default_codec_should_not_return_container_codec_error() {
+    let output_path = test_output_path("avi_auto_default.avi");
+    let _guard = FileGuard::new(output_path.clone());
+
+    // Without calling video_codec() or audio_codec(), .avi should auto-select H264+MP3.
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .build();
+
+    assert!(!matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn avi_with_incompatible_video_codec_should_return_error() {
+    let output_path = test_output_path("avi_vp9_error.avi");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Vp9)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn avi_with_incompatible_audio_codec_should_return_error() {
+    let output_path = test_output_path("avi_opus_error.avi");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Opus)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+// ============================================================================
+// MOV Container Tests
+// ============================================================================
+
+#[test]
+fn mov_h264_aac_should_produce_valid_output() {
+    let output_path = test_output_path("mov_h264_aac.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(23))
+        .preset(Preset::Ultrafast)
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+
+    let mut encoder = match result {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping mov_h264_aac test: encoder unavailable ({e})");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = create_black_frame(320, 240);
+        encoder.push_video(&frame).expect("Failed to push frame");
+    }
+
+    let codec_name = encoder.actual_video_codec().to_string();
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(&output_path);
+    println!("mov_h264_aac: codec={codec_name}");
+}
+
+#[test]
+fn mov_auto_default_codec_should_not_return_container_codec_error() {
+    let output_path = test_output_path("mov_auto_default.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    // Without calling video_codec() or audio_codec(), .mov should auto-select H264+AAC.
+    let result = VideoEncoder::create(&output_path)
+        .video(320, 240, 30.0)
+        .build();
+
+    assert!(!matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn mov_with_incompatible_video_codec_should_return_error() {
+    let output_path = test_output_path("mov_vp9_error.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::Vp9)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn mov_with_incompatible_audio_codec_should_return_error() {
+    let output_path = test_output_path("mov_opus_error.mov");
+    let _guard = FileGuard::new(output_path.clone());
+
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .video_codec(VideoCodec::H264)
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Opus)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}

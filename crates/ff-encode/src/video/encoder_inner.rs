@@ -18,9 +18,9 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
     AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
     AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
-    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS,
-    AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AVFormatContext, AVFrame,
-    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
+    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PRORES,
+    AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9,
+    AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
     AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
     AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc, av_frame_free,
@@ -1443,8 +1443,10 @@ impl VideoEncoderInner {
                 AudioCodec::Aac => 192_000,
                 AudioCodec::Opus => 128_000,
                 AudioCodec::Mp3 => 192_000,
-                AudioCodec::Flac => 0, // Lossless
-                AudioCodec::Pcm => 0,  // Uncompressed
+                AudioCodec::Flac => 0,  // Lossless
+                AudioCodec::Pcm => 0,   // Uncompressed
+                AudioCodec::Pcm16 => 0, // Uncompressed
+                AudioCodec::Pcm24 => 0, // Uncompressed
                 AudioCodec::Vorbis => 192_000,
                 AudioCodec::Ac3 => 192_000,
                 AudioCodec::Eac3 => 192_000,
@@ -1502,6 +1504,8 @@ impl VideoEncoderInner {
             AudioCodec::Mp3 => vec!["libmp3lame", "mp3"],
             AudioCodec::Flac => vec!["flac"],
             AudioCodec::Pcm => vec!["pcm_s16le"],
+            AudioCodec::Pcm16 => vec!["pcm_s16le"],
+            AudioCodec::Pcm24 => vec!["pcm_s24le"],
             AudioCodec::Vorbis => vec!["libvorbis", "vorbis"],
             AudioCodec::Ac3 => vec!["ac3"],
             AudioCodec::Eac3 => vec!["eac3"],
@@ -3178,6 +3182,8 @@ fn audio_codec_to_id(codec: AudioCodec) -> AVCodecID {
         AudioCodec::Mp3 => AVCodecID_AV_CODEC_ID_MP3,
         AudioCodec::Flac => AVCodecID_AV_CODEC_ID_FLAC,
         AudioCodec::Pcm => AVCodecID_AV_CODEC_ID_PCM_S16LE,
+        AudioCodec::Pcm16 => AVCodecID_AV_CODEC_ID_PCM_S16LE,
+        AudioCodec::Pcm24 => AVCodecID_AV_CODEC_ID_PCM_S24LE,
         AudioCodec::Vorbis => AVCodecID_AV_CODEC_ID_VORBIS,
         AudioCodec::Ac3 => AVCodecID_AV_CODEC_ID_AC3,
         AudioCodec::Eac3 => AVCodecID_AV_CODEC_ID_EAC3,
