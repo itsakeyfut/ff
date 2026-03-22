@@ -29,12 +29,12 @@ pub type AVPictureType = c_int;
 // ── Opaque types (only ever used behind raw pointers) ─────────────────────────
 
 pub struct AVDictionary(());
-pub struct AVCodec(());
 pub struct SwsContext(());
 pub struct SwrContext(());
 pub struct AVBufferRef(());
 pub struct AVIOContext(());
 pub struct AVOutputFormat(());
+pub struct AVAudioFifo(());
 
 pub struct AVInputFormat {
     pub name: *const c_char,
@@ -185,6 +185,20 @@ pub struct AVCodecContext {
     pub color_primaries: AVColorPrimaries,
     pub color_trc: AVColorTransferCharacteristic,
     pub colorspace: AVColorSpace,
+    // Fields added for v0.7.0 feature coverage
+    pub frame_size: c_int,
+    pub color_range: AVColorRange,
+    pub refs: c_int,
+    pub rc_max_rate: i64,
+    pub rc_buffer_size: c_int,
+    pub flags: c_int,
+    pub stats_out: *mut c_char,
+    pub stats_in: *mut c_char,
+}
+
+pub struct AVCodec {
+    pub sample_fmts: *const AVSampleFormat,
+    pub capabilities: c_int,
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -275,6 +289,8 @@ pub const AVPixelFormat_AV_PIX_FMT_NV21: AVPixelFormat = 24;
 pub const AVPixelFormat_AV_PIX_FMT_RGBA: AVPixelFormat = 26;
 pub const AVPixelFormat_AV_PIX_FMT_BGRA: AVPixelFormat = 28;
 pub const AVPixelFormat_AV_PIX_FMT_YUVJ420P: AVPixelFormat = 12;
+pub const AVPixelFormat_AV_PIX_FMT_YUVJ422P: AVPixelFormat = 13;
+pub const AVPixelFormat_AV_PIX_FMT_YUVJ444P: AVPixelFormat = 14;
 pub const AVPixelFormat_AV_PIX_FMT_VAAPI: AVPixelFormat = 51;
 pub const AVPixelFormat_AV_PIX_FMT_DXVA2_VLD: AVPixelFormat = 53;
 pub const AV_OPT_SEARCH_CHILDREN: u32 = 1;
@@ -576,8 +592,11 @@ pub unsafe fn av_packet_rescale_ts(
 // ── libavfilter opaque types ──────────────────────────────────────────────────
 
 pub struct AVFilterGraph(());
-pub struct AVFilterContext(());
 pub struct AVFilter(());
+
+pub struct AVFilterContext {
+    pub hw_device_ctx: *mut AVBufferRef,
+}
 
 // ── libavfilter constants ─────────────────────────────────────────────────────
 
@@ -898,6 +917,43 @@ pub mod swresample {
         }
         pub fn is_native_order(_ch_layout: &AVChannelLayout) -> bool {
             false
+        }
+    }
+
+    pub mod audio_fifo {
+        use std::ffi::c_void;
+        use std::os::raw::c_int;
+
+        use super::super::{AVAudioFifo, AVSampleFormat};
+
+        pub unsafe fn alloc(
+            _sample_fmt: AVSampleFormat,
+            _channels: c_int,
+            _nb_samples: c_int,
+        ) -> Result<*mut AVAudioFifo, c_int> {
+            Err(-1)
+        }
+
+        pub unsafe fn free(_fifo: *mut AVAudioFifo) {}
+
+        pub unsafe fn write(
+            _fifo: *mut AVAudioFifo,
+            _data: *const *mut c_void,
+            _nb_samples: c_int,
+        ) -> Result<c_int, c_int> {
+            Err(-1)
+        }
+
+        pub unsafe fn read(
+            _fifo: *mut AVAudioFifo,
+            _data: *const *mut c_void,
+            _nb_samples: c_int,
+        ) -> Result<c_int, c_int> {
+            Err(-1)
+        }
+
+        pub unsafe fn size(_fifo: *mut AVAudioFifo) -> c_int {
+            0
         }
     }
 
