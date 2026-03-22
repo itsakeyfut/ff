@@ -12,16 +12,16 @@ to only the capabilities you need via feature flags.
 ```toml
 [dependencies]
 # Default: probe + decode + encode
-avio = "0.6"
+avio = "0.7"
 
 # Add filtering
-avio = { version = "0.6", features = ["filter"] }
+avio = { version = "0.7", features = ["filter"] }
 
 # Full stack (implies filter + pipeline)
-avio = { version = "0.6", features = ["stream"] }
+avio = { version = "0.7", features = ["stream"] }
 
 # Async decode/encode (requires tokio runtime)
-avio = { version = "0.6", features = ["tokio"] }
+avio = { version = "0.7", features = ["tokio"] }
 ```
 
 ## Feature Flags
@@ -59,7 +59,7 @@ let mut vdec = VideoDecoder::open("video.mp4")
     .output_format(PixelFormat::Rgb24)
     .build()?;
 while let Some(frame) = vdec.decode_one()? {
-    // frame.data contains raw pixel bytes
+    // frame.data() contains raw pixel bytes
 }
 
 // Audio — resample to f32 at 44.1 kHz
@@ -68,8 +68,29 @@ let mut adec = AudioDecoder::open("audio.flac")
     .output_sample_rate(44_100)
     .build()?;
 while let Some(frame) = adec.decode_one()? {
-    // frame.data contains audio samples
+    // frame.to_f32_interleaved() returns interleaved f32 samples
 }
+```
+
+### Image Sequences
+
+A `%`-pattern path (e.g. `frame%04d.png`) automatically selects the `image2`
+demuxer for decode and muxer for encode:
+
+```rust
+use avio::{VideoDecoder, VideoEncoder, VideoCodec, HardwareAccel};
+
+// Decode numbered PNGs → video
+let mut decoder = VideoDecoder::open("frames/frame%04d.png")
+    .hardware_accel(HardwareAccel::None)
+    .frame_rate(25)
+    .build()?;
+
+// Encode video → numbered PNGs
+let mut encoder = VideoEncoder::create("out/frame%04d.png")
+    .video(1920, 1080, 25.0)
+    .video_codec(VideoCodec::Png)
+    .build()?;
 ```
 
 ### Encode
@@ -89,6 +110,103 @@ for frame in &video_frames {
     encoder.push_video(frame)?;
 }
 encoder.finish()?;
+```
+
+### Per-Codec Options
+
+`VideoCodecOptions` and `AudioCodecOptions` provide typed, per-codec
+configuration applied before the codec is opened:
+
+```rust
+use avio::{
+    VideoEncoder, VideoCodec, VideoCodecOptions,
+    H264Options, H264Profile, H264Preset,
+    BitrateMode,
+};
+
+let opts = VideoCodecOptions::H264(H264Options {
+    profile: H264Profile::High,
+    level: Some(41),
+    bframes: 2,
+    gop_size: 250,
+    refs: 3,
+    preset: Some(H264Preset::Fast),
+    tune: None,
+});
+
+let mut encoder = VideoEncoder::create("output.mp4")
+    .video(1920, 1080, 30.0)
+    .video_codec(VideoCodec::H264)
+    .bitrate_mode(BitrateMode::Crf(23))
+    .codec_options(opts)
+    .build()?;
+```
+
+Available option structs: `H264Options`, `H265Options`, `Av1Options`,
+`SvtAv1Options`, `Vp9Options`, `ProResOptions`, `DnxhdOptions`,
+`OpusOptions`, `AacOptions`, `Mp3Options`, `FlacOptions`.
+
+### Professional Formats
+
+```rust
+use avio::{
+    VideoEncoder, VideoCodec, VideoCodecOptions,
+    ProResOptions, ProResProfile, PixelFormat,
+};
+
+let mut encoder = VideoEncoder::create("output.mov")
+    .video(1920, 1080, 25.0)
+    .video_codec(VideoCodec::ProRes)
+    .pixel_format(PixelFormat::Yuv422p10le)
+    .codec_options(VideoCodecOptions::ProRes(ProResOptions {
+        profile: ProResProfile::Hq,
+        vendor: None,
+    }))
+    .build()?;
+```
+
+### HDR Metadata
+
+```rust
+use avio::{
+    VideoEncoder, VideoCodec, VideoCodecOptions,
+    H265Options, H265Profile, PixelFormat, BitrateMode,
+    Hdr10Metadata, MasteringDisplay, ColorTransfer,
+};
+
+// HDR10 — PQ transfer + MaxCLL/MaxFALL side data
+let mut encoder = VideoEncoder::create("output.mkv")
+    .video(3840, 2160, 24.0)
+    .video_codec(VideoCodec::H265)
+    .bitrate_mode(BitrateMode::Crf(22))
+    .pixel_format(PixelFormat::Yuv420p10le)
+    .codec_options(VideoCodecOptions::H265(H265Options {
+        profile: H265Profile::Main10,
+        ..H265Options::default()
+    }))
+    .hdr10_metadata(Hdr10Metadata {
+        max_cll: 1000, max_fall: 400,
+        mastering_display: MasteringDisplay {
+            red_x: 17000, red_y: 8500,
+            green_x: 13250, green_y: 34500,
+            blue_x: 7500, blue_y: 3000,
+            white_x: 15635, white_y: 16450,
+            min_luminance: 50,
+            max_luminance: 10_000_000,
+        },
+    })
+    .build()?;
+
+// HLG — broadcast HDR without MaxCLL/MaxFALL
+use avio::{ColorSpace, ColorPrimaries};
+let mut encoder = VideoEncoder::create("output.mkv")
+    .video(1920, 1080, 50.0)
+    .video_codec(VideoCodec::H265)
+    .pixel_format(PixelFormat::Yuv420p10le)
+    .color_transfer(ColorTransfer::Hlg)
+    .color_space(ColorSpace::Bt2020)
+    .color_primaries(ColorPrimaries::Bt2020)
+    .build()?;
 ```
 
 ### Async (tokio feature)

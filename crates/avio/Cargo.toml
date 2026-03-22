@@ -11,7 +11,7 @@ keywords = ["video", "audio", "ffmpeg", "multimedia", "codec"]
 categories = ["multimedia::video", "multimedia::audio", "multimedia::encoding"]
 
 [features]
-default = ["probe", "decode", "encode"]
+default = ["probe", "decode", "encode", "hwaccel"]
 probe    = ["dep:ff-probe"]
 decode   = ["dep:ff-decode"]
 encode   = ["dep:ff-encode"]
@@ -19,6 +19,8 @@ filter   = ["dep:ff-filter"]
 pipeline = ["dep:ff-pipeline", "filter"]
 stream   = ["dep:ff-stream", "pipeline"]
 tokio    = ["decode", "encode", "ff-decode/tokio", "ff-encode/tokio"]
+gpl      = ["ff-encode/gpl"]
+hwaccel  = ["ff-encode/hwaccel"]
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
@@ -208,6 +210,10 @@ required-features = ["decode", "encode"]
 [[example]]
 name = "image_sequence"
 required-features = ["decode", "encode"]
+
+[[example]]
+name = "openexr_sequence"
+required-features = ["decode"]
 
 [dev-dependencies]
 futures = { workspace = true }

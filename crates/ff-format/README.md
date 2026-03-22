@@ -4,19 +4,62 @@ Shared data types for the ff-* crate family. No FFmpeg dependency — these type
 
 ## Key Types
 
-| Type           | Description                                                     |
-|----------------|-----------------------------------------------------------------|
-| `PixelFormat`  | Enumeration of supported pixel formats (Yuv420p, Rgba, …)       |
-| `SampleFormat` | Audio sample formats (Fltp, S16, …)                             |
-| `ChannelLayout`| Mono, Stereo, Surround51, and others                            |
-| `ColorSpace`   | BT.601, BT.709, BT.2020, and others                             |
-| `VideoCodec`   | H264, H265, Vp9, Av1, ProRes, and others                        |
-| `AudioCodec`   | Aac, Opus, Mp3, Flac, and others                                |
-| `VideoFrame`   | Decoded video frame with pixel data and associated `Timestamp`  |
-| `AudioFrame`   | Decoded audio frame with sample data and associated `Timestamp` |
-| `Timestamp`    | Media position expressed as a `Rational` fraction of seconds    |
+| Type              | Description                                                          |
+|-------------------|----------------------------------------------------------------------|
+| `PixelFormat`     | Enumeration of pixel formats (`Yuv420p`, `Rgba`, `Yuv420p10le`, `Yuv422p10le`, `Gbrpf32le`, …) |
+| `SampleFormat`    | Audio sample formats (`Fltp`, `S16`, …)                              |
+| `ChannelLayout`   | `Mono`, `Stereo`, `Surround51`, and others                           |
+| `ColorSpace`      | `Bt601`, `Bt709`, `Bt2020`, and others                               |
+| `ColorRange`      | `Limited` (studio swing) or `Full` (PC swing)                        |
+| `ColorPrimaries`  | `Bt709`, `Bt2020`, `DciP3`, and others                               |
+| `ColorTransfer`   | OETF tag: `Bt709`, `Pq` (HDR10 / SMPTE ST 2084), `Hlg` (BT.2100), … |
+| `Hdr10Metadata`   | `MaxCLL` + `MaxFALL` + `MasteringDisplay` for HDR10 static metadata  |
+| `MasteringDisplay`| SMPTE ST 2086 mastering display colour volume (chromaticity + luminance) |
+| `VideoCodec`      | `H264`, `H265`, `Vp9`, `Av1`, `Av1Svt`, `ProRes`, `DnxHd`, and others |
+| `AudioCodec`      | `Aac`, `Opus`, `Mp3`, `Flac`, `Vorbis`, and others                  |
+| `VideoFrame`      | Decoded video frame with pixel data and associated `Timestamp`       |
+| `AudioFrame`      | Decoded audio frame with sample data and associated `Timestamp`      |
+| `Timestamp`       | Media position expressed as a `Rational` fraction of seconds         |
 
 These are the types `ff-decode` hands back when you decode a frame, and the types `ff-encode` expects when you push a frame.
+
+## Color Science Types
+
+HDR and colour-space metadata is represented as pure-Rust enums — no FFmpeg dependency required:
+
+```rust
+use ff_format::{ColorTransfer, ColorSpace, ColorPrimaries, ColorRange};
+
+// Tag a stream as HLG broadcast HDR.
+let transfer  = ColorTransfer::Hlg;
+let space     = ColorSpace::Bt2020;
+let primaries = ColorPrimaries::Bt2020;
+let range     = ColorRange::Limited;
+
+// Tag a stream as HDR10 (PQ transfer + BT.2020 primaries).
+let transfer  = ColorTransfer::Pq;
+```
+
+`Hdr10Metadata` and `MasteringDisplay` carry HDR10 static metadata that is
+embedded as side data on key-frame packets:
+
+```rust
+use ff_format::{Hdr10Metadata, MasteringDisplay};
+
+// BT.2020 D65 primaries, coordinates × 50000; luminance × 10000 nits.
+let meta = Hdr10Metadata {
+    max_cll: 1000,    // MaxCLL in nits
+    max_fall: 400,    // MaxFALL in nits
+    mastering_display: MasteringDisplay {
+        red_x: 17000, red_y: 8500,
+        green_x: 13250, green_y: 34500,
+        blue_x: 7500, blue_y: 3000,
+        white_x: 15635, white_y: 16450,
+        min_luminance: 50,           // 0.005 nit deep black
+        max_luminance: 10_000_000,   // 1000 nit peak
+    },
+};
+```
 
 ## Example
 
