@@ -461,6 +461,22 @@ impl VideoEncoderBuilder {
             }
         }
 
+        // Image-sequence paths contain '%' (e.g. "frames/frame%04d.png").
+        // Auto-select codec from the extension that follows the pattern.
+        let is_image_sequence = self.path.to_str().is_some_and(|s| s.contains('%'));
+        if is_image_sequence && !self.video_codec_explicit {
+            let ext = self
+                .path
+                .to_str()
+                .and_then(|s| s.rfind('.').map(|i| &s[i + 1..]))
+                .unwrap_or("");
+            if ext.eq_ignore_ascii_case("png") {
+                self.video_codec = VideoCodec::Png;
+            } else if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
+                self.video_codec = VideoCodec::Mjpeg;
+            }
+        }
+
         self
     }
 
@@ -490,16 +506,27 @@ impl VideoEncoderBuilder {
             }
         }
 
+        // Image-sequence paths (containing '%') do not support audio streams.
+        let is_image_sequence = self.path.to_str().is_some_and(|s| s.contains('%'));
+        if is_image_sequence && has_audio {
+            return Err(EncodeError::InvalidConfig {
+                reason: "Image sequence output does not support audio streams".to_string(),
+            });
+        }
+
+        // PNG supports odd dimensions; all other codecs require even width/height.
+        let requires_even_dims = !matches!(self.video_codec, VideoCodec::Png);
+
         if has_video {
             if let Some(width) = self.video_width
-                && (width == 0 || width % 2 != 0)
+                && (width == 0 || (requires_even_dims && width % 2 != 0))
             {
                 return Err(EncodeError::InvalidConfig {
                     reason: format!("Video width must be non-zero and even, got {width}"),
                 });
             }
             if let Some(height) = self.video_height
-                && (height == 0 || height % 2 != 0)
+                && (height == 0 || (requires_even_dims && height % 2 != 0))
             {
                 return Err(EncodeError::InvalidConfig {
                     reason: format!("Video height must be non-zero and even, got {height}"),
