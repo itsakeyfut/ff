@@ -131,6 +131,7 @@ pub struct AVFormatContext {
     pub iformat: *mut AVInputFormat,
     pub bit_rate: i64,
     pub pb: *mut AVIOContext,
+    pub priv_data: *mut c_void,
 }
 
 pub struct AVFrame {

@@ -207,6 +207,26 @@ jobs:
       - run: cargo clippy --workspace --no-default-features -- -D warnings
 
   # --------------------------------------------------------------------------
+  # docs.rs stubs: verify docsrs_stubs.rs compiles for all workspace crates.
+  # No FFmpeg installation required — DOCS_RS=1 causes ff-sys/build.rs to
+  # skip the real bindgen step and use the stub file instead.
+  # This job catches missing symbols in docsrs_stubs.rs before publishing.
+  # --------------------------------------------------------------------------
+  docsrs-stubs:
+    name: docs.rs stubs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build workspace with DOCS_RS=1 (no FFmpeg needed)
+        run: cargo build --workspace
+        env:
+          DOCS_RS: "1"
+
+  # --------------------------------------------------------------------------
   # Docs
   # --------------------------------------------------------------------------
   docs:
