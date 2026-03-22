@@ -215,6 +215,14 @@ required-features = ["decode", "encode"]
 name = "openexr_sequence"
 required-features = ["decode"]
 
+[[example]]
+name = "hwaccel_encode"
+required-features = ["decode", "encode"]
+
+[[example]]
+name = "gpl_encode"
+required-features = ["decode", "encode"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
