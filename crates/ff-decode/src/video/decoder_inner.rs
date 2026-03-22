@@ -83,6 +83,27 @@ impl AvFormatContextGuard {
         std::mem::forget(self);
         ptr
     }
+
+    /// Opens an image sequence using the `image2` demuxer.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure FFmpeg is initialized and path is valid.
+    unsafe fn new_image_sequence(path: &Path, framerate: u32) -> Result<Self, DecodeError> {
+        // SAFETY: Caller ensures FFmpeg is initialized and path is a valid image-sequence pattern
+        let format_ctx = unsafe {
+            ff_sys::avformat::open_input_image_sequence(path, framerate).map_err(|e| {
+                DecodeError::Ffmpeg {
+                    code: e,
+                    message: format!(
+                        "Failed to open image sequence: {}",
+                        ff_sys::av_error_string(e)
+                    ),
+                }
+            })?
+        };
+        Ok(Self(format_ctx))
+    }
 }
 
 impl Drop for AvFormatContextGuard {
@@ -512,14 +533,24 @@ impl VideoDecoderInner {
         output_scale: Option<OutputScale>,
         hardware_accel: HardwareAccel,
         thread_count: usize,
+        frame_rate: Option<u32>,
         frame_pool: Option<Arc<dyn FramePool>>,
     ) -> Result<(Self, VideoStreamInfo, ContainerInfo), DecodeError> {
         // Ensure FFmpeg is initialized (thread-safe and idempotent)
         ff_sys::ensure_initialized();
 
-        // Open the input file (with RAII guard)
+        // Open the input file (with RAII guard).
+        // Image-sequence patterns contain '%'; use the image2 demuxer in that case.
+        let is_image_sequence = path.to_str().is_some_and(|s| s.contains('%'));
         // SAFETY: Path is valid, AvFormatContextGuard ensures cleanup
-        let format_ctx_guard = unsafe { AvFormatContextGuard::new(path)? };
+        let format_ctx_guard = unsafe {
+            if is_image_sequence {
+                let fps = frame_rate.unwrap_or(25);
+                AvFormatContextGuard::new_image_sequence(path, fps)?
+            } else {
+                AvFormatContextGuard::new(path)?
+            }
+        };
         let format_ctx = format_ctx_guard.as_ptr();
 
         // Read stream information

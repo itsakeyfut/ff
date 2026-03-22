@@ -376,6 +376,12 @@ pub unsafe fn av_dict_set(
     0
 }
 
+pub unsafe fn av_dict_free(_m: *mut *mut AVDictionary) {}
+
+pub unsafe fn av_find_input_format(_short_name: *const c_char) -> *const AVInputFormat {
+    std::ptr::null()
+}
+
 pub unsafe fn avcodec_get_name(_id: AVCodecID) -> *const c_char {
     std::ptr::null()
 }
@@ -643,6 +649,13 @@ pub mod avformat {
     use super::{AVFormatContext, AVIOContext, AVPacket};
 
     pub unsafe fn open_input(_path: &Path) -> Result<*mut AVFormatContext, c_int> {
+        Err(-1)
+    }
+
+    pub unsafe fn open_input_image_sequence(
+        _path: &Path,
+        _framerate: u32,
+    ) -> Result<*mut AVFormatContext, c_int> {
         Err(-1)
     }
 

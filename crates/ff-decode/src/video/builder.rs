@@ -140,6 +140,8 @@ pub struct VideoDecoderBuilder {
     thread_count: usize,
     /// Optional frame pool for memory reuse
     frame_pool: Option<Arc<dyn FramePool>>,
+    /// Frame rate override for image sequences (default 25 fps when path contains `%`).
+    frame_rate: Option<u32>,
 }
 
 impl VideoDecoderBuilder {
@@ -154,6 +156,7 @@ impl VideoDecoderBuilder {
             hardware_accel: HardwareAccel::Auto,
             thread_count: 0,
             frame_pool: None,
+            frame_rate: None,
         }
     }
 
@@ -354,6 +357,26 @@ impl VideoDecoderBuilder {
         self
     }
 
+    /// Sets the frame rate for image sequence decoding.
+    ///
+    /// Only used when the path contains `%` (e.g. `"frames/frame%04d.png"`).
+    /// Defaults to 25 fps when not set.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    ///
+    /// let decoder = VideoDecoder::open("frames/frame%04d.png")?
+    ///     .frame_rate(30)
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn frame_rate(mut self, fps: u32) -> Self {
+        self.frame_rate = Some(fps);
+        self
+    }
+
     /// Sets a frame pool for memory reuse.
     ///
     /// Using a frame pool can significantly reduce allocation overhead
@@ -468,8 +491,9 @@ impl VideoDecoderBuilder {
             }
         }
 
-        // Verify the file exists
-        if !self.path.exists() {
+        // Image-sequence patterns contain '%' — the literal path does not exist.
+        let is_image_sequence = self.path.to_str().is_some_and(|s| s.contains('%'));
+        if !is_image_sequence && !self.path.exists() {
             return Err(DecodeError::FileNotFound {
                 path: self.path.clone(),
             });
@@ -490,6 +514,7 @@ impl VideoDecoderBuilder {
             self.output_scale,
             self.hardware_accel,
             self.thread_count,
+            self.frame_rate,
             self.frame_pool.clone(),
         )?;
 
