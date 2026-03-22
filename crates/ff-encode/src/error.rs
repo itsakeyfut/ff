@@ -90,6 +90,17 @@ pub enum EncodeError {
         reason: String,
     },
 
+    /// Codec is incompatible with the target container format
+    #[error("codec {codec} is not supported by container {container} — {hint}")]
+    UnsupportedContainerCodecCombination {
+        /// Container format name (e.g. `"webm"`)
+        container: String,
+        /// Codec name that was rejected (e.g. `"h264"`)
+        codec: String,
+        /// Human-readable guidance on compatible codecs
+        hint: String,
+    },
+
     /// Encoding cancelled by user
     #[error("Encoding cancelled by user")]
     Cancelled,

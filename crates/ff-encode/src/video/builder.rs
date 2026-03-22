@@ -50,6 +50,8 @@ pub struct VideoEncoderBuilder {
     pub(crate) chapters: Vec<ff_format::chapter::ChapterInfo>,
     pub(crate) subtitle_passthrough: Option<(String, usize)>,
     pub(crate) codec_options: Option<VideoCodecOptions>,
+    pub(crate) video_codec_explicit: bool,
+    pub(crate) audio_codec_explicit: bool,
     pub(crate) pixel_format: Option<ff_format::PixelFormat>,
     pub(crate) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
     pub(crate) color_space: Option<ff_format::ColorSpace>,
@@ -84,6 +86,8 @@ impl std::fmt::Debug for VideoEncoderBuilder {
             .field("chapters", &self.chapters)
             .field("subtitle_passthrough", &self.subtitle_passthrough)
             .field("codec_options", &self.codec_options)
+            .field("video_codec_explicit", &self.video_codec_explicit)
+            .field("audio_codec_explicit", &self.audio_codec_explicit)
             .field("pixel_format", &self.pixel_format)
             .field("hdr10_metadata", &self.hdr10_metadata)
             .field("color_space", &self.color_space)
@@ -116,6 +120,8 @@ impl VideoEncoderBuilder {
             chapters: Vec::new(),
             subtitle_passthrough: None,
             codec_options: None,
+            video_codec_explicit: false,
+            audio_codec_explicit: false,
             pixel_format: None,
             hdr10_metadata: None,
             color_space: None,
@@ -140,6 +146,7 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn video_codec(mut self, codec: VideoCodec) -> Self {
         self.video_codec = codec;
+        self.video_codec_explicit = true;
         self
     }
 
@@ -178,6 +185,7 @@ impl VideoEncoderBuilder {
     #[must_use]
     pub fn audio_codec(mut self, codec: AudioCodec) -> Self {
         self.audio_codec = codec;
+        self.audio_codec_explicit = true;
         self
     }
 
@@ -386,8 +394,36 @@ impl VideoEncoderBuilder {
     /// Returns [`EncodeError`] if configuration is invalid, the output path
     /// cannot be created, or no suitable encoder is found.
     pub fn build(self) -> Result<VideoEncoder, EncodeError> {
-        self.validate()?;
-        VideoEncoder::from_builder(self)
+        let this = self.apply_container_defaults();
+        this.validate()?;
+        VideoEncoder::from_builder(this)
+    }
+
+    /// Apply container-specific codec defaults before validation.
+    ///
+    /// For WebM paths/containers, default to VP9 + Opus when the caller has
+    /// not explicitly chosen a codec.
+    fn apply_container_defaults(mut self) -> Self {
+        let is_webm = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("webm"))
+            || self
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::WebM);
+
+        if is_webm {
+            if !self.video_codec_explicit {
+                self.video_codec = VideoCodec::Vp9;
+            }
+            if !self.audio_codec_explicit {
+                self.audio_codec = AudioCodec::Opus;
+            }
+        }
+
+        self
     }
 
     fn validate(&self) -> Result<(), EncodeError> {
@@ -503,6 +539,40 @@ impl VideoEncoderBuilder {
                 return Err(EncodeError::InvalidOption {
                     name: "variant".to_string(),
                     reason: "DNxHD variants require 1920×1080 or 1280×720 resolution".to_string(),
+                });
+            }
+        }
+
+        // WebM container codec enforcement.
+        let is_webm = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("webm"))
+            || self
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::WebM);
+
+        if is_webm {
+            let webm_video_ok = matches!(
+                self.video_codec,
+                VideoCodec::Vp9 | VideoCodec::Av1 | VideoCodec::Av1Svt
+            );
+            if !webm_video_ok {
+                return Err(EncodeError::UnsupportedContainerCodecCombination {
+                    container: "webm".to_string(),
+                    codec: self.video_codec.name().to_string(),
+                    hint: "WebM supports VP9, AV1 (video) and Vorbis, Opus (audio)".to_string(),
+                });
+            }
+
+            let webm_audio_ok = matches!(self.audio_codec, AudioCodec::Opus | AudioCodec::Vorbis);
+            if !webm_audio_ok {
+                return Err(EncodeError::UnsupportedContainerCodecCombination {
+                    container: "webm".to_string(),
+                    codec: self.audio_codec.name().to_string(),
+                    hint: "WebM supports VP9, AV1 (video) and Vorbis, Opus (audio)".to_string(),
                 });
             }
         }
@@ -1052,5 +1122,88 @@ mod tests {
     fn add_attachment_with_no_attachments_should_start_empty() {
         let builder = VideoEncoder::create("output.mkv").video(320, 240, 30.0);
         assert!(builder.attachments.is_empty());
+    }
+
+    #[test]
+    fn webm_extension_with_h264_video_codec_should_return_error() {
+        let result = VideoEncoder::create("output.webm")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::H264)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn webm_extension_with_h265_video_codec_should_return_error() {
+        let result = VideoEncoder::create("output.webm")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::H265)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn webm_extension_with_incompatible_audio_codec_should_return_error() {
+        let result = VideoEncoder::create("output.webm")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::Vp9)
+            .audio(48000, 2)
+            .audio_codec(AudioCodec::Aac)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn webm_extension_without_explicit_codec_should_default_to_vp9_opus() {
+        let builder = VideoEncoder::create("output.webm").video(640, 480, 30.0);
+        let normalized = builder.apply_container_defaults();
+        assert_eq!(normalized.video_codec, VideoCodec::Vp9);
+        assert_eq!(normalized.audio_codec, AudioCodec::Opus);
+    }
+
+    #[test]
+    fn webm_extension_with_explicit_vp9_should_preserve_codec() {
+        let builder = VideoEncoder::create("output.webm")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::Vp9);
+        assert!(builder.video_codec_explicit);
+        let normalized = builder.apply_container_defaults();
+        assert_eq!(normalized.video_codec, VideoCodec::Vp9);
+    }
+
+    #[test]
+    fn webm_container_enum_with_incompatible_codec_should_return_error() {
+        let result = VideoEncoder::create("output.mkv")
+            .video(640, 480, 30.0)
+            .container(Container::WebM)
+            .video_codec(VideoCodec::H264)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn non_webm_extension_should_not_enforce_webm_codecs() {
+        // H264 + AAC on .mp4 should not trigger WebM validation
+        let result = VideoEncoder::create("output.mp4")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::H264)
+            .build();
+        // Should not fail with UnsupportedContainerCodecCombination
+        assert!(!matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
     }
 }
