@@ -366,6 +366,10 @@ pub const AVHWDeviceType_AV_HWDEVICE_TYPE_QSV: AVHWDeviceType = 5;
 pub const AVHWDeviceType_AV_HWDEVICE_TYPE_VIDEOTOOLBOX: AVHWDeviceType = 7;
 pub const AVHWDeviceType_AV_HWDEVICE_TYPE_D3D11VA: AVHWDeviceType = 8;
 
+// AVPictureType constants
+pub const AVPictureType_AV_PICTURE_TYPE_NONE: AVPictureType = 0;
+pub const AVPictureType_AV_PICTURE_TYPE_I: AVPictureType = 1;
+
 // ── Raw FFmpeg functions (bindgen-generated counterparts) ─────────────────────
 //
 // These mirror what bindgen would emit from the real FFmpeg headers.
@@ -555,6 +559,10 @@ pub unsafe fn swr_init(_s: *mut SwrContext) -> c_int {
 pub unsafe fn av_channel_layout_default(_ch_layout: *mut AVChannelLayout, _nb_channels: c_int) {}
 
 pub unsafe fn av_channel_layout_uninit(_ch_layout: *mut AVChannelLayout) {}
+
+pub unsafe fn av_rescale_q(_a: i64, _bq: AVRational, _cq: AVRational) -> i64 {
+    0
+}
 
 pub unsafe fn av_mallocz(_size: usize) -> *mut c_void {
     std::ptr::null_mut()
