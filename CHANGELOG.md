@@ -11,6 +11,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-03-22
+
+### Added
+
+#### ff-encode — per-codec video options
+- `VideoCodecOptions` enum with codec-specific option structs applied via `av_opt_set` before `avcodec_open2` ([#190](https://github.com/itsakeyfut/avio/issues/190))
+- `H264Options`: profile (`H264Profile`), level, B-frames, GOP size, reference frames ([#191](https://github.com/itsakeyfut/avio/issues/191))
+- `H264Preset` and `H264Tune` enums; libx264 preset/tune applied via `av_opt_set` ([#192](https://github.com/itsakeyfut/avio/issues/192))
+- `H265Options`: profile (`H265Profile`, `H265Tier`), level ([#193](https://github.com/itsakeyfut/avio/issues/193))
+- `H265Options::preset` and `x265_params` passthrough ([#194](https://github.com/itsakeyfut/avio/issues/194))
+- `Av1Options`: `cpu_used`, tile layout, `Av1Usage` mode ([#195](https://github.com/itsakeyfut/avio/issues/195))
+- `VideoCodec::Av1Svt` and `SvtAv1Options`: SVT-AV1 encoder (`libsvtav1`) support with preset 0–13, tile layout, `svtav1_params` passthrough; requires `--enable-libsvtav1` ([#196](https://github.com/itsakeyfut/avio/issues/196))
+- `Vp9Options`: `cpu_used`, `cq_level` constrained-quality mode, tile layout, `row_mt` ([#197](https://github.com/itsakeyfut/avio/issues/197))
+
+#### ff-encode — per-codec audio options
+- `AudioCodecOptions` enum with codec-specific option structs ([#198](https://github.com/itsakeyfut/avio/issues/198))
+- `OpusOptions`: application mode (`OpusApplication`) and frame duration ([#199](https://github.com/itsakeyfut/avio/issues/199))
+- `AacOptions`: profile (`AacProfile`: LC / HE / HEv2) and optional VBR quality ([#200](https://github.com/itsakeyfut/avio/issues/200))
+- `Mp3Options` with `Mp3Quality` (VBR scale 0–9 or CBR bitrate) ([#201](https://github.com/itsakeyfut/avio/issues/201))
+- `FlacOptions`: compression level 0–12 with validation ([#202](https://github.com/itsakeyfut/avio/issues/202))
+
+#### ff-encode — professional video formats
+- ProRes encoding: `VideoCodec::ProRes`, `ProResOptions`, `ProResProfile` (Proxy / Lt / Standard / Hq / P4444 / P4444Xq); pixel format auto-selected per profile ([#203](https://github.com/itsakeyfut/avio/issues/203))
+- DNxHD/DNxHR encoding: `VideoCodec::DnxHd`, `DnxhdOptions`, `DnxhdVariant` covering all standard bitrate classes and DNxHR variants ([#204](https://github.com/itsakeyfut/avio/issues/204))
+
+#### ff-encode / ff-format — HDR and high-bit-depth
+- 10-bit pixel format encode and decode: `PixelFormat::Yuv420p10le`, `Yuv422p10le`, `Yuv444p10le`, `P010Le` ([#205](https://github.com/itsakeyfut/avio/issues/205))
+- HDR10 static metadata: `Hdr10Metadata`, `MasteringDisplay` embedded as `AV_PKT_DATA_MASTERING_DISPLAY_METADATA` and `AV_PKT_DATA_CONTENT_LIGHT_LEVEL` side data on key-frame packets ([#206](https://github.com/itsakeyfut/avio/issues/206))
+- HLG color transfer and color space tagging: `ColorTransfer::Hlg`, `ColorSpace::Bt2020`, `ColorPrimaries::Bt2020`; `.color_transfer()`, `.color_space()`, `.color_primaries()` setters on `VideoEncoderBuilder` ([#207](https://github.com/itsakeyfut/avio/issues/207))
+
+#### ff-encode — container variants
+- MKV binary attachment muxing: `VideoEncoderBuilder::add_attachment()` embeds arbitrary binary blobs (ICC profiles, fonts, thumbnails) as MKV file attachments ([#208](https://github.com/itsakeyfut/avio/issues/208))
+- WebM container codec enforcement: `Container::Webm` restricts video to VP8/VP9/AV1 and audio to Vorbis/Opus; auto-defaults applied when codec is unset ([#209](https://github.com/itsakeyfut/avio/issues/209))
+- AVI and MOV container enforcement: `Container::Avi` and `Container::Mov` with codec allow-lists; `AudioCodec::Pcm16` (`pcm_s16le`) and `AudioCodec::Pcm24` (`pcm_s24le`) added ([#210](https://github.com/itsakeyfut/avio/issues/210))
+- FLAC and OGG standalone audio containers: `Container::Flac` and `Container::Ogg` for `AudioEncoder` ([#211](https://github.com/itsakeyfut/avio/issues/211))
+
+#### ff-decode — image sequences and OpenEXR
+- Image sequence decode via `image2` demuxer: `%`-pattern paths (e.g. `frame%04d.png`) auto-select the demuxer; `VideoDecoderBuilder::frame_rate()` setter overrides the default 25 fps ([#212](https://github.com/itsakeyfut/avio/issues/212))
+- OpenEXR sequence decode: EXR files decode as `gbrpf32le` (32-bit float, G/B/R plane order); requires `--enable-decoder=exr` in the FFmpeg build; returns `DecodeError::DecoderUnavailable` when absent ([#214](https://github.com/itsakeyfut/avio/issues/214))
+
+#### ff-encode — image sequence encode
+- Image sequence encode via `image2` muxer: `%`-pattern output paths produce numbered still-image files (PNG, JPEG, BMP, TIFF) ([#213](https://github.com/itsakeyfut/avio/issues/213))
+
+#### ff-decode / ff-format — decoder ergonomics
+- `ContainerInfo` exposed on `VideoDecoder` and `AudioDecoder`: `container_info()` returns format name, bit rate, and `duration_opt`; `duration_opt()` shorthand ([#619](https://github.com/itsakeyfut/avio/issues/619))
+- `Timestamp::invalid()` and `Timestamp::is_valid()` for distinguishing missing/unknown timestamps ([#618](https://github.com/itsakeyfut/avio/issues/618))
+- `VideoDecoder` and `AudioDecoder` implement `Iterator<Item = Result<Frame, DecodeError>>` and `FusedIterator` ([#616](https://github.com/itsakeyfut/avio/issues/616))
+- `VideoDecoderBuilder::output_size(width, height)` / `output_width()` / `output_height()`: built-in scale + pixel-format conversion via `swscale` in one pass ([#629](https://github.com/itsakeyfut/avio/issues/629))
+- `AudioFrame` PCM conversion methods: `to_i16_interleaved()`, `to_f32_interleaved()`, `to_f64_interleaved()` ([#609](https://github.com/itsakeyfut/avio/issues/609))
+
+#### avio — feature flags
+- `gpl` feature flag forwarding (`ff-encode/gpl`): enables libx264 and libx265; disabled by default
+- `hwaccel` feature flag forwarding (`ff-encode/hwaccel`): enables hardware encoder detection (NVENC, QSV, AMF, VideoToolbox, VA-API); enabled by default
+
+#### Examples (v0.7.0)
+- `codec_options`: `VideoCodecOptions` with H264/H265/AV1/SVT-AV1/VP9 options
+- `audio_codec_options`: `AudioCodecOptions` with Opus/AAC/MP3/FLAC; `Container::Ogg` and `Container::Flac`
+- `professional_formats`: ProRes HQ and DNxHR SQ round-trip encode
+- `hdr10_encode`: HDR10 static metadata in MKV with `Hdr10Metadata` and `MasteringDisplay`
+- `image_sequence`: PNG sequence decode and encode via `%`-pattern paths
+- `openexr_sequence`: OpenEXR sequence decode with `gbrpf32le` plane access
+- `hwaccel_encode`: `HardwareEncoder::available()`, `is_available()`, `actual_video_codec()`, `is_lgpl_compliant()`
+- `gpl_encode`: GPL/LGPL encoder selection with and without the `gpl` feature; `VideoCodecEncodeExt::is_lgpl_compatible()`
+
+### Changed
+
+#### ff-format
+- `AudioFrame::data()` return type changed from `Option<&[u8]>` to `&[u8]`; returns an empty slice when no data is present ([#612](https://github.com/itsakeyfut/avio/issues/612))
+
+#### ff-decode
+- `DecodeError::EndOfStream` removed; end-of-stream is now signalled uniformly as `Ok(None)` from `decode_one()` ([#624](https://github.com/itsakeyfut/avio/issues/624))
+
+### Fixed
+
+#### ff-encode
+- `VideoCodecEncodeExt::is_lgpl_compatible()` now correctly returns `true` for `VideoCodec::Av1Svt` (libsvtav1 is BSD-3-Clause)
+
+#### ff-sys
+- `docsrs_stubs` module: added missing symbols (`avformat_find_input_format`, `av_dict_free`, `open_input_image_sequence`) that caused `docs.rs` build failures
+
+---
+
 ## [0.6.0] - 2026-03-18
 
 ### Added
