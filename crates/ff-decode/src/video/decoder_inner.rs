@@ -28,6 +28,8 @@ use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ff_format::NetworkOptions;
+
 use ff_format::PooledBuffer;
 use ff_format::codec::VideoCodec;
 use ff_format::color::{ColorPrimaries, ColorRange, ColorSpace};
@@ -101,6 +103,22 @@ impl AvFormatContextGuard {
                     ),
                 }
             })?
+        };
+        Ok(Self(format_ctx))
+    }
+
+    /// Opens a network URL with connect/read timeouts from `NetworkOptions`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `FFmpeg` is initialized and `url` is a valid URL string.
+    unsafe fn new_url(url: &str, network: &NetworkOptions) -> Result<Self, DecodeError> {
+        // SAFETY: Caller ensures FFmpeg is initialized; url is a valid network URL.
+        let format_ctx = unsafe {
+            ff_sys::avformat::open_input_url(url, network.connect_timeout, network.read_timeout)
+                .map_err(|e| {
+                    crate::network::map_network_error(e, crate::network::sanitize_url(url))
+                })?
         };
         Ok(Self(format_ctx))
     }
@@ -527,6 +545,7 @@ impl VideoDecoderInner {
     /// - No video stream is found
     /// - The codec is not supported
     /// - Decoder initialization fails
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         path: &Path,
         output_format: Option<PixelFormat>,
@@ -535,16 +554,28 @@ impl VideoDecoderInner {
         thread_count: usize,
         frame_rate: Option<u32>,
         frame_pool: Option<Arc<dyn FramePool>>,
+        network_opts: Option<NetworkOptions>,
     ) -> Result<(Self, VideoStreamInfo, ContainerInfo), DecodeError> {
         // Ensure FFmpeg is initialized (thread-safe and idempotent)
         ff_sys::ensure_initialized();
 
-        // Open the input file (with RAII guard).
-        // Image-sequence patterns contain '%'; use the image2 demuxer in that case.
-        let is_image_sequence = path.to_str().is_some_and(|s| s.contains('%'));
-        // SAFETY: Path is valid, AvFormatContextGuard ensures cleanup
+        let path_str = path.to_str().unwrap_or("");
+        let is_image_sequence = path_str.contains('%');
+        let is_network_url = crate::network::is_url(path_str);
+
+        // Open the input (with RAII guard for cleanup on error).
+        // SAFETY: Path/URL is valid; AvFormatContextGuard ensures cleanup.
         let format_ctx_guard = unsafe {
-            if is_image_sequence {
+            if is_network_url {
+                let network = network_opts.unwrap_or_default();
+                log::info!(
+                    "opening network source url={} connect_timeout_ms={} read_timeout_ms={}",
+                    crate::network::sanitize_url(path_str),
+                    network.connect_timeout.as_millis(),
+                    network.read_timeout.as_millis(),
+                );
+                AvFormatContextGuard::new_url(path_str, &network)?
+            } else if is_image_sequence {
                 let fps = frame_rate.unwrap_or(25);
                 AvFormatContextGuard::new_image_sequence(path, fps)?
             } else {

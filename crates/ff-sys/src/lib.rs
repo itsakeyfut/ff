@@ -132,6 +132,38 @@ pub mod error_codes {
 
     /// Invalid data
     pub const EINVAL: i32 = -22;
+
+    // ── Network errno values (AVERROR = -errno on POSIX) ─────────────────────
+    //
+    // These are used in ff-decode to map FFmpeg network errors to typed variants.
+    // macOS/BSD uses different errno numbering from Linux for several codes.
+
+    /// Connection timed out (`ETIMEDOUT`).
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
+    pub const ETIMEDOUT: i32 = -60;
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
+    pub const ETIMEDOUT: i32 = -110;
+
+    /// Connection refused (`ECONNREFUSED`).
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
+    pub const ECONNREFUSED: i32 = -61;
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
+    pub const ECONNREFUSED: i32 = -111;
+
+    /// No route to host (`EHOSTUNREACH`).
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
+    pub const EHOSTUNREACH: i32 = -65;
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
+    pub const EHOSTUNREACH: i32 = -113;
+
+    /// Network unreachable (`ENETUNREACH`).
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
+    pub const ENETUNREACH: i32 = -51;
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
+    pub const ENETUNREACH: i32 = -101;
+
+    /// I/O error (`EIO`). Same value on all POSIX platforms.
+    pub const EIO: i32 = -5;
 }
 
 /// Invalid PTS value (no presentation timestamp).

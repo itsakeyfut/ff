@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ff_format::{ContainerInfo, PixelFormat, VideoFrame, VideoStreamInfo};
+use ff_format::{ContainerInfo, NetworkOptions, PixelFormat, VideoFrame, VideoStreamInfo};
 
 use crate::HardwareAccel;
 use crate::error::DecodeError;
@@ -142,6 +142,8 @@ pub struct VideoDecoderBuilder {
     frame_pool: Option<Arc<dyn FramePool>>,
     /// Frame rate override for image sequences (default 25 fps when path contains `%`).
     frame_rate: Option<u32>,
+    /// Network options for URL-based sources (RTMP, RTSP, HTTP, etc.).
+    network_opts: Option<NetworkOptions>,
 }
 
 impl VideoDecoderBuilder {
@@ -157,6 +159,7 @@ impl VideoDecoderBuilder {
             thread_count: 0,
             frame_pool: None,
             frame_rate: None,
+            network_opts: None,
         }
     }
 
@@ -377,6 +380,29 @@ impl VideoDecoderBuilder {
         self
     }
 
+    /// Sets network options for URL-based sources.
+    ///
+    /// When set, the builder skips the file-existence check and passes connect
+    /// and read timeouts to `avformat_open_input` via an `AVDictionary`.
+    /// Call this before `.build()` when opening `rtmp://`, `rtsp://`, `http://`,
+    /// `https://`, `udp://`, `srt://`, or `rtp://` URLs.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    /// use ff_format::NetworkOptions;
+    ///
+    /// let decoder = VideoDecoder::open("rtmp://live.example.com/app/stream_key")
+    ///     .network(NetworkOptions::default())
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn network(mut self, opts: NetworkOptions) -> Self {
+        self.network_opts = Some(opts);
+        self
+    }
+
     /// Sets a frame pool for memory reuse.
     ///
     /// Using a frame pool can significantly reduce allocation overhead
@@ -492,8 +518,11 @@ impl VideoDecoderBuilder {
         }
 
         // Image-sequence patterns contain '%' — the literal path does not exist.
-        let is_image_sequence = self.path.to_str().is_some_and(|s| s.contains('%'));
-        if !is_image_sequence && !self.path.exists() {
+        // Network URLs must also skip the file-existence check.
+        let path_str = self.path.to_str().unwrap_or("");
+        let is_image_sequence = path_str.contains('%');
+        let is_network_url = crate::network::is_url(path_str);
+        if !is_image_sequence && !is_network_url && !self.path.exists() {
             return Err(DecodeError::FileNotFound {
                 path: self.path.clone(),
             });
@@ -516,6 +545,7 @@ impl VideoDecoderBuilder {
             self.thread_count,
             self.frame_rate,
             self.frame_pool.clone(),
+            self.network_opts,
         )?;
 
         Ok(VideoDecoder {

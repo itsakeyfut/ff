@@ -145,6 +145,59 @@ pub enum DecodeError {
     /// disk full, or network errors for remote files.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// The connection timed out before a response was received.
+    ///
+    /// Maps from `FFmpeg` error code `AVERROR(ETIMEDOUT)`.
+    /// `endpoint` is the sanitized URL (password replaced with `***`,
+    /// query string removed).
+    #[error("network timeout: endpoint={endpoint} — {message} (code={code})")]
+    NetworkTimeout {
+        /// Raw `FFmpeg` error code.
+        code: i32,
+        /// Sanitized endpoint URL (no credentials, no query string).
+        endpoint: String,
+        /// Human-readable error message from `av_strerror`.
+        message: String,
+    },
+
+    /// The connection was refused or the host could not be reached.
+    ///
+    /// Maps from `FFmpeg` error codes `AVERROR(ECONNREFUSED)`,
+    /// `AVERROR(EHOSTUNREACH)`, `AVERROR(ENETUNREACH)`, and DNS failures.
+    /// `endpoint` is the sanitized URL (password replaced with `***`,
+    /// query string removed).
+    #[error("connection failed: endpoint={endpoint} — {message} (code={code})")]
+    ConnectionFailed {
+        /// Raw `FFmpeg` error code.
+        code: i32,
+        /// Sanitized endpoint URL (no credentials, no query string).
+        endpoint: String,
+        /// Human-readable error message from `av_strerror`.
+        message: String,
+    },
+
+    /// The stream was interrupted after a connection was established.
+    ///
+    /// Maps from `AVERROR(EIO)` and `AVERROR_EOF` in a network context.
+    /// `endpoint` is the sanitized URL (password replaced with `***`,
+    /// query string removed).
+    #[error("stream interrupted: endpoint={endpoint} — {message} (code={code})")]
+    StreamInterrupted {
+        /// Raw `FFmpeg` error code.
+        code: i32,
+        /// Sanitized endpoint URL (no credentials, no query string).
+        endpoint: String,
+        /// Human-readable error message from `av_strerror`.
+        message: String,
+    },
+
+    /// Seeking was requested on a live stream where seeking is not supported.
+    ///
+    /// Returned by `VideoDecoder::seek()` and `AudioDecoder::seek()` when
+    /// `is_live()` returns `true`.
+    #[error("seek is not supported on live streams")]
+    SeekNotSupported,
 }
 
 impl DecodeError {
