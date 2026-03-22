@@ -737,6 +737,7 @@ fn map_pixel_format(format: i32) -> PixelFormat {
         x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_NV12 as u32 => PixelFormat::Nv12,
         x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_NV21 as u32 => PixelFormat::Nv21,
         x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE as u32 => PixelFormat::Yuv420p10le,
+        x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE as u32 => PixelFormat::Yuv422p10le,
         x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE as u32 => PixelFormat::P010le,
         x if x == ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8 as u32 => PixelFormat::Gray8,
         _ => {
