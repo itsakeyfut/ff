@@ -682,6 +682,14 @@ pub mod avformat {
         Err(-1)
     }
 
+    pub unsafe fn open_input_url(
+        _url: &str,
+        _connect_timeout: std::time::Duration,
+        _read_timeout: std::time::Duration,
+    ) -> Result<*mut AVFormatContext, c_int> {
+        Err(-1)
+    }
+
     pub unsafe fn open_input_image_sequence(
         _path: &Path,
         _framerate: u32,
