@@ -59,6 +59,8 @@ pub enum VideoCodec {
     Mpeg2,
     /// MJPEG - Motion JPEG, used by some cameras
     Mjpeg,
+    /// PNG - lossless image codec, used for image sequence output
+    Png,
     /// Unknown or unsupported codec
     Unknown,
 }
@@ -87,6 +89,7 @@ impl VideoCodec {
             Self::Mpeg4 => "mpeg4",
             Self::Mpeg2 => "mpeg2video",
             Self::Mjpeg => "mjpeg",
+            Self::Png => "png",
             Self::Unknown => "unknown",
         }
     }
@@ -115,6 +118,7 @@ impl VideoCodec {
             Self::Mpeg4 => "MPEG-4 Part 2",
             Self::Mpeg2 => "MPEG-2",
             Self::Mjpeg => "Motion JPEG",
+            Self::Png => "PNG",
             Self::Unknown => "Unknown",
         }
     }

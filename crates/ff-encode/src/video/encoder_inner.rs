@@ -18,10 +18,10 @@ use ff_sys::{
     AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
     AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
     AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
-    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PRORES,
-    AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9,
-    AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
-    AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG,
+    AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8,
+    AVCodecID_AV_CODEC_ID_VP9, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
+    AVPacket, AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
     AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc, av_frame_free,
     av_interleaved_write_frame, av_mallocz, av_packet_alloc, av_packet_free,
@@ -881,11 +881,20 @@ impl VideoEncoderInner {
                 path: config.path.clone(),
             })?;
 
+            // For image-sequence outputs (path contains '%'), use the `image2`
+            // muxer explicitly. The `image2` muxer manages I/O internally
+            // (AVFMT_NOFILE), so we must not call avio_open on it.
+            let is_image_sequence = config.path.to_str().is_some_and(|s| s.contains('%'));
+
             let mut format_ctx: *mut AVFormatContext = ptr::null_mut();
             let ret = avformat_alloc_output_context2(
                 &mut format_ctx,
                 ptr::null_mut(),
-                ptr::null(),
+                if is_image_sequence {
+                    b"image2\0".as_ptr() as *const i8
+                } else {
+                    ptr::null()
+                },
                 c_path.as_ptr(),
             );
 
@@ -974,17 +983,21 @@ impl VideoEncoderInner {
 
             // For two-pass encoding the output file is opened in run_pass2() after
             // pass-1 statistics have been collected.  Single-pass opens it now.
+            // Image-sequence output (path contains '%') uses the `image2` muxer which
+            // manages I/O internally (AVFMT_NOFILE) — skip avio_open in that case.
             if !config.two_pass {
-                match ff_sys::avformat::open_output(
-                    &config.path,
-                    ff_sys::avformat::avio_flags::WRITE,
-                ) {
-                    Ok(pb) => (*format_ctx).pb = pb,
-                    Err(_) => {
-                        encoder.cleanup();
-                        return Err(EncodeError::CannotCreateFile {
-                            path: config.path.clone(),
-                        });
+                if !is_image_sequence {
+                    match ff_sys::avformat::open_output(
+                        &config.path,
+                        ff_sys::avformat::avio_flags::WRITE,
+                    ) {
+                        Ok(pb) => (*format_ctx).pb = pb,
+                        Err(_) => {
+                            encoder.cleanup();
+                            return Err(EncodeError::CannotCreateFile {
+                                path: config.path.clone(),
+                            });
+                        }
                     }
                 }
 
@@ -1259,6 +1272,7 @@ impl VideoEncoderInner {
             VideoCodec::Vp8 => vec!["libvpx"],
             VideoCodec::Mpeg2 => vec!["mpeg2video"],
             VideoCodec::Mjpeg => vec!["mjpeg"],
+            VideoCodec::Png => vec!["png"],
             _ => vec![],
         };
 
@@ -3157,6 +3171,7 @@ fn codec_to_id(codec: VideoCodec) -> AVCodecID {
         VideoCodec::Vp8 => AVCodecID_AV_CODEC_ID_VP8,
         VideoCodec::Mpeg2 => AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
         VideoCodec::Mjpeg => AVCodecID_AV_CODEC_ID_MJPEG,
+        VideoCodec::Png => AVCodecID_AV_CODEC_ID_PNG,
         _ => AVCodecID_AV_CODEC_ID_NONE,
     }
 }
