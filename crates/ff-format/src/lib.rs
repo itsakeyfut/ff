@@ -16,6 +16,7 @@
 //! - `media` - Media container info ([`MediaInfo`])
 //! - `color` - Color space definitions ([`ColorSpace`], [`ColorRange`], [`ColorPrimaries`])
 //! - `hdr` - HDR metadata types ([`Hdr10Metadata`], [`MasteringDisplay`])
+//! - `network` - Network configuration ([`NetworkOptions`])
 //! - `codec` - Codec definitions ([`VideoCodec`], [`AudioCodec`])
 //! - `channel` - Channel layout definitions ([`ChannelLayout`])
 //! - `chapter` - Chapter information ([`ChapterInfo`])
@@ -61,6 +62,7 @@ pub mod error;
 pub mod frame;
 pub mod hdr;
 pub mod media;
+pub mod network;
 pub mod pixel;
 pub mod sample;
 pub mod stream;
@@ -76,6 +78,7 @@ pub use ff_common::PooledBuffer;
 pub use frame::{AudioFrame, VideoFrame};
 pub use hdr::{Hdr10Metadata, MasteringDisplay};
 pub use media::{MediaInfo, MediaInfoBuilder};
+pub use network::NetworkOptions;
 pub use pixel::PixelFormat;
 pub use sample::SampleFormat;
 pub use stream::{
@@ -94,8 +97,8 @@ pub use time::{Rational, Timestamp};
 pub mod prelude {
     pub use crate::{
         AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo, ColorPrimaries,
-        ColorRange, ColorSpace, FormatError, FrameError, MediaInfo, PixelFormat, PooledBuffer,
-        Rational, SampleFormat, Timestamp, VideoCodec, VideoFrame, VideoStreamInfo,
+        ColorRange, ColorSpace, FormatError, FrameError, MediaInfo, NetworkOptions, PixelFormat,
+        PooledBuffer, Rational, SampleFormat, Timestamp, VideoCodec, VideoFrame, VideoStreamInfo,
     };
 }
 
@@ -123,6 +126,7 @@ mod tests {
         let _video_stream: VideoStreamInfo = VideoStreamInfo::default();
         let _audio_stream: AudioStreamInfo = AudioStreamInfo::default();
         let _media_info: MediaInfo = MediaInfo::default();
+        let _network_opts: NetworkOptions = NetworkOptions::default();
     }
 
     #[test]

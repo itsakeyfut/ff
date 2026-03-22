@@ -199,8 +199,9 @@
 pub use ff_format::{
     AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo, ChapterInfoBuilder,
     ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, ContainerInfo, Hdr10Metadata,
-    MasteringDisplay, MediaInfo, MediaInfoBuilder, PixelFormat, Rational, SampleFormat,
-    SubtitleCodec, SubtitleStreamInfo, Timestamp, VideoCodec, VideoFrame, VideoStreamInfo,
+    MasteringDisplay, MediaInfo, MediaInfoBuilder, NetworkOptions, PixelFormat, Rational,
+    SampleFormat, SubtitleCodec, SubtitleStreamInfo, Timestamp, VideoCodec, VideoFrame,
+    VideoStreamInfo,
 };
 
 // ── probe feature ─────────────────────────────────────────────────────────────
@@ -288,6 +289,7 @@ mod tests {
         let _: Rational = Rational::default();
         let _: Timestamp = Timestamp::default();
         let _: MediaInfo = MediaInfo::default();
+        let _: NetworkOptions = NetworkOptions::default();
     }
 
     // ── probe feature ─────────────────────────────────────────────────────────
