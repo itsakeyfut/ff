@@ -14,6 +14,7 @@ use std::ffi::CString;
 use std::os::raw::c_int;
 use std::path::Path;
 use std::ptr;
+use std::time::Duration;
 
 use crate::{
     AVFormatContext, AVIOContext, AVPacket, av_read_frame as ffi_av_read_frame,
@@ -153,6 +154,75 @@ pub unsafe fn open_input(path: &Path) -> Result<*mut AVFormatContext, c_int> {
         return Err(ret);
     }
 
+    Ok(ctx)
+}
+
+/// Open a network URL with connect/read timeout options.
+///
+/// Builds an `AVDictionary` with `timeout` (connect) and `rw_timeout` (read/write)
+/// keys set to the corresponding microsecond values, then calls
+/// `avformat_open_input`. Both keys are freed via `av_dict_free` regardless of
+/// whether the open succeeds.
+///
+/// The returned pointer must be freed using [`close_input()`].
+///
+/// # Errors
+///
+/// Returns a negative `FFmpeg` error code if the URL is invalid, the host is
+/// unreachable, the connection times out, or the format is not recognised.
+///
+/// # Safety
+///
+/// The caller must call `close_input()` on the returned context when done.
+pub unsafe fn open_input_url(
+    url: &str,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> Result<*mut AVFormatContext, c_int> {
+    ensure_initialized();
+
+    let c_url = CString::new(url).map_err(|_| crate::error_codes::EINVAL)?;
+
+    // Build AVDictionary with timeout options.
+    let mut opts: *mut crate::AVDictionary = ptr::null_mut();
+    // SAFETY: string literals and computed strings have no null bytes.
+    let timeout_key = CString::new("timeout").expect("no null in literal");
+    let rw_timeout_key = CString::new("rw_timeout").expect("no null in literal");
+    let timeout_val = CString::new(connect_timeout.as_micros().to_string())
+        .expect("decimal string has no null bytes");
+    let rw_timeout_val = CString::new(read_timeout.as_micros().to_string())
+        .expect("decimal string has no null bytes");
+
+    // SAFETY: av_dict_set does not retain the C strings after the call;
+    //         opts is initialised to null and is populated by av_dict_set.
+    unsafe {
+        crate::av_dict_set(
+            ptr::addr_of_mut!(opts),
+            timeout_key.as_ptr(),
+            timeout_val.as_ptr(),
+            0,
+        );
+        crate::av_dict_set(
+            ptr::addr_of_mut!(opts),
+            rw_timeout_key.as_ptr(),
+            rw_timeout_val.as_ptr(),
+            0,
+        );
+    }
+
+    let mut ctx: *mut AVFormatContext = ptr::null_mut();
+    // SAFETY: c_url is a valid C string; opts is valid or null.
+    let ret = unsafe { ffi_avformat_open_input(&mut ctx, c_url.as_ptr(), ptr::null(), &mut opts) };
+
+    // Free any options FFmpeg did not consume.
+    // SAFETY: opts is either null or allocated by av_dict_set above.
+    if !opts.is_null() {
+        unsafe { crate::av_dict_free(ptr::addr_of_mut!(opts)) };
+    }
+
+    if ret < 0 {
+        return Err(ret);
+    }
     Ok(ctx)
 }
 

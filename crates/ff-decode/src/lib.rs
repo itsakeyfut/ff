@@ -103,6 +103,7 @@
 pub mod audio;
 pub mod error;
 pub mod image;
+pub(crate) mod network;
 pub mod video;
 
 // Re-exports for convenience
