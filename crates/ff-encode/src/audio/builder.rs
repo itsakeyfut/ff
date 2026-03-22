@@ -35,6 +35,7 @@ pub struct AudioEncoderBuilder {
     pub(crate) audio_codec: AudioCodec,
     pub(crate) audio_bitrate: Option<u64>,
     pub(crate) codec_options: Option<AudioCodecOptions>,
+    pub(crate) audio_codec_explicit: bool,
 }
 
 impl AudioEncoderBuilder {
@@ -47,6 +48,7 @@ impl AudioEncoderBuilder {
             audio_codec: AudioCodec::default(),
             audio_bitrate: None,
             codec_options: None,
+            audio_codec_explicit: false,
         }
     }
 
@@ -62,6 +64,7 @@ impl AudioEncoderBuilder {
     #[must_use]
     pub fn audio_codec(mut self, codec: AudioCodec) -> Self {
         self.audio_codec = codec;
+        self.audio_codec_explicit = true;
         self
     }
 
@@ -87,6 +90,34 @@ impl AudioEncoderBuilder {
     pub fn codec_options(mut self, opts: AudioCodecOptions) -> Self {
         self.codec_options = Some(opts);
         self
+    }
+
+    fn apply_container_defaults(&mut self) {
+        let is_flac = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("flac"))
+            || self
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::Flac);
+        if is_flac && !self.audio_codec_explicit {
+            self.audio_codec = AudioCodec::Flac;
+        }
+
+        let is_ogg = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("ogg"))
+            || self
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::Ogg);
+        if is_ogg && !self.audio_codec_explicit {
+            self.audio_codec = AudioCodec::Vorbis;
+        }
     }
 
     /// Validate builder state and open the output file.
@@ -130,7 +161,45 @@ impl AudioEncoder {
         AudioEncoderBuilder::new(path.as_ref().to_path_buf())
     }
 
-    pub(crate) fn from_builder(builder: AudioEncoderBuilder) -> Result<Self, EncodeError> {
+    pub(crate) fn from_builder(mut builder: AudioEncoderBuilder) -> Result<Self, EncodeError> {
+        builder.apply_container_defaults();
+
+        // Enforce FLAC container codec allowlist.
+        let is_flac = builder
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("flac"))
+            || builder
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::Flac);
+        if is_flac && !matches!(builder.audio_codec, AudioCodec::Flac) {
+            return Err(EncodeError::UnsupportedContainerCodecCombination {
+                container: "flac".to_string(),
+                codec: builder.audio_codec.name().to_string(),
+                hint: "FLAC container only supports the FLAC codec".to_string(),
+            });
+        }
+
+        // Enforce OGG container codec allowlist.
+        let is_ogg = builder
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("ogg"))
+            || builder
+                .container
+                .as_ref()
+                .is_some_and(|c| *c == Container::Ogg);
+        if is_ogg && !matches!(builder.audio_codec, AudioCodec::Vorbis | AudioCodec::Opus) {
+            return Err(EncodeError::UnsupportedContainerCodecCombination {
+                container: "ogg".to_string(),
+                codec: builder.audio_codec.name().to_string(),
+                hint: "OGG container supports Vorbis and Opus".to_string(),
+            });
+        }
+
         // Validate per-codec options before constructing the inner encoder.
         if let Some(AudioCodecOptions::Opus(ref opts)) = builder.codec_options
             && let Some(dur) = opts.frame_duration_ms
@@ -265,5 +334,113 @@ mod tests {
     fn build_without_sample_rate_should_return_error() {
         let result = AudioEncoder::create("output.m4a").build();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn flac_extension_without_explicit_codec_should_default_to_flac() {
+        let builder = AudioEncoder::create("output.flac").audio(44100, 2);
+        let mut b = builder;
+        b.apply_container_defaults();
+        assert_eq!(b.audio_codec, AudioCodec::Flac);
+    }
+
+    #[test]
+    fn ogg_extension_without_explicit_codec_should_default_to_vorbis() {
+        let builder = AudioEncoder::create("output.ogg").audio(44100, 2);
+        let mut b = builder;
+        b.apply_container_defaults();
+        assert_eq!(b.audio_codec, AudioCodec::Vorbis);
+    }
+
+    #[test]
+    fn flac_extension_with_explicit_codec_should_not_override() {
+        let builder = AudioEncoder::create("output.flac")
+            .audio(44100, 2)
+            .audio_codec(AudioCodec::Flac);
+        let mut b = builder;
+        b.apply_container_defaults();
+        assert_eq!(b.audio_codec, AudioCodec::Flac);
+    }
+
+    #[test]
+    fn flac_container_enum_without_explicit_codec_should_default_to_flac() {
+        let builder = AudioEncoder::create("output.audio")
+            .audio(44100, 2)
+            .container(Container::Flac);
+        let mut b = builder;
+        b.apply_container_defaults();
+        assert_eq!(b.audio_codec, AudioCodec::Flac);
+    }
+
+    #[test]
+    fn ogg_container_enum_without_explicit_codec_should_default_to_vorbis() {
+        let builder = AudioEncoder::create("output.audio")
+            .audio(44100, 2)
+            .container(Container::Ogg);
+        let mut b = builder;
+        b.apply_container_defaults();
+        assert_eq!(b.audio_codec, AudioCodec::Vorbis);
+    }
+
+    #[test]
+    fn flac_extension_with_incompatible_codec_should_return_error() {
+        let result = AudioEncoder::create("output.flac")
+            .audio(44100, 2)
+            .audio_codec(AudioCodec::Mp3)
+            .build();
+        assert!(
+            matches!(
+                result,
+                Err(EncodeError::UnsupportedContainerCodecCombination {
+                    ref container,
+                    ..
+                }) if container == "flac"
+            ),
+            "expected UnsupportedContainerCodecCombination for flac"
+        );
+    }
+
+    #[test]
+    fn ogg_extension_with_incompatible_codec_should_return_error() {
+        let result = AudioEncoder::create("output.ogg")
+            .audio(44100, 2)
+            .audio_codec(AudioCodec::Mp3)
+            .build();
+        assert!(
+            matches!(
+                result,
+                Err(EncodeError::UnsupportedContainerCodecCombination {
+                    ref container,
+                    ..
+                }) if container == "ogg"
+            ),
+            "expected UnsupportedContainerCodecCombination for ogg"
+        );
+    }
+
+    #[test]
+    fn ogg_with_opus_should_pass_validation() {
+        // Opus is a valid OGG codec — validation should not reject it.
+        // (build() will fail due to missing sample-rate check, but not with
+        // UnsupportedContainerCodecCombination.)
+        let result = AudioEncoder::create("output.ogg")
+            .audio_codec(AudioCodec::Opus)
+            .build();
+        assert!(!matches!(
+            result,
+            Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn non_flac_ogg_extension_should_not_enforce_container_codecs() {
+        // A plain .mp3 path should not trigger FLAC/OGG enforcement.
+        let result = AudioEncoder::create("output.mp3")
+            .audio_codec(AudioCodec::Flac)
+            .build();
+        assert!(!matches!(
+            result,
+            Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
     }
 }

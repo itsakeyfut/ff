@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use ff_decode::AudioDecoder;
 use ff_encode::{
-    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioEncoder, EncodeError, FlacOptions,
-    Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
+    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioEncoder, Container, EncodeError,
+    FlacOptions, Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
 };
 use ff_format::{AudioFrame, SampleFormat};
 
@@ -616,4 +616,177 @@ fn flac_level_0_should_produce_larger_file_than_level_12() {
         size_0 >= size_12,
         "expected level 0 file ({size_0} bytes) to be >= level 12 file ({size_12} bytes)"
     );
+}
+
+// ── FLAC Container Tests ──────────────────────────────────────────────────────
+
+#[test]
+fn flac_auto_default_codec_should_not_return_container_codec_error() {
+    // No explicit audio_codec — builder should auto-select FLAC.
+    // Omit .audio() so build() fails with InvalidConfig (missing sample rate),
+    // not UnsupportedContainerCodecCombination.
+    let result = AudioEncoder::create("output.flac").build();
+    assert!(!matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn flac_with_incompatible_codec_should_return_error() {
+    let result = AudioEncoder::create("output.flac")
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Mp3)
+        .build();
+    assert!(
+        matches!(
+            result,
+            Err(EncodeError::UnsupportedContainerCodecCombination {
+                ref container, ..
+            }) if container == "flac"
+        ),
+        "expected UnsupportedContainerCodecCombination for flac container"
+    );
+}
+
+#[test]
+fn flac_container_enum_with_incompatible_codec_should_return_error() {
+    let result = AudioEncoder::create("output.audio")
+        .audio(44100, 2)
+        .container(Container::Flac)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+    assert!(
+        matches!(
+            result,
+            Err(EncodeError::UnsupportedContainerCodecCombination {
+                ref container, ..
+            }) if container == "flac"
+        ),
+        "expected UnsupportedContainerCodecCombination for flac container enum"
+    );
+}
+
+#[test]
+fn flac_flac_codec_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("flac_container_test.flac"));
+
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Flac)
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(4096, 2, 44100, SampleFormat::F32p).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+// ── OGG Container Tests ───────────────────────────────────────────────────────
+
+#[test]
+fn ogg_auto_default_codec_should_not_return_container_codec_error() {
+    // No explicit audio_codec — builder should auto-select Vorbis.
+    // Omit .audio() so build() fails with InvalidConfig (missing sample rate),
+    // not UnsupportedContainerCodecCombination.
+    let result = AudioEncoder::create("output.ogg").build();
+    assert!(!matches!(
+        result,
+        Err(EncodeError::UnsupportedContainerCodecCombination { .. })
+    ));
+}
+
+#[test]
+fn ogg_with_incompatible_codec_should_return_error() {
+    let result = AudioEncoder::create("output.ogg")
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Mp3)
+        .build();
+    assert!(
+        matches!(
+            result,
+            Err(EncodeError::UnsupportedContainerCodecCombination {
+                ref container, ..
+            }) if container == "ogg"
+        ),
+        "expected UnsupportedContainerCodecCombination for ogg container"
+    );
+}
+
+#[test]
+fn ogg_container_enum_with_incompatible_codec_should_return_error() {
+    let result = AudioEncoder::create("output.audio")
+        .audio(44100, 2)
+        .container(Container::Ogg)
+        .audio_codec(AudioCodec::Flac)
+        .build();
+    assert!(
+        matches!(
+            result,
+            Err(EncodeError::UnsupportedContainerCodecCombination {
+                ref container, ..
+            }) if container == "ogg"
+        ),
+        "expected UnsupportedContainerCodecCombination for ogg container enum"
+    );
+}
+
+#[test]
+fn ogg_vorbis_codec_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("ogg_vorbis_container_test.ogg"));
+
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(44100, 2)
+        .audio_codec(AudioCodec::Vorbis)
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(4096, 2, 44100, SampleFormat::F32p).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
+}
+
+#[test]
+fn ogg_opus_codec_should_produce_valid_output() {
+    let output = FileGuard::new(test_output_path("ogg_opus_container_test.ogg"));
+
+    let mut encoder = match AudioEncoder::create(output.path())
+        .audio(48000, 2)
+        .audio_codec(AudioCodec::Opus)
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..10 {
+        let frame = AudioFrame::empty(960, 2, 48000, SampleFormat::F32).unwrap();
+        encoder.push(&frame).expect("Failed to push audio frame");
+    }
+
+    encoder.finish().expect("Failed to finish encoding");
+    assert_valid_output_file(output.path());
 }
