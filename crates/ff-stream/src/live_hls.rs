@@ -31,6 +31,7 @@ use std::time::Duration;
 use ff_format::{AudioCodec, AudioFrame, VideoCodec, VideoFrame};
 
 use crate::error::StreamError;
+use crate::hls::HlsSegmentFormat;
 use crate::live_hls_inner::LiveHlsInner;
 use crate::output::StreamOutput;
 
@@ -61,6 +62,7 @@ pub struct LiveHlsOutput {
     fps: Option<f64>,
     sample_rate: Option<u32>,
     channels: Option<u32>,
+    segment_format: HlsSegmentFormat,
     inner: Option<LiveHlsInner>,
     finished: bool,
 }
@@ -92,6 +94,7 @@ impl LiveHlsOutput {
             fps: None,
             sample_rate: None,
             channels: None,
+            segment_format: HlsSegmentFormat::Ts,
             inner: None,
             finished: false,
         }
@@ -172,6 +175,16 @@ impl LiveHlsOutput {
         self
     }
 
+    /// Set the HLS segment container format (default: [`HlsSegmentFormat::Ts`]).
+    ///
+    /// Use [`HlsSegmentFormat::Fmp4`] to produce CMAF-compatible fMP4 segments
+    /// (`.m4s`) with an `init.mp4` initialization segment.
+    #[must_use]
+    pub fn segment_format(mut self, fmt: HlsSegmentFormat) -> Self {
+        self.segment_format = fmt;
+        self
+    }
+
     /// Open all `FFmpeg` contexts and write the HLS header.
     ///
     /// # Errors
@@ -230,6 +243,7 @@ impl LiveHlsOutput {
             fps_int,
             self.video_bitrate,
             audio_params,
+            self.segment_format,
         )?;
 
         self.inner = Some(inner);
@@ -319,5 +333,17 @@ mod tests {
     fn playlist_size_default_should_be_five() {
         let out = LiveHlsOutput::new("/tmp/x");
         assert_eq!(out.playlist_size, 5);
+    }
+
+    #[test]
+    fn segment_format_default_should_be_ts() {
+        let out = LiveHlsOutput::new("/tmp/x");
+        assert_eq!(out.segment_format, HlsSegmentFormat::Ts);
+    }
+
+    #[test]
+    fn segment_format_setter_should_store_fmp4() {
+        let out = LiveHlsOutput::new("/tmp/x").segment_format(HlsSegmentFormat::Fmp4);
+        assert_eq!(out.segment_format, HlsSegmentFormat::Fmp4);
     }
 }

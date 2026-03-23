@@ -10,6 +10,14 @@ pub enum Container {
     /// MP4 / `QuickTime`
     Mp4,
 
+    /// Fragmented MP4 — CMAF-compatible streaming container.
+    ///
+    /// Uses the same `mp4` `FFmpeg` muxer as [`Container::Mp4`] but with
+    /// `movflags=+frag_keyframe+empty_moov+default_base_moof` applied before
+    /// writing the header. Required for HTTP Live Streaming fMP4 segments
+    /// (CMAF) and MPEG-DASH.
+    FMp4,
+
     /// `WebM`
     WebM,
 
@@ -34,7 +42,7 @@ impl Container {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Mp4 => "mp4",
+            Self::Mp4 | Self::FMp4 => "mp4",
             Self::WebM => "webm",
             Self::Mkv => "matroska",
             Self::Avi => "avi",
@@ -48,7 +56,7 @@ impl Container {
     #[must_use]
     pub const fn default_extension(self) -> &'static str {
         match self {
-            Self::Mp4 => "mp4",
+            Self::Mp4 | Self::FMp4 => "mp4",
             Self::WebM => "webm",
             Self::Mkv => "mkv",
             Self::Avi => "avi",
@@ -56,6 +64,16 @@ impl Container {
             Self::Flac => "flac",
             Self::Ogg => "ogg",
         }
+    }
+
+    /// Returns `true` if this container is fragmented MP4.
+    ///
+    /// When `true`, the encoder applies
+    /// `movflags=+frag_keyframe+empty_moov+default_base_moof` before writing
+    /// the file header, enabling CMAF-compatible streaming output.
+    #[must_use]
+    pub const fn is_fragmented(self) -> bool {
+        matches!(self, Self::FMp4)
     }
 }
 
@@ -87,5 +105,22 @@ mod tests {
     #[test]
     fn ogg_as_str_should_return_ogg() {
         assert_eq!(Container::Ogg.as_str(), "ogg");
+    }
+
+    #[test]
+    fn fmp4_as_str_should_return_mp4() {
+        assert_eq!(Container::FMp4.as_str(), "mp4");
+    }
+
+    #[test]
+    fn fmp4_extension_should_return_mp4() {
+        assert_eq!(Container::FMp4.default_extension(), "mp4");
+    }
+
+    #[test]
+    fn fmp4_is_fragmented_should_return_true() {
+        assert!(Container::FMp4.is_fragmented());
+        assert!(!Container::Mp4.is_fragmented());
+        assert!(!Container::Mkv.is_fragmented());
     }
 }
