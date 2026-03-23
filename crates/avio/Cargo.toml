@@ -224,6 +224,30 @@ required-features = ["decode", "encode"]
 name = "gpl_encode"
 required-features = ["decode", "encode"]
 
+[[example]]
+name = "decode_from_url"
+required-features = ["decode"]
+
+[[example]]
+name = "live_hls_output"
+required-features = ["stream"]
+
+[[example]]
+name = "live_dash_output"
+required-features = ["stream"]
+
+[[example]]
+name = "rtmp_output"
+required-features = ["stream"]
+
+[[example]]
+name = "fanout_output"
+required-features = ["stream"]
+
+[[example]]
+name = "live_abr_ladder"
+required-features = ["stream"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
