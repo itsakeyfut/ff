@@ -39,6 +39,7 @@ pub struct AVAudioFifo(());
 pub struct AVInputFormat {
     pub name: *const c_char,
     pub long_name: *const c_char,
+    pub flags: c_int,
 }
 
 // ── Structs with field-level access ───────────────────────────────────────────

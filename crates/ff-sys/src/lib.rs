@@ -171,6 +171,13 @@ pub mod error_codes {
 /// This constant indicates that a frame or packet does not have a valid presentation timestamp.
 pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 
+/// `AVFMT_TS_DISCONT` — `AVInputFormat` flag indicating discontinuous timestamps.
+///
+/// Set for live/streaming formats such as HLS (live playlists), RTMP, RTSP,
+/// MPEG-TS (UDP/SRT), and similar sources. Used to detect live streams after
+/// `avformat_find_stream_info` has been called.
+pub const AVFMT_TS_DISCONT: i32 = 0x0200;
+
 /// `AV_BUFFERSRC_FLAG_KEEP_REF` normalized to `i32` for cross-platform use.
 ///
 /// bindgen generates `AV_BUFFERSRC_FLAG_KEEP_REF` as `u32` on Linux/macOS

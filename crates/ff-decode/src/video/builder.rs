@@ -387,6 +387,34 @@ impl VideoDecoderBuilder {
     /// Call this before `.build()` when opening `rtmp://`, `rtsp://`, `http://`,
     /// `https://`, `udp://`, `srt://`, or `rtp://` URLs.
     ///
+    /// # HLS / M3U8 Playlists
+    ///
+    /// HLS playlists (`.m3u8`) are detected automatically by `FFmpeg` — no extra
+    /// configuration is required beyond calling `.network()`. Pass the full
+    /// HTTP(S) URL of the master or media playlist:
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    /// use ff_format::NetworkOptions;
+    ///
+    /// let decoder = VideoDecoder::open("https://example.com/live/index.m3u8")
+    ///     .network(NetworkOptions::default())
+    ///     .build()?;
+    /// ```
+    ///
+    /// # Credentials
+    ///
+    /// HTTP basic-auth credentials must be embedded directly in the URL:
+    /// `https://user:password@cdn.example.com/live/index.m3u8`.
+    /// The password is redacted in log output.
+    ///
+    /// # DRM Limitation
+    ///
+    /// DRM-protected HLS streams (`FairPlay`, Widevine, AES-128 with external
+    /// key servers) are **not** supported. `FFmpeg` can parse the playlist and
+    /// fetch segments, but key delivery to a DRM license server is outside
+    /// the scope of this API.
+    ///
     /// # Examples
     ///
     /// ```ignore
@@ -983,7 +1011,21 @@ impl VideoDecoder {
     /// }
     /// ```
     pub fn seek(&mut self, position: Duration, mode: crate::SeekMode) -> Result<(), DecodeError> {
+        if self.inner.is_live() {
+            return Err(DecodeError::SeekNotSupported);
+        }
         self.inner.seek(position, mode)
+    }
+
+    /// Returns `true` if the source is a live or streaming input.
+    ///
+    /// Live sources (HLS live playlists, RTMP, RTSP, MPEG-TS) have the
+    /// `AVFMT_TS_DISCONT` flag set on their `AVInputFormat`. Seeking is not
+    /// supported on live sources — [`VideoDecoder::seek`] will return
+    /// [`DecodeError::SeekNotSupported`].
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.inner.is_live()
     }
 
     /// Flushes the decoder's internal buffers.
