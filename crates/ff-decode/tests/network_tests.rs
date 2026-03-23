@@ -82,6 +82,10 @@ fn open_url_connection_refused_should_return_connection_failed() {
         Err(DecodeError::ConnectionFailed { .. }) => {}
         // Windows UCRT: freed loopback port may time out rather than refuse.
         Err(DecodeError::NetworkTimeout { .. }) => {}
+        // FFmpeg built without HTTP protocol (e.g. minimal CI packages).
+        Err(DecodeError::Ffmpeg { ref message, .. }) if message.contains("Protocol not found") => {
+            println!("Skipping: HTTP protocol not available in linked FFmpeg");
+        }
         Err(e) => panic!("expected ConnectionFailed or NetworkTimeout, got: {e:?}"),
         Ok(_) => panic!("expected Err from unreachable port, got Ok"),
     }
