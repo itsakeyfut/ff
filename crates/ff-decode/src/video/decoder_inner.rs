@@ -309,6 +309,12 @@ pub(crate) struct VideoDecoderInner {
     active_hw_accel: HardwareAccel,
     /// Optional frame pool for memory reuse
     frame_pool: Option<Arc<dyn FramePool>>,
+    /// URL used to open this source — `None` for file-path and image-sequence sources.
+    url: Option<String>,
+    /// Network options used for the initial open (timeouts, reconnect config).
+    network_opts: NetworkOptions,
+    /// Number of successful reconnects so far (for logging).
+    reconnect_count: u32,
 }
 
 impl VideoDecoderInner {
@@ -565,6 +571,13 @@ impl VideoDecoderInner {
         let is_image_sequence = path_str.contains('%');
         let is_network_url = crate::network::is_url(path_str);
 
+        let url = if is_network_url {
+            Some(path_str.to_owned())
+        } else {
+            None
+        };
+        let stored_network_opts = network_opts.clone().unwrap_or_default();
+
         // Verify SRT availability before attempting to open (feature + runtime check).
         if is_network_url {
             crate::network::check_srt_url(path_str)?;
@@ -722,6 +735,9 @@ impl VideoDecoderInner {
                 hw_device_ctx,
                 active_hw_accel,
                 frame_pool,
+                url,
+                network_opts: stored_network_opts,
+                reconnect_count: 0,
             },
             stream_info,
             container_info,
@@ -1003,12 +1019,29 @@ impl VideoDecoderInner {
 
     /// Decodes the next video frame.
     ///
+    /// Transparently reconnects on `StreamInterrupted` when
+    /// `NetworkOptions::reconnect_on_error` is enabled.
+    ///
     /// # Returns
     ///
     /// - `Ok(Some(frame))` - Successfully decoded a frame
     /// - `Ok(None)` - End of stream reached
     /// - `Err(_)` - Decoding error occurred
     pub(crate) fn decode_one(&mut self) -> Result<Option<VideoFrame>, DecodeError> {
+        loop {
+            match self.decode_one_inner() {
+                Ok(frame) => return Ok(frame),
+                Err(DecodeError::StreamInterrupted { .. })
+                    if self.url.is_some() && self.network_opts.reconnect_on_error =>
+                {
+                    self.attempt_reconnect()?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn decode_one_inner(&mut self) -> Result<Option<VideoFrame>, DecodeError> {
         if self.eof {
             return Ok(None);
         }
@@ -1047,12 +1080,20 @@ impl VideoDecoderInner {
                         self.eof = true;
                         continue;
                     } else if read_ret < 0 {
-                        return Err(DecodeError::Ffmpeg {
-                            code: read_ret,
-                            message: format!(
-                                "Failed to read frame: {}",
-                                ff_sys::av_error_string(read_ret)
-                            ),
+                        return Err(if let Some(url) = &self.url {
+                            // Network source: map to typed variant so reconnect can detect it.
+                            crate::network::map_network_error(
+                                read_ret,
+                                crate::network::sanitize_url(url),
+                            )
+                        } else {
+                            DecodeError::Ffmpeg {
+                                code: read_ret,
+                                message: format!(
+                                    "Failed to read frame: {}",
+                                    ff_sys::av_error_string(read_ret)
+                                ),
+                            }
                         });
                     }
 
@@ -2028,6 +2069,99 @@ impl VideoDecoderInner {
 
             Ok(video_frame)
         }
+    }
+
+    // ── Reconnect helpers ─────────────────────────────────────────────────────
+
+    /// Attempts to reconnect to the stream URL using exponential backoff.
+    ///
+    /// Called from `decode_one()` when `StreamInterrupted` is received and
+    /// `NetworkOptions::reconnect_on_error` is `true`. After all attempts fail,
+    /// returns a `StreamInterrupted` error.
+    fn attempt_reconnect(&mut self) -> Result<(), DecodeError> {
+        let url = match self.url.as_deref() {
+            Some(u) => u.to_owned(),
+            None => return Ok(()), // file-path source: no reconnect
+        };
+        let max = self.network_opts.max_reconnect_attempts;
+
+        for attempt in 1..=max {
+            let backoff_ms = 100u64 * (1u64 << (attempt - 1).min(10));
+            log::warn!(
+                "reconnecting attempt={attempt} url={} backoff_ms={backoff_ms}",
+                crate::network::sanitize_url(&url)
+            );
+            std::thread::sleep(Duration::from_millis(backoff_ms));
+            match self.reopen(&url) {
+                Ok(()) => {
+                    self.reconnect_count += 1;
+                    log::info!(
+                        "reconnected attempt={attempt} url={} total_reconnects={}",
+                        crate::network::sanitize_url(&url),
+                        self.reconnect_count
+                    );
+                    return Ok(());
+                }
+                Err(e) => log::warn!("reconnect attempt={attempt} failed err={e}"),
+            }
+        }
+
+        Err(DecodeError::StreamInterrupted {
+            code: 0,
+            endpoint: crate::network::sanitize_url(&url),
+            message: format!("stream did not recover after {max} attempts"),
+        })
+    }
+
+    /// Closes the current `AVFormatContext`, re-opens the URL, re-reads stream info,
+    /// re-finds the video stream, and flushes the codec.
+    fn reopen(&mut self, url: &str) -> Result<(), DecodeError> {
+        // Close the current format context. `avformat_close_input` sets the pointer
+        // to null — this matches the null check in Drop so no double-free occurs.
+        // SAFETY: self.format_ctx is valid and owned exclusively by self.
+        unsafe {
+            ff_sys::avformat::close_input(std::ptr::addr_of_mut!(self.format_ctx));
+        }
+
+        // Re-open the URL with the stored network timeouts.
+        // SAFETY: url is a valid UTF-8 network URL string.
+        self.format_ctx = unsafe {
+            ff_sys::avformat::open_input_url(
+                url,
+                self.network_opts.connect_timeout,
+                self.network_opts.read_timeout,
+            )
+            .map_err(|e| crate::network::map_network_error(e, crate::network::sanitize_url(url)))?
+        };
+
+        // Re-read stream information.
+        // SAFETY: self.format_ctx is valid and freshly opened.
+        unsafe {
+            ff_sys::avformat::find_stream_info(self.format_ctx).map_err(|e| {
+                DecodeError::Ffmpeg {
+                    code: e,
+                    message: format!(
+                        "reconnect find_stream_info failed: {}",
+                        ff_sys::av_error_string(e)
+                    ),
+                }
+            })?;
+        }
+
+        // Re-find the video stream (index may differ in theory after reconnect).
+        // SAFETY: self.format_ctx is valid.
+        let (stream_index, _) = unsafe { Self::find_video_stream(self.format_ctx) }
+            .ok_or_else(|| DecodeError::NoVideoStream { path: url.into() })?;
+        self.stream_index = stream_index as i32;
+
+        // Flush codec buffers to discard stale decoded state from before the drop.
+        // SAFETY: self.codec_ctx is valid and has not been freed.
+        unsafe {
+            ff_sys::avcodec::flush_buffers(self.codec_ctx);
+        }
+
+        self.eof = false;
+        Ok(())
     }
 }
 
