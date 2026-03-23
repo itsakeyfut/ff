@@ -679,6 +679,10 @@ pub mod avformat {
 
     use super::{AVFormatContext, AVIOContext, AVPacket};
 
+    pub fn srt_available() -> bool {
+        false
+    }
+
     pub unsafe fn open_input(_path: &Path) -> Result<*mut AVFormatContext, c_int> {
         Err(-1)
     }

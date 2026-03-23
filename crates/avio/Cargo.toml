@@ -21,6 +21,7 @@ stream   = ["dep:ff-stream", "pipeline"]
 tokio    = ["decode", "encode", "ff-decode/tokio", "ff-encode/tokio"]
 gpl      = ["ff-encode/gpl"]
 hwaccel  = ["ff-encode/hwaccel"]
+srt      = ["ff-decode/srt"]
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

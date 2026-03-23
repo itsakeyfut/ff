@@ -33,6 +33,7 @@ winapi = { workspace = true, features = ["processthreadsapi", "psapi"] }
 default = ["hwaccel"]
 hwaccel = []  # Hardware acceleration
 tokio = ["dep:tokio", "dep:futures"]
+srt = []      # SRT (Secure Reliable Transport) protocol input
 
 [[bench]]
 name = "decode_bench"

@@ -248,6 +248,18 @@ pub unsafe fn open_input_url(
     Ok(ctx)
 }
 
+/// Returns `true` when the `libsrt` protocol is available in the linked FFmpeg build.
+///
+/// Calls `av_find_input_format("libsrt")` at runtime. When FFmpeg was built
+/// without libsrt support this returns `false`.
+pub fn srt_available() -> bool {
+    ensure_initialized();
+    // SAFETY: string literal has no interior null bytes.
+    let name = CString::new("libsrt").unwrap();
+    let fmt = unsafe { crate::av_find_input_format(name.as_ptr()) };
+    !fmt.is_null()
+}
+
 /// Open an image sequence using the `image2` demuxer.
 ///
 /// Sets `framerate` in the demuxer options so FFmpeg assigns the correct PTS
