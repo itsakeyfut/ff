@@ -82,6 +82,8 @@ pub(crate) mod live_dash_inner;
 pub mod live_hls;
 pub(crate) mod live_hls_inner;
 pub mod output;
+pub mod rtmp;
+pub(crate) mod rtmp_inner;
 
 pub use abr::{AbrLadder, Rendition};
 pub use dash::DashOutput;
@@ -90,3 +92,4 @@ pub use hls::HlsOutput;
 pub use live_dash::LiveDashOutput;
 pub use live_hls::LiveHlsOutput;
 pub use output::StreamOutput;
+pub use rtmp::RtmpOutput;

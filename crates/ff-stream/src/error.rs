@@ -42,6 +42,18 @@ pub enum StreamError {
         reason: String,
     },
 
+    /// The requested codec is not supported by the output format.
+    ///
+    /// For example, RTMP/FLV requires H.264 video and AAC audio; requesting
+    /// any other codec returns this error from `build()`.
+    #[error("unsupported codec: {codec} — {reason}")]
+    UnsupportedCodec {
+        /// Name of the codec that was rejected.
+        codec: String,
+        /// Human-readable explanation of the constraint.
+        reason: String,
+    },
+
     /// An `FFmpeg` runtime error occurred during muxing or transcoding.
     ///
     /// `code` is the raw `FFmpeg` negative error value returned by the failing
@@ -89,6 +101,17 @@ mod tests {
         let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
         let err: StreamError = io.into();
         assert!(err.to_string().contains("access denied"), "got: {err}");
+    }
+
+    #[test]
+    fn unsupported_codec_should_display_codec_and_reason() {
+        let err = StreamError::UnsupportedCodec {
+            codec: "Vp9".into(),
+            reason: "RTMP/FLV requires H.264 video".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Vp9"), "got: {msg}");
+        assert!(msg.contains("H.264"), "got: {msg}");
     }
 
     #[test]
