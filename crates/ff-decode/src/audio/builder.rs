@@ -189,10 +189,12 @@ impl AudioDecoderBuilder {
     ///
     /// # DRM Limitation
     ///
-    /// DRM-protected HLS streams (`FairPlay`, Widevine, AES-128 with external
-    /// key servers) are **not** supported. `FFmpeg` can parse the playlist and
-    /// fetch segments, but key delivery to a DRM license server is outside
-    /// the scope of this API.
+    /// DRM-protected streams are **not** supported:
+    /// - HLS: `FairPlay`, Widevine, AES-128 with external key servers
+    /// - DASH: CENC, `PlayReady`, Widevine
+    ///
+    /// `FFmpeg` can parse the manifest and fetch segments, but key delivery
+    /// to a DRM license server is outside the scope of this API.
     ///
     /// # Examples
     ///
