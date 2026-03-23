@@ -33,25 +33,8 @@ use ff_sys::{
     avformat_write_header,
 };
 
+use crate::codec_utils::{ffmpeg_err, ffmpeg_err_msg};
 use crate::error::StreamError;
-
-// ============================================================================
-// Helper: map an FFmpeg error code to StreamError::Ffmpeg
-// ============================================================================
-
-fn ffmpeg_err(code: i32) -> StreamError {
-    StreamError::Ffmpeg {
-        code,
-        message: ff_sys::av_error_string(code),
-    }
-}
-
-fn ffmpeg_err_msg(msg: &str) -> StreamError {
-    StreamError::Ffmpeg {
-        code: 0,
-        message: msg.to_owned(),
-    }
-}
 
 // ============================================================================
 // Public entry point (safe wrapper)
@@ -262,7 +245,7 @@ unsafe fn write_hls_unsafe(
     }
 
     // ── 8. Open H.264 video encoder ───────────────────────────────────────────
-    let vid_enc_codec = select_h264_encoder().ok_or_else(|| {
+    let vid_enc_codec = crate::codec_utils::select_h264_encoder("hls").ok_or_else(|| {
         cleanup_output_ctx(out_ctx);
         cleanup_decoders(vid_dec_ctx, aud_dec_ctx, &mut input_ctx);
         ffmpeg_err_msg("no H.264 encoder available (tried h264_nvenc, h264_qsv, h264_amf, h264_videotoolbox, libx264, mpeg4)")
@@ -321,7 +304,8 @@ unsafe fn write_hls_unsafe(
     let mut swr_ctx: *mut SwrContext = ptr::null_mut();
 
     if audio_stream_idx >= 0 {
-        match open_aac_encoder(aud_sample_rate, aud_nb_channels) {
+        match crate::codec_utils::open_aac_encoder(aud_sample_rate, aud_nb_channels, 192_000, "hls")
+        {
             Ok(ctx) => {
                 aud_enc_ctx = ctx;
                 let aud_out_stream = avformat_new_stream(out_ctx, ptr::null());
@@ -798,60 +782,6 @@ unsafe fn detect_fps(stream: *mut ff_sys::AVStream, fmt_ctx: *mut AVFormatContex
     }
 
     25.0 // sane default
-}
-
-// ============================================================================
-// Helper: select best available H.264 encoder
-// ============================================================================
-
-unsafe fn select_h264_encoder() -> Option<*const ff_sys::AVCodec> {
-    let candidates = [
-        "h264_nvenc",
-        "h264_qsv",
-        "h264_amf",
-        "h264_videotoolbox",
-        "libx264",
-        "mpeg4",
-    ];
-    for name in candidates {
-        if let Ok(c_name) = CString::new(name)
-            && let Some(codec) = ff_sys::avcodec::find_encoder_by_name(c_name.as_ptr())
-        {
-            log::info!("hls selected video encoder encoder={name}");
-            return Some(codec);
-        }
-    }
-    None
-}
-
-// ============================================================================
-// Helper: open AAC encoder
-// ============================================================================
-
-unsafe fn open_aac_encoder(
-    sample_rate: i32,
-    nb_channels: i32,
-) -> Result<*mut AVCodecContext, StreamError> {
-    let codec = ff_sys::avcodec::find_encoder_by_name(c"aac".as_ptr())
-        .or_else(|| ff_sys::avcodec::find_encoder_by_name(c"libfdk_aac".as_ptr()))
-        .ok_or_else(|| ffmpeg_err_msg("no AAC encoder available"))?;
-
-    let mut ctx = ff_sys::avcodec::alloc_context3(codec).map_err(ffmpeg_err)?;
-
-    (*ctx).sample_rate = sample_rate;
-    (*ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
-    (*ctx).bit_rate = 192_000;
-    (*ctx).time_base.num = 1;
-    (*ctx).time_base.den = sample_rate;
-    ff_sys::swresample::channel_layout::set_default(&mut (*ctx).ch_layout, nb_channels);
-
-    ff_sys::avcodec::open2(ctx, codec, ptr::null_mut()).map_err(|e| {
-        ff_sys::avcodec::free_context(&mut ctx as *mut *mut _);
-        ffmpeg_err(e)
-    })?;
-
-    log::info!("hls aac encoder opened sample_rate={sample_rate} channels={nb_channels}");
-    Ok(ctx)
 }
 
 // ============================================================================

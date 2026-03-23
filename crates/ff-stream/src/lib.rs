@@ -77,8 +77,13 @@ pub(crate) mod dash_inner;
 pub mod error;
 pub mod hls;
 pub(crate) mod hls_inner;
+pub mod live_hls;
+pub(crate) mod live_hls_inner;
+pub mod output;
 
 pub use abr::{AbrLadder, Rendition};
 pub use dash::DashOutput;
 pub use error::StreamError;
 pub use hls::HlsOutput;
+pub use live_hls::LiveHlsOutput;
+pub use output::StreamOutput;
