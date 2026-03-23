@@ -10,6 +10,9 @@ repository.workspace = true
 keywords = ["video", "ffmpeg", "hls", "dash", "streaming"]
 categories = ["multimedia::video", "multimedia::encoding"]
 
+[features]
+srt = []
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
 
