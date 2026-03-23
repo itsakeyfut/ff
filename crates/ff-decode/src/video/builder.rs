@@ -402,6 +402,28 @@ impl VideoDecoderBuilder {
     ///     .build()?;
     /// ```
     ///
+    /// # DASH / MPD Streams
+    ///
+    /// MPEG-DASH manifests (`.mpd`) are detected automatically by `FFmpeg`'s
+    /// built-in `dash` demuxer. The demuxer downloads the manifest, selects the
+    /// highest-quality representation, and fetches segments automatically:
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    /// use ff_format::NetworkOptions;
+    ///
+    /// let decoder = VideoDecoder::open("https://example.com/dash/manifest.mpd")
+    ///     .network(NetworkOptions::default())
+    ///     .build()?;
+    /// ```
+    ///
+    /// **Multi-period caveat**: multi-period DASH streams are supported by
+    /// `FFmpeg` but period boundaries may trigger an internal decoder reset,
+    /// which can cause a brief gap in decoded frames.
+    ///
+    /// **Adaptive bitrate**: representation selection (ABR switching) is handled
+    /// internally by `FFmpeg` and is not exposed through this API.
+    ///
     /// # Credentials
     ///
     /// HTTP basic-auth credentials must be embedded directly in the URL:
@@ -410,10 +432,12 @@ impl VideoDecoderBuilder {
     ///
     /// # DRM Limitation
     ///
-    /// DRM-protected HLS streams (`FairPlay`, Widevine, AES-128 with external
-    /// key servers) are **not** supported. `FFmpeg` can parse the playlist and
-    /// fetch segments, but key delivery to a DRM license server is outside
-    /// the scope of this API.
+    /// DRM-protected streams are **not** supported:
+    /// - HLS: `FairPlay`, Widevine, AES-128 with external key servers
+    /// - DASH: CENC, `PlayReady`, Widevine
+    ///
+    /// `FFmpeg` can parse the manifest and fetch segments, but key delivery
+    /// to a DRM license server is outside the scope of this API.
     ///
     /// # Examples
     ///
