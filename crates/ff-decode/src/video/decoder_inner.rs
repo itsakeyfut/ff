@@ -565,6 +565,11 @@ impl VideoDecoderInner {
         let is_image_sequence = path_str.contains('%');
         let is_network_url = crate::network::is_url(path_str);
 
+        // Verify SRT availability before attempting to open (feature + runtime check).
+        if is_network_url {
+            crate::network::check_srt_url(path_str)?;
+        }
+
         // Open the input (with RAII guard for cleanup on error).
         // SAFETY: Path/URL is valid; AvFormatContextGuard ensures cleanup.
         let format_ctx_guard = unsafe {

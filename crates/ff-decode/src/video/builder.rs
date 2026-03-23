@@ -444,6 +444,30 @@ impl VideoDecoderBuilder {
     ///     .build()?;
     /// ```
     ///
+    /// # SRT (Secure Reliable Transport)
+    ///
+    /// SRT URLs (`srt://host:port`) require the `srt` feature flag **and** a
+    /// libsrt-enabled `FFmpeg` build.  Enable the feature in `Cargo.toml`:
+    ///
+    /// ```toml
+    /// [dependencies]
+    /// ff-decode = { version = "*", features = ["srt"] }
+    /// ```
+    ///
+    /// Without the `srt` feature, opening an `srt://` URL returns
+    /// [`DecodeError::ConnectionFailed`]. If the feature is enabled but the
+    /// linked `FFmpeg` was not built with `--enable-libsrt`, the same error is
+    /// returned with a message directing you to rebuild `FFmpeg`.
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    /// use ff_format::NetworkOptions;
+    ///
+    /// let decoder = VideoDecoder::open("srt://ingest.example.com:4200")
+    ///     .network(NetworkOptions::default())
+    ///     .build()?;
+    /// ```
+    ///
     /// # Credentials
     ///
     /// HTTP basic-auth credentials must be embedded directly in the URL:

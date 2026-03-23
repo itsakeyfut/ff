@@ -309,6 +309,11 @@ impl AudioDecoderInner {
         let path_str = path.to_str().unwrap_or("");
         let is_network_url = crate::network::is_url(path_str);
 
+        // Verify SRT availability before attempting to open (feature + runtime check).
+        if is_network_url {
+            crate::network::check_srt_url(path_str)?;
+        }
+
         // Open the input source (with RAII guard)
         // SAFETY: Path is valid, AvFormatContextGuard ensures cleanup
         let format_ctx_guard = unsafe {

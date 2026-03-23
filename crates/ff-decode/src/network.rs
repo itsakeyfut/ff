@@ -75,6 +75,45 @@ pub(crate) fn sanitize_url(url: &str) -> String {
     }
 }
 
+/// Checks whether `url` can be opened as an SRT source.
+///
+/// Returns `Ok(())` immediately when `url` does not start with `srt://`.
+///
+/// For `srt://` URLs:
+/// - Without the `srt` feature flag: always returns [`DecodeError::ConnectionFailed`]
+///   with an instruction to recompile with `features = ["srt"]`.
+/// - With the `srt` feature flag: checks at runtime whether the linked `FFmpeg`
+///   was built with libsrt and returns [`DecodeError::ConnectionFailed`] if not.
+pub(crate) fn check_srt_url(url: &str) -> Result<(), DecodeError> {
+    if !url.starts_with("srt://") {
+        return Ok(());
+    }
+    check_srt_available(url)
+}
+
+#[cfg(not(feature = "srt"))]
+fn check_srt_available(url: &str) -> Result<(), DecodeError> {
+    Err(DecodeError::ConnectionFailed {
+        code: 0,
+        endpoint: sanitize_url(url),
+        message: "SRT protocol is not enabled; recompile with feature = \"srt\"".to_string(),
+    })
+}
+
+#[cfg(feature = "srt")]
+fn check_srt_available(url: &str) -> Result<(), DecodeError> {
+    if !ff_sys::avformat::srt_available() {
+        return Err(DecodeError::ConnectionFailed {
+            code: 0,
+            endpoint: sanitize_url(url),
+            message: "SRT protocol is not available in the linked FFmpeg build; \
+                      recompile FFmpeg with --enable-libsrt"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Maps an `FFmpeg` network error code to the most specific [`DecodeError`] variant.
 ///
 /// The `endpoint` string must already be sanitized (no password, no query string).
