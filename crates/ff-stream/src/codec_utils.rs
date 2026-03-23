@@ -1,8 +1,10 @@
-//! Shared low-level packet-writing utilities for HLS and DASH muxers.
+//! Shared low-level packet-writing and encoder utilities for HLS and DASH muxers.
 //!
-//! This module provides [`drain_encoder`], which drains encoded packets from a
-//! codec context, rescales their timestamps to the output stream's time base,
-//! and writes them to the mux context via `av_interleaved_write_frame`.
+//! This module provides:
+//! - [`drain_encoder`]: drains encoded packets from a codec context and writes them to a mux context
+//! - [`select_h264_encoder`]: picks the best available H.264 encoder
+//! - [`open_aac_encoder`]: opens an AAC encoder context
+//! - [`ffmpeg_err`]: maps an `FFmpeg` error code to [`StreamError::Ffmpeg`]
 
 // This module is intentionally unsafe — it drives the FFmpeg C API directly.
 #![allow(unsafe_code)]
@@ -15,9 +17,101 @@
 #![allow(clippy::ref_as_ptr)]
 
 use ff_sys::{
-    AVCodecContext, AVFormatContext, AVRational, av_interleaved_write_frame, av_packet_alloc,
-    av_packet_free, av_packet_rescale_ts, av_packet_unref, av_rescale_q,
+    AVCodec, AVCodecContext, AVFormatContext, AVRational, av_interleaved_write_frame,
+    av_packet_alloc, av_packet_free, av_packet_rescale_ts, av_packet_unref, av_rescale_q,
 };
+
+use crate::error::StreamError;
+
+// ============================================================================
+// Error helpers
+// ============================================================================
+
+/// Map an `FFmpeg` negative return code to [`StreamError::Ffmpeg`].
+pub(crate) fn ffmpeg_err(code: i32) -> StreamError {
+    StreamError::Ffmpeg {
+        code,
+        message: ff_sys::av_error_string(code),
+    }
+}
+
+/// Build a [`StreamError::Ffmpeg`] from a plain message (no numeric code).
+pub(crate) fn ffmpeg_err_msg(msg: &str) -> StreamError {
+    StreamError::Ffmpeg {
+        code: 0,
+        message: msg.to_owned(),
+    }
+}
+
+// ============================================================================
+// Encoder selection helpers
+// ============================================================================
+
+/// Return the best available H.264 encoder.
+///
+/// Tries hardware encoders first (`h264_nvenc`, `h264_qsv`, `h264_amf`,
+/// `h264_videotoolbox`), then software (`libx264`, `mpeg4`).
+///
+/// # Safety
+///
+/// Must be called after `ff_sys::ensure_initialized()`.
+pub(crate) unsafe fn select_h264_encoder(log_prefix: &str) -> Option<*const AVCodec> {
+    let candidates = [
+        "h264_nvenc",
+        "h264_qsv",
+        "h264_amf",
+        "h264_videotoolbox",
+        "libx264",
+        "mpeg4",
+    ];
+    for name in candidates {
+        if let Ok(c_name) = std::ffi::CString::new(name)
+            && let Some(codec) = ff_sys::avcodec::find_encoder_by_name(c_name.as_ptr())
+        {
+            log::info!("{log_prefix} selected video encoder encoder={name}");
+            return Some(codec);
+        }
+    }
+    None
+}
+
+/// Open an AAC audio encoder configured for `sample_rate` Hz and `nb_channels` channels.
+///
+/// Tries `aac` first, then `libfdk_aac`.
+///
+/// # Safety
+///
+/// Must be called after `ff_sys::ensure_initialized()`.
+pub(crate) unsafe fn open_aac_encoder(
+    sample_rate: i32,
+    nb_channels: i32,
+    bit_rate: i64,
+    log_prefix: &str,
+) -> Result<*mut AVCodecContext, StreamError> {
+    let codec = ff_sys::avcodec::find_encoder_by_name(c"aac".as_ptr())
+        .or_else(|| ff_sys::avcodec::find_encoder_by_name(c"libfdk_aac".as_ptr()))
+        .ok_or_else(|| ffmpeg_err_msg("no AAC encoder available (tried aac, libfdk_aac)"))?;
+
+    let mut ctx = ff_sys::avcodec::alloc_context3(codec).map_err(ffmpeg_err)?;
+
+    (*ctx).sample_rate = sample_rate;
+    (*ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
+    (*ctx).bit_rate = bit_rate;
+    (*ctx).time_base.num = 1;
+    (*ctx).time_base.den = sample_rate;
+    ff_sys::swresample::channel_layout::set_default(&mut (*ctx).ch_layout, nb_channels);
+
+    ff_sys::avcodec::open2(ctx, codec, std::ptr::null_mut()).map_err(|e| {
+        ff_sys::avcodec::free_context(&mut ctx as *mut *mut _);
+        ffmpeg_err(e)
+    })?;
+
+    log::info!(
+        "{log_prefix} aac encoder opened \
+         sample_rate={sample_rate} channels={nb_channels} bit_rate={bit_rate}"
+    );
+    Ok(ctx)
+}
 
 /// Drain all available encoded packets from `enc_ctx` into `out_ctx`.
 ///
