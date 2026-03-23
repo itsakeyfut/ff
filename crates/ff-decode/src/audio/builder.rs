@@ -181,6 +181,17 @@ impl AudioDecoderBuilder {
     ///     .build()?;
     /// ```
     ///
+    /// # UDP / MPEG-TS
+    ///
+    /// `udp://` URLs are always live — `is_live()` returns `true` and seeking
+    /// is not supported. Two extra `AVDictionary` options are set automatically
+    /// to reduce packet loss on high-bitrate streams:
+    ///
+    /// | Option | Value | Reason |
+    /// |---|---|---|
+    /// | `buffer_size` | `65536` | Enlarges the UDP receive buffer |
+    /// | `overrun_nonfatal` | `1` | Discards excess data instead of erroring |
+    ///
     /// # Credentials
     ///
     /// HTTP basic-auth credentials must be embedded directly in the URL:

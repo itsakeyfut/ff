@@ -208,6 +208,28 @@ pub unsafe fn open_input_url(
             rw_timeout_val.as_ptr(),
             0,
         );
+
+        // UDP-specific options: enlarge the receive buffer and suppress
+        // overrun errors so that high-bitrate MPEG-TS streams do not drop
+        // entire frames due to transient kernel-buffer exhaustion.
+        if url.starts_with("udp://") {
+            let buf_key = CString::new("buffer_size").expect("no null in literal");
+            let buf_val = CString::new("65536").expect("no null in literal");
+            let overrun_key = CString::new("overrun_nonfatal").expect("no null in literal");
+            let overrun_val = CString::new("1").expect("no null in literal");
+            crate::av_dict_set(
+                ptr::addr_of_mut!(opts),
+                buf_key.as_ptr(),
+                buf_val.as_ptr(),
+                0,
+            );
+            crate::av_dict_set(
+                ptr::addr_of_mut!(opts),
+                overrun_key.as_ptr(),
+                overrun_val.as_ptr(),
+                0,
+            );
+        }
     }
 
     let mut ctx: *mut AVFormatContext = ptr::null_mut();
