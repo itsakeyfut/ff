@@ -31,7 +31,7 @@ use ff_format::channel::ChannelLayout;
 use ff_format::codec::AudioCodec;
 use ff_format::container::ContainerInfo;
 use ff_format::time::{Rational, Timestamp};
-use ff_format::{AudioFrame, AudioStreamInfo, SampleFormat};
+use ff_format::{AudioFrame, AudioStreamInfo, NetworkOptions, SampleFormat};
 use ff_sys::{
     AVCodecContext, AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_AUDIO, AVPacket,
     AVSampleFormat, SwrContext,
@@ -55,6 +55,22 @@ impl AvFormatContextGuard {
                 code: e,
                 message: format!("Failed to open file: {}", ff_sys::av_error_string(e)),
             })?
+        };
+        Ok(Self(format_ctx))
+    }
+
+    /// Opens a network URL using the supplied network options.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure FFmpeg is initialized and URL is valid.
+    unsafe fn new_url(url: &str, network: &NetworkOptions) -> Result<Self, DecodeError> {
+        // SAFETY: Caller ensures FFmpeg is initialized and URL is valid
+        let format_ctx = unsafe {
+            ff_sys::avformat::open_input_url(url, network.connect_timeout, network.read_timeout)
+                .map_err(|e| {
+                    crate::network::map_network_error(e, crate::network::sanitize_url(url))
+                })?
         };
         Ok(Self(format_ctx))
     }
@@ -277,18 +293,36 @@ impl AudioDecoderInner {
     /// - No audio stream is found
     /// - The codec is not supported
     /// - Decoder initialization fails
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         path: &Path,
         output_format: Option<SampleFormat>,
         output_sample_rate: Option<u32>,
         output_channels: Option<u32>,
+        network_opts: Option<NetworkOptions>,
     ) -> Result<(Self, AudioStreamInfo, ContainerInfo), DecodeError> {
         // Ensure FFmpeg is initialized (thread-safe and idempotent)
         ff_sys::ensure_initialized();
 
-        // Open the input file (with RAII guard)
+        let path_str = path.to_str().unwrap_or("");
+        let is_network_url = crate::network::is_url(path_str);
+
+        // Open the input source (with RAII guard)
         // SAFETY: Path is valid, AvFormatContextGuard ensures cleanup
-        let format_ctx_guard = unsafe { AvFormatContextGuard::new(path)? };
+        let format_ctx_guard = unsafe {
+            if is_network_url {
+                let network = network_opts.unwrap_or_default();
+                log::info!(
+                    "opening network audio source url={} connect_timeout_ms={} read_timeout_ms={}",
+                    crate::network::sanitize_url(path_str),
+                    network.connect_timeout.as_millis(),
+                    network.read_timeout.as_millis()
+                );
+                AvFormatContextGuard::new_url(path_str, &network)?
+            } else {
+                AvFormatContextGuard::new(path)?
+            }
+        };
         let format_ctx = format_ctx_guard.as_ptr();
 
         // Read stream information

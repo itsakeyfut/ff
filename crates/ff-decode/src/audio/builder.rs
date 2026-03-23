@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_format::{AudioFrame, AudioStreamInfo, ContainerInfo, SampleFormat};
+use ff_format::{AudioFrame, AudioStreamInfo, ContainerInfo, NetworkOptions, SampleFormat};
 
 use crate::audio::decoder_inner::AudioDecoderInner;
 use crate::error::DecodeError;
@@ -61,6 +61,8 @@ pub struct AudioDecoderBuilder {
     output_sample_rate: Option<u32>,
     /// Output channel count (None = use source channel count)
     output_channels: Option<u32>,
+    /// Network options for URL-based sources (None = use defaults)
+    network_opts: Option<NetworkOptions>,
 }
 
 impl AudioDecoderBuilder {
@@ -73,6 +75,7 @@ impl AudioDecoderBuilder {
             output_format: None,
             output_sample_rate: None,
             output_channels: None,
+            network_opts: None,
         }
     }
 
@@ -157,6 +160,31 @@ impl AudioDecoderBuilder {
         self
     }
 
+    /// Sets network options for URL-based audio sources (HTTP, RTSP, RTMP, etc.).
+    ///
+    /// This option is only relevant when the path is a network URL. For local
+    /// files it is silently ignored.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    /// use ff_format::NetworkOptions;
+    /// use std::time::Duration;
+    ///
+    /// let decoder = AudioDecoder::open("http://stream.example.com/audio.aac")?
+    ///     .network(NetworkOptions {
+    ///         connect_timeout: Duration::from_secs(5),
+    ///         ..Default::default()
+    ///     })
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn network(mut self, opts: NetworkOptions) -> Self {
+        self.network_opts = Some(opts);
+        self
+    }
+
     /// Returns the configured file path.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -209,8 +237,9 @@ impl AudioDecoderBuilder {
     /// }
     /// ```
     pub fn build(self) -> Result<AudioDecoder, DecodeError> {
-        // Verify the file exists
-        if !self.path.exists() {
+        // Network URLs skip the file-existence check (literal path does not exist).
+        let is_network_url = self.path.to_str().is_some_and(crate::network::is_url);
+        if !is_network_url && !self.path.exists() {
             return Err(DecodeError::FileNotFound {
                 path: self.path.clone(),
             });
@@ -229,6 +258,7 @@ impl AudioDecoderBuilder {
             self.output_format,
             self.output_sample_rate,
             self.output_channels,
+            self.network_opts,
         )?;
 
         Ok(AudioDecoder {
@@ -721,5 +751,25 @@ mod tests {
         assert!(config.output_format.is_none());
         assert!(config.output_sample_rate.is_none());
         assert!(config.output_channels.is_none());
+    }
+
+    #[test]
+    fn network_setter_should_store_options() {
+        let opts = NetworkOptions::default();
+        let builder = AudioDecoderBuilder::new(PathBuf::from("test.mp3")).network(opts.clone());
+        assert_eq!(builder.network_opts, Some(opts));
+    }
+
+    #[test]
+    fn build_should_bypass_file_existence_check_for_network_url() {
+        // A network URL that clearly does not exist locally should not return
+        // FileNotFound — it will return a different error (or succeed) from
+        // FFmpeg's network layer. The important thing is that FileNotFound is
+        // NOT returned.
+        let result = AudioDecoder::open("http://192.0.2.1/nonexistent.aac").build();
+        assert!(
+            !matches!(result, Err(DecodeError::FileNotFound { .. })),
+            "FileNotFound must not be returned for network URLs"
+        );
     }
 }
