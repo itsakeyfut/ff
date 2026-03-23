@@ -21,7 +21,7 @@ stream   = ["dep:ff-stream", "pipeline"]
 tokio    = ["decode", "encode", "ff-decode/tokio", "ff-encode/tokio"]
 gpl      = ["ff-encode/gpl"]
 hwaccel  = ["ff-encode/hwaccel"]
-srt      = ["ff-decode/srt"]
+srt      = ["ff-decode/srt", "ff-stream/srt"]
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
@@ -247,6 +247,10 @@ required-features = ["stream"]
 [[example]]
 name = "live_abr_ladder"
 required-features = ["stream"]
+
+[[example]]
+name = "srt_output"
+required-features = ["stream", "srt"]
 
 [dev-dependencies]
 futures = { workspace = true }

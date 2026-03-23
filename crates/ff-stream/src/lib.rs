@@ -86,6 +86,10 @@ pub(crate) mod live_hls_inner;
 pub mod output;
 pub mod rtmp;
 pub(crate) mod rtmp_inner;
+#[cfg(feature = "srt")]
+pub mod srt_output;
+#[cfg(feature = "srt")]
+pub(crate) mod srt_output_inner;
 
 pub use abr::{AbrLadder, Rendition};
 pub use dash::DashOutput;
@@ -97,3 +101,5 @@ pub use live_dash::LiveDashOutput;
 pub use live_hls::LiveHlsOutput;
 pub use output::StreamOutput;
 pub use rtmp::RtmpOutput;
+#[cfg(feature = "srt")]
+pub use srt_output::SrtOutput;

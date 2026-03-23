@@ -69,6 +69,17 @@ pub enum StreamError {
         messages: Vec<String>,
     },
 
+    /// The requested network protocol is not compiled into the linked `FFmpeg` build.
+    ///
+    /// Returned by `build()` when a feature-gated output (e.g. `SrtOutput`)
+    /// is opened but the underlying `FFmpeg` library was built without the
+    /// required protocol support (e.g. libsrt).
+    #[error("protocol unavailable: {reason}")]
+    ProtocolUnavailable {
+        /// Human-readable description of why the protocol is unavailable.
+        reason: String,
+    },
+
     /// An `FFmpeg` runtime error occurred during muxing or transcoding.
     ///
     /// `code` is the raw `FFmpeg` negative error value returned by the failing
@@ -138,6 +149,15 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("1/2"), "got: {msg}");
+    }
+
+    #[test]
+    fn protocol_unavailable_should_display_reason() {
+        let err = StreamError::ProtocolUnavailable {
+            reason: "FFmpeg built without libsrt".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("libsrt"), "got: {msg}");
     }
 
     #[test]

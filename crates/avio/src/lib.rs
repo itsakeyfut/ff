@@ -273,6 +273,9 @@ pub use ff_stream::{
     LiveAbrLadder, LiveDashOutput, LiveHlsOutput, Rendition, RtmpOutput, StreamError, StreamOutput,
 };
 
+#[cfg(all(feature = "stream", feature = "srt"))]
+pub use ff_stream::SrtOutput;
+
 #[cfg(test)]
 mod tests {
     use super::*;
