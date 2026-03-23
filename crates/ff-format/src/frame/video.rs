@@ -198,6 +198,36 @@ impl VideoFrame {
         })
     }
 
+    /// Creates a black YUV420P video frame.
+    ///
+    /// The Y plane is filled with `0x00`; U and V planes are filled with `0x80`
+    /// (neutral chroma). `pts_ms` is the presentation timestamp in milliseconds.
+    ///
+    /// The `format` parameter is accepted for call-site clarity; always pass
+    /// [`PixelFormat::Yuv420p`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_black(width: u32, height: u32, format: PixelFormat, pts_ms: i64) -> Self {
+        let y_w = width as usize;
+        let y_h = height as usize;
+        let uv_w = (width as usize).div_ceil(2);
+        let uv_h = (height as usize).div_ceil(2);
+        let timestamp = Timestamp::from_millis(pts_ms, crate::Rational::new(1, 1000));
+        Self {
+            planes: vec![
+                PooledBuffer::standalone(vec![0u8; y_w * y_h]),
+                PooledBuffer::standalone(vec![0x80u8; uv_w * uv_h]),
+                PooledBuffer::standalone(vec![0x80u8; uv_w * uv_h]),
+            ],
+            strides: vec![y_w, uv_w, uv_w],
+            width,
+            height,
+            format,
+            timestamp,
+            key_frame: true,
+        }
+    }
+
     /// Allocates planes and strides for the given dimensions and format.
     #[allow(clippy::too_many_lines)]
     fn allocate_planes(

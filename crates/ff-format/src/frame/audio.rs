@@ -200,6 +200,34 @@ impl AudioFrame {
         })
     }
 
+    /// Creates a silent audio frame with 1024 zero-filled samples.
+    ///
+    /// `pts_ms` is the presentation timestamp in milliseconds.
+    /// Both planar formats (one plane per channel) and packed formats (single
+    /// interleaved plane) are supported.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_silent(sample_rate: u32, channels: u32, format: SampleFormat, pts_ms: i64) -> Self {
+        let samples = 1024usize;
+        let bps = format.bytes_per_sample();
+        let planes = if format.is_planar() {
+            (0..channels as usize)
+                .map(|_| vec![0u8; samples * bps])
+                .collect()
+        } else {
+            vec![vec![0u8; samples * channels as usize * bps]]
+        };
+        let timestamp = Timestamp::from_millis(pts_ms, crate::Rational::new(1, 1000));
+        Self {
+            planes,
+            samples,
+            channels,
+            sample_rate,
+            format,
+            timestamp,
+        }
+    }
+
     /// Allocates planes for the given parameters.
     fn allocate_planes(samples: usize, channels: u32, format: SampleFormat) -> Vec<Vec<u8>> {
         let bytes_per_sample = format.bytes_per_sample();
