@@ -91,7 +91,7 @@ pub use abr::{AbrLadder, Rendition};
 pub use dash::DashOutput;
 pub use error::StreamError;
 pub use fanout::FanoutOutput;
-pub use hls::HlsOutput;
+pub use hls::{HlsOutput, HlsSegmentFormat};
 pub use live_abr::{AbrRendition, LiveAbrFormat, LiveAbrLadder};
 pub use live_dash::LiveDashOutput;
 pub use live_hls::LiveHlsOutput;

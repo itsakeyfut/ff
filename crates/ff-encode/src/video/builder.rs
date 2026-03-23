@@ -717,6 +717,26 @@ impl VideoEncoderBuilder {
             }
         }
 
+        // fMP4 container codec enforcement.
+        let is_fmp4 = self
+            .container
+            .as_ref()
+            .is_some_and(|c| *c == Container::FMp4);
+
+        if is_fmp4 {
+            let fmp4_video_ok = !matches!(
+                self.video_codec,
+                VideoCodec::Mpeg2 | VideoCodec::Mpeg4 | VideoCodec::Mjpeg
+            );
+            if !fmp4_video_ok {
+                return Err(EncodeError::UnsupportedContainerCodecCombination {
+                    container: "fMP4".to_string(),
+                    codec: self.video_codec.name().to_string(),
+                    hint: "fMP4 supports H.264, H.265, VP9, AV1".to_string(),
+                });
+            }
+        }
+
         if has_audio {
             if let Some(rate) = self.audio_sample_rate
                 && rate == 0
@@ -795,6 +815,7 @@ impl VideoEncoder {
             color_transfer: builder.color_transfer,
             color_primaries: builder.color_primaries,
             attachments: builder.attachments,
+            container: builder.container,
         };
 
         let inner = if config.video_width.is_some() {
@@ -1045,6 +1066,7 @@ mod tests {
                 color_transfer: None,
                 color_primaries: None,
                 attachments: Vec::new(),
+                container: None,
             },
             start_time: std::time::Instant::now(),
             progress_callback: None,
@@ -1482,6 +1504,49 @@ mod tests {
             Err(crate::EncodeError::UnsupportedContainerCodecCombination {
                 ref container, ..
             }) if container == "avi" || container == "mov"
+        ));
+    }
+
+    #[test]
+    fn fmp4_container_with_h264_should_pass_validation() {
+        let result = VideoEncoder::create("output.mp4")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::H264)
+            .container(Container::FMp4)
+            .build();
+        assert!(!matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
+        ));
+    }
+
+    #[test]
+    fn fmp4_container_with_mpeg4_should_return_error() {
+        let result = VideoEncoder::create("output.mp4")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::Mpeg4)
+            .container(Container::FMp4)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination {
+                ref container, ..
+            }) if container == "fMP4"
+        ));
+    }
+
+    #[test]
+    fn fmp4_container_with_mjpeg_should_return_error() {
+        let result = VideoEncoder::create("output.mp4")
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::Mjpeg)
+            .container(Container::FMp4)
+            .build();
+        assert!(matches!(
+            result,
+            Err(crate::EncodeError::UnsupportedContainerCodecCombination {
+                ref container, ..
+            }) if container == "fMP4"
         ));
     }
 }

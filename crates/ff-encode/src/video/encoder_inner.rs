@@ -202,6 +202,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) color_primaries: Option<ff_format::ColorPrimaries>,
     /// Binary attachments: (raw data, MIME type, filename).
     pub(super) attachments: Vec<(Vec<u8>, String, String)>,
+    pub(super) container: Option<crate::Container>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -234,6 +235,38 @@ impl VideoEncoderInner {
                 log::warn!(
                     "av_dict_set failed for metadata entry, skipping \
                      key={key} error={}",
+                    ff_sys::av_error_string(ret)
+                );
+            }
+        }
+    }
+
+    /// Apply `movflags` for fMP4 containers before `avformat_write_header`.
+    ///
+    /// When `container` is [`crate::Container::FMp4`], sets
+    /// `movflags=+frag_keyframe+empty_moov+default_base_moof` via `av_opt_set`
+    /// on the format context's `priv_data`. This enables CMAF-compatible
+    /// fragmented output required for HLS fMP4 segments and MPEG-DASH.
+    ///
+    /// # Safety
+    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`
+    /// whose `priv_data` is non-null. Must be called before `avformat_write_header`.
+    unsafe fn apply_movflags(
+        format_ctx: *mut ff_sys::AVFormatContext,
+        container: Option<crate::Container>,
+    ) {
+        if container.is_some_and(|c| c.is_fragmented()) {
+            // SAFETY: format_ctx and priv_data are non-null; string literals are
+            // static and NUL-terminated. av_opt_set does not retain the pointers.
+            let ret = ff_sys::av_opt_set(
+                (*format_ctx).priv_data,
+                c"movflags".as_ptr(),
+                c"+frag_keyframe+empty_moov+default_base_moof".as_ptr(),
+                0,
+            );
+            if ret < 0 {
+                log::warn!(
+                    "av_opt_set movflags failed for fMP4 container error={}",
                     ff_sys::av_error_string(ret)
                 );
             }
@@ -1001,6 +1034,7 @@ impl VideoEncoderInner {
                     }
                 }
 
+                Self::apply_movflags(format_ctx, config.container);
                 Self::apply_metadata(format_ctx, &config.metadata);
                 Self::apply_chapters(format_ctx, &config.chapters);
                 let ret = avformat_write_header(format_ctx, ptr::null_mut());
@@ -2487,6 +2521,7 @@ impl VideoEncoderInner {
             }
         }
 
+        Self::apply_movflags(self.format_ctx, config.container);
         Self::apply_metadata(self.format_ctx, &config.metadata);
         Self::apply_chapters(self.format_ctx, &config.chapters);
         let ret = avformat_write_header(self.format_ctx, ptr::null_mut());

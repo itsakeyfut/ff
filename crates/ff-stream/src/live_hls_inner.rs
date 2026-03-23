@@ -142,6 +142,7 @@ impl LiveHlsInner {
         fps_int: i32,
         video_bitrate: u64,
         audio: Option<(i32, i32, i64)>,
+        segment_format: crate::hls::HlsSegmentFormat,
     ) -> Result<Self, StreamError> {
         // SAFETY: All FFmpeg resources are managed within this function; the
         // returned LiveHlsInner takes exclusive ownership of every pointer.
@@ -155,6 +156,7 @@ impl LiveHlsInner {
                 fps_int,
                 video_bitrate,
                 audio,
+                segment_format,
             )
         }
     }
@@ -196,6 +198,7 @@ impl LiveHlsInner {
         fps_int: i32,
         video_bitrate: u64,
         audio: Option<(i32, i32, i64)>,
+        segment_format: crate::hls::HlsSegmentFormat,
     ) -> Result<Self, StreamError> {
         ff_sys::ensure_initialized();
 
@@ -218,7 +221,9 @@ impl LiveHlsInner {
         // ── 2. Set HLS muxer options ──────────────────────────────────────────
         let seg_time_str = format!("{segment_secs}");
         let list_size_str = format!("{playlist_size}");
-        let seg_filename = format!("{output_dir}/segment%03d.ts");
+        let use_fmp4 = segment_format == crate::hls::HlsSegmentFormat::Fmp4;
+        let seg_ext = if use_fmp4 { "m4s" } else { "ts" };
+        let seg_filename = format!("{output_dir}/segment%03d.{seg_ext}");
 
         if let (Ok(c_seg_time), Ok(c_list_size), Ok(c_seg_file)) = (
             CString::new(seg_time_str.as_str()),
@@ -275,6 +280,20 @@ impl LiveHlsInner {
                      requested={seg_filename} error={}",
                     ff_sys::av_error_string(ret)
                 );
+            }
+            if use_fmp4 {
+                let ret = av_opt_set(
+                    (*out_ctx).priv_data,
+                    c"hls_segment_type".as_ptr(),
+                    c"fmp4".as_ptr(),
+                    0,
+                );
+                if ret < 0 {
+                    log::warn!(
+                        "live_hls hls_segment_type fmp4 option not supported error={}",
+                        ff_sys::av_error_string(ret)
+                    );
+                }
             }
         }
 

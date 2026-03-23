@@ -49,6 +49,7 @@ use crate::error::StreamError;
 ///
 /// Returns [`StreamError::Ffmpeg`] when any `FFmpeg` operation fails, or
 /// [`StreamError::Io`] when directory creation fails.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_hls(
     input_path: &str,
     output_dir: &str,
@@ -57,6 +58,7 @@ pub(crate) fn write_hls(
     target_bitrate: i64,
     target_width: i32,
     target_height: i32,
+    segment_format: crate::hls::HlsSegmentFormat,
 ) -> Result<(), StreamError> {
     std::fs::create_dir_all(output_dir)?;
     // SAFETY: All FFmpeg resources are allocated and freed within this call.
@@ -69,6 +71,7 @@ pub(crate) fn write_hls(
             target_bitrate,
             target_width,
             target_height,
+            segment_format,
         )
     }
 }
@@ -77,6 +80,7 @@ pub(crate) fn write_hls(
 // Unsafe implementation
 // ============================================================================
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn write_hls_unsafe(
     input_path: &str,
     output_dir: &str,
@@ -85,6 +89,7 @@ unsafe fn write_hls_unsafe(
     target_bitrate: i64,
     target_width: i32,
     target_height: i32,
+    segment_format: crate::hls::HlsSegmentFormat,
 ) -> Result<(), StreamError> {
     ff_sys::ensure_initialized();
 
@@ -211,7 +216,9 @@ unsafe fn write_hls_unsafe(
 
     // ── 7. Set HLS muxer options ──────────────────────────────────────────────
     let seg_time_str = format!("{}", segment_duration_secs as u32);
-    let seg_filename = format!("{output_dir}/segment%03d.ts");
+    let use_fmp4 = segment_format == crate::hls::HlsSegmentFormat::Fmp4;
+    let seg_ext = if use_fmp4 { "m4s" } else { "ts" };
+    let seg_filename = format!("{output_dir}/segment%03d.{seg_ext}");
     if let (Ok(c_seg_time), Ok(c_seg_file)) = (
         CString::new(seg_time_str.as_str()),
         CString::new(seg_filename.as_str()),
@@ -241,6 +248,20 @@ unsafe fn write_hls_unsafe(
                  requested={seg_filename} error={}",
                 ff_sys::av_error_string(ret)
             );
+        }
+        if use_fmp4 {
+            let ret = av_opt_set(
+                (*out_ctx).priv_data,
+                c"hls_segment_type".as_ptr(),
+                c"fmp4".as_ptr(),
+                0,
+            );
+            if ret < 0 {
+                log::warn!(
+                    "hls_segment_type fmp4 option not supported error={}",
+                    ff_sys::av_error_string(ret)
+                );
+            }
         }
     }
 

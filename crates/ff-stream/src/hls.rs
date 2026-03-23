@@ -8,6 +8,21 @@ use std::time::Duration;
 
 use crate::error::StreamError;
 
+/// Container format for individual HLS segments.
+///
+/// Passed to [`HlsOutput::segment_format`] and
+/// [`LiveHlsOutput::segment_format`](crate::live_hls::LiveHlsOutput::segment_format).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HlsSegmentFormat {
+    /// Legacy MPEG-TS segments (`.ts`). This is the default.
+    #[default]
+    Ts,
+    /// fMP4 / CMAF segments (`.m4s`) with a separate initialization segment
+    /// (`init.mp4`). The `.m3u8` playlist includes an `#EXT-X-MAP:URI="init.mp4"`
+    /// tag written automatically by the `FFmpeg` HLS muxer.
+    Fmp4,
+}
+
 /// Builds and writes an HLS segmented output.
 ///
 /// `HlsOutput` follows the consuming-builder pattern: each setter takes `self`
@@ -34,6 +49,7 @@ pub struct HlsOutput {
     keyframe_interval: u32,
     target_bitrate: Option<u64>,
     target_video_size: Option<(u32, u32)>,
+    segment_format: HlsSegmentFormat,
 }
 
 impl HlsOutput {
@@ -53,6 +69,7 @@ impl HlsOutput {
             keyframe_interval: 48,
             target_bitrate: None,
             target_video_size: None,
+            segment_format: HlsSegmentFormat::Ts,
         }
     }
 
@@ -103,6 +120,17 @@ impl HlsOutput {
     #[must_use]
     pub fn keyframe_interval(mut self, frames: u32) -> Self {
         self.keyframe_interval = frames;
+        self
+    }
+
+    /// Set the HLS segment container format (default: [`HlsSegmentFormat::Ts`]).
+    ///
+    /// Use [`HlsSegmentFormat::Fmp4`] to produce CMAF-compatible fMP4 segments
+    /// (`.m4s`) with an `init.mp4` initialization segment. The playlist will
+    /// contain an `#EXT-X-MAP:URI="init.mp4"` tag automatically.
+    #[must_use]
+    pub fn segment_format(mut self, fmt: HlsSegmentFormat) -> Self {
+        self.segment_format = fmt;
         self
     }
 
@@ -182,6 +210,7 @@ impl HlsOutput {
             target_bitrate,
             target_width,
             target_height,
+            self.segment_format,
         )
     }
 }
@@ -231,6 +260,18 @@ mod tests {
     fn build_with_valid_config_should_succeed() {
         let result = HlsOutput::new("/tmp/hls").input("/src/video.mp4").build();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn segment_format_default_should_be_ts() {
+        let h = HlsOutput::new("/tmp/hls");
+        assert_eq!(h.segment_format, HlsSegmentFormat::Ts);
+    }
+
+    #[test]
+    fn segment_format_setter_should_store_fmp4() {
+        let h = HlsOutput::new("/tmp/hls").segment_format(HlsSegmentFormat::Fmp4);
+        assert_eq!(h.segment_format, HlsSegmentFormat::Fmp4);
     }
 
     #[test]
