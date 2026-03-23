@@ -424,6 +424,26 @@ impl VideoDecoderBuilder {
     /// **Adaptive bitrate**: representation selection (ABR switching) is handled
     /// internally by `FFmpeg` and is not exposed through this API.
     ///
+    /// # UDP / MPEG-TS
+    ///
+    /// `udp://` URLs are always live — `is_live()` returns `true` and seeking
+    /// is not supported. Two extra `AVDictionary` options are set automatically
+    /// to reduce packet loss on high-bitrate streams:
+    ///
+    /// | Option | Value | Reason |
+    /// |---|---|---|
+    /// | `buffer_size` | `65536` | Enlarges the UDP receive buffer |
+    /// | `overrun_nonfatal` | `1` | Discards excess data instead of erroring |
+    ///
+    /// ```ignore
+    /// use ff_decode::VideoDecoder;
+    /// use ff_format::NetworkOptions;
+    ///
+    /// let decoder = VideoDecoder::open("udp://224.0.0.1:1234")
+    ///     .network(NetworkOptions::default())
+    ///     .build()?;
+    /// ```
+    ///
     /// # Credentials
     ///
     /// HTTP basic-auth credentials must be embedded directly in the URL:
