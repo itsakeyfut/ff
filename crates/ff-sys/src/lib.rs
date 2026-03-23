@@ -136,30 +136,64 @@ pub mod error_codes {
     // ── Network errno values (AVERROR = -errno on POSIX) ─────────────────────
     //
     // These are used in ff-decode to map FFmpeg network errors to typed variants.
-    // macOS/BSD uses different errno numbering from Linux for several codes.
+    // errno numbering differs across platforms:
+    //   - macOS/BSD: uses BSD errno values
+    //   - Windows UCRT: uses its own POSIX-extension errno table (VS2015+)
+    //   - Linux: standard POSIX errno values
+    //
+    // Windows UCRT errno.h (relevant socket codes, added in VS2015/UCRT):
+    //   ECONNREFUSED=107, EHOSTUNREACH=110, ETIMEDOUT=138, ENETUNREACH=118
 
     /// Connection timed out (`ETIMEDOUT`).
     #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
     pub const ETIMEDOUT: i32 = -60;
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
+    #[cfg(windows)]
+    pub const ETIMEDOUT: i32 = -138; // UCRT: ETIMEDOUT = 138
+    #[cfg(not(any(
+        windows,
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd"
+    )))]
     pub const ETIMEDOUT: i32 = -110;
 
     /// Connection refused (`ECONNREFUSED`).
     #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
     pub const ECONNREFUSED: i32 = -61;
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
+    #[cfg(windows)]
+    pub const ECONNREFUSED: i32 = -107; // UCRT: ECONNREFUSED = 107
+    #[cfg(not(any(
+        windows,
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd"
+    )))]
     pub const ECONNREFUSED: i32 = -111;
 
     /// No route to host (`EHOSTUNREACH`).
     #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
     pub const EHOSTUNREACH: i32 = -65;
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
+    #[cfg(windows)]
+    pub const EHOSTUNREACH: i32 = -110; // UCRT: EHOSTUNREACH = 110
+    #[cfg(not(any(
+        windows,
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd"
+    )))]
     pub const EHOSTUNREACH: i32 = -113;
 
     /// Network unreachable (`ENETUNREACH`).
     #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
     pub const ENETUNREACH: i32 = -51;
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd")))]
+    #[cfg(windows)]
+    pub const ENETUNREACH: i32 = -118; // UCRT: ENETUNREACH = 118
+    #[cfg(not(any(
+        windows,
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd"
+    )))]
     pub const ENETUNREACH: i32 = -101;
 
     /// I/O error (`EIO`). Same value on all POSIX platforms.
