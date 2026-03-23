@@ -266,6 +266,8 @@ pub(crate) struct AudioDecoderInner {
     output_sample_rate: Option<u32>,
     /// Target output channel count (if remixing is needed)
     output_channels: Option<u32>,
+    /// Whether the source is a live/streaming input (seeking is not supported)
+    is_live: bool,
     /// Whether end of file has been reached
     eof: bool,
     /// Current playback position
@@ -333,6 +335,14 @@ impl AudioDecoderInner {
                 message: format!("Failed to find stream info: {}", ff_sys::av_error_string(e)),
             })?;
         }
+
+        // Detect live/streaming source via the AVFMT_TS_DISCONT flag on AVInputFormat.
+        // SAFETY: format_ctx is valid and non-null; iformat is set by avformat_open_input
+        //         and is non-null for all successfully opened formats.
+        let is_live = unsafe {
+            let iformat = (*format_ctx).iformat;
+            !iformat.is_null() && ((*iformat).flags & ff_sys::AVFMT_TS_DISCONT) != 0
+        };
 
         // Find the audio stream
         // SAFETY: format_ctx is valid
@@ -410,6 +420,7 @@ impl AudioDecoderInner {
                 output_format,
                 output_sample_rate,
                 output_channels,
+                is_live,
                 eof: false,
                 position: Duration::ZERO,
                 packet: packet_guard.into_raw(),
@@ -1069,6 +1080,14 @@ impl AudioDecoderInner {
     /// Returns whether end of file has been reached.
     pub(crate) fn is_eof(&self) -> bool {
         self.eof
+    }
+
+    /// Returns whether the source is a live or streaming input.
+    ///
+    /// Live sources have the `AVFMT_TS_DISCONT` flag set on their `AVInputFormat`.
+    /// Seeking is not meaningful on live sources.
+    pub(crate) fn is_live(&self) -> bool {
+        self.is_live
     }
 
     /// Converts a `Duration` to a presentation timestamp (PTS) in stream time_base units.

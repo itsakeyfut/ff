@@ -162,8 +162,37 @@ impl AudioDecoderBuilder {
 
     /// Sets network options for URL-based audio sources (HTTP, RTSP, RTMP, etc.).
     ///
-    /// This option is only relevant when the path is a network URL. For local
-    /// files it is silently ignored.
+    /// When set, the builder skips the file-existence check and passes connect
+    /// and read timeouts to `avformat_open_input` via an `AVDictionary`.
+    /// Call this before `.build()` when opening `rtmp://`, `rtsp://`, `http://`,
+    /// `https://`, `udp://`, `srt://`, or `rtp://` URLs.
+    ///
+    /// # HLS / M3U8 Playlists
+    ///
+    /// Audio-only HLS playlists (`.m3u8` pointing to AAC or MP3 segments) are
+    /// detected automatically by `FFmpeg`. Pass the full HTTP(S) URL:
+    ///
+    /// ```ignore
+    /// use ff_decode::AudioDecoder;
+    /// use ff_format::NetworkOptions;
+    ///
+    /// let decoder = AudioDecoder::open("https://example.com/audio/index.m3u8")
+    ///     .network(NetworkOptions::default())
+    ///     .build()?;
+    /// ```
+    ///
+    /// # Credentials
+    ///
+    /// HTTP basic-auth credentials must be embedded directly in the URL:
+    /// `https://user:password@cdn.example.com/audio/index.m3u8`.
+    /// The password is redacted in log output.
+    ///
+    /// # DRM Limitation
+    ///
+    /// DRM-protected HLS streams (`FairPlay`, Widevine, AES-128 with external
+    /// key servers) are **not** supported. `FFmpeg` can parse the playlist and
+    /// fetch segments, but key delivery to a DRM license server is outside
+    /// the scope of this API.
     ///
     /// # Examples
     ///
@@ -172,7 +201,7 @@ impl AudioDecoderBuilder {
     /// use ff_format::NetworkOptions;
     /// use std::time::Duration;
     ///
-    /// let decoder = AudioDecoder::open("http://stream.example.com/audio.aac")?
+    /// let decoder = AudioDecoder::open("http://stream.example.com/audio.aac")
     ///     .network(NetworkOptions {
     ///         connect_timeout: Duration::from_secs(5),
     ///         ..Default::default()
@@ -640,7 +669,21 @@ impl AudioDecoder {
     /// }
     /// ```
     pub fn seek(&mut self, position: Duration, mode: crate::SeekMode) -> Result<(), DecodeError> {
+        if self.inner.is_live() {
+            return Err(DecodeError::SeekNotSupported);
+        }
         self.inner.seek(position, mode)
+    }
+
+    /// Returns `true` if the source is a live or streaming input.
+    ///
+    /// Live sources (HLS live playlists, RTMP, RTSP, MPEG-TS) have the
+    /// `AVFMT_TS_DISCONT` flag set on their `AVInputFormat`. Seeking is not
+    /// supported on live sources — [`AudioDecoder::seek`] will return
+    /// [`DecodeError::SeekNotSupported`].
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.inner.is_live()
     }
 
     /// Flushes the decoder's internal buffers.

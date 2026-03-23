@@ -289,6 +289,8 @@ pub(crate) struct VideoDecoderInner {
     output_format: Option<PixelFormat>,
     /// Requested output scale (if resizing is needed)
     output_scale: Option<OutputScale>,
+    /// Whether the source is a live/streaming input (seeking is not supported)
+    is_live: bool,
     /// Whether end of file has been reached
     eof: bool,
     /// Current playback position
@@ -593,6 +595,14 @@ impl VideoDecoderInner {
             })?;
         }
 
+        // Detect live/streaming source via the AVFMT_TS_DISCONT flag on AVInputFormat.
+        // SAFETY: format_ctx is valid and non-null; iformat is set by avformat_open_input
+        //         and is non-null for all successfully opened formats.
+        let is_live = unsafe {
+            let iformat = (*format_ctx).iformat;
+            !iformat.is_null() && ((*iformat).flags & ff_sys::AVFMT_TS_DISCONT) != 0
+        };
+
         // Find the video stream
         // SAFETY: format_ctx is valid
         let (stream_index, codec_id) =
@@ -697,6 +707,7 @@ impl VideoDecoderInner {
                 sws_cache_key: None,
                 output_format,
                 output_scale,
+                is_live,
                 eof: false,
                 position: Duration::ZERO,
                 packet: packet_guard.into_raw(),
@@ -1548,6 +1559,14 @@ impl VideoDecoderInner {
     /// Returns whether end of file has been reached.
     pub(crate) fn is_eof(&self) -> bool {
         self.eof
+    }
+
+    /// Returns whether the source is a live or streaming input.
+    ///
+    /// Live sources have the `AVFMT_TS_DISCONT` flag set on their `AVInputFormat`.
+    /// Seeking is not meaningful on live sources.
+    pub(crate) fn is_live(&self) -> bool {
+        self.is_live
     }
 
     /// Converts a `Duration` to a presentation timestamp (PTS) in stream time_base units.
