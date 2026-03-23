@@ -54,6 +54,21 @@ pub enum StreamError {
         reason: String,
     },
 
+    /// One or more [`FanoutOutput`](crate::fanout::FanoutOutput) targets failed to receive a
+    /// frame or to finish cleanly.
+    ///
+    /// All targets still receive every frame even when some fail; errors are
+    /// collected and returned together after the full fan-out pass.
+    #[error("fanout: {failed}/{total} targets failed — {messages:?}")]
+    FanoutFailure {
+        /// Number of targets that returned an error.
+        failed: usize,
+        /// Total number of targets in the fanout.
+        total: usize,
+        /// Per-target error messages in `"target[i]: <error>"` format.
+        messages: Vec<String>,
+    },
+
     /// An `FFmpeg` runtime error occurred during muxing or transcoding.
     ///
     /// `code` is the raw `FFmpeg` negative error value returned by the failing
@@ -112,6 +127,17 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Vp9"), "got: {msg}");
         assert!(msg.contains("H.264"), "got: {msg}");
+    }
+
+    #[test]
+    fn fanout_failure_should_display_failed_and_total() {
+        let err = StreamError::FanoutFailure {
+            failed: 1,
+            total: 2,
+            messages: vec!["target[1]: invalid config: forced failure".into()],
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("1/2"), "got: {msg}");
     }
 
     #[test]
