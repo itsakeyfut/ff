@@ -2,7 +2,7 @@
 //!
 //! [`LiveHlsOutput`] receives pre-decoded [`VideoFrame`] / [`AudioFrame`] values
 //! from the caller, encodes them with H.264/AAC, and muxes them into a sliding-
-//! window HLS playlist (`playlist.m3u8`) backed by `.ts` segment files.
+//! window HLS playlist (`index.m3u8`) backed by `.ts` segment files.
 //!
 //! # Example
 //!
@@ -28,7 +28,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_format::{AudioFrame, VideoFrame};
+use ff_format::{AudioCodec, AudioFrame, VideoCodec, VideoFrame};
 
 use crate::error::StreamError;
 use crate::live_hls_inner::LiveHlsInner;
@@ -52,6 +52,8 @@ pub struct LiveHlsOutput {
     output_dir: PathBuf,
     segment_duration: Duration,
     playlist_size: u32,
+    video_codec: VideoCodec,
+    audio_codec: AudioCodec,
     video_bitrate: u64,
     audio_bitrate: u64,
     video_width: Option<u32>,
@@ -81,6 +83,8 @@ impl LiveHlsOutput {
             output_dir: output_dir.as_ref().to_path_buf(),
             segment_duration: Duration::from_secs(6),
             playlist_size: 5,
+            video_codec: VideoCodec::H264,
+            audio_codec: AudioCodec::Aac,
             video_bitrate: 2_000_000,
             audio_bitrate: 128_000,
             video_width: None,
@@ -129,6 +133,24 @@ impl LiveHlsOutput {
     #[must_use]
     pub fn playlist_size(mut self, size: u32) -> Self {
         self.playlist_size = size;
+        self
+    }
+
+    /// Set the video codec.
+    ///
+    /// Default: [`VideoCodec::H264`].
+    #[must_use]
+    pub fn video_codec(mut self, codec: VideoCodec) -> Self {
+        self.video_codec = codec;
+        self
+    }
+
+    /// Set the audio codec.
+    ///
+    /// Default: [`AudioCodec::Aac`].
+    #[must_use]
+    pub fn audio_codec(mut self, codec: AudioCodec) -> Self {
+        self.audio_codec = codec;
         self
     }
 

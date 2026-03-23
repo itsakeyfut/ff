@@ -126,7 +126,7 @@ impl LiveHlsInner {
     ///
     /// # Parameters
     ///
-    /// - `output_dir`: directory where `playlist.m3u8` and `.ts` segments are written.
+    /// - `output_dir`: directory where `index.m3u8` and `.ts` segments are written.
     /// - `segment_secs`: target HLS segment duration in seconds.
     /// - `playlist_size`: maximum number of segments kept in the sliding playlist.
     /// - `enc_width`, `enc_height`, `fps_int`: video encoder dimensions and frame rate.
@@ -200,7 +200,7 @@ impl LiveHlsInner {
         ff_sys::ensure_initialized();
 
         // ── 1. Allocate HLS output context ────────────────────────────────────
-        let playlist_path = format!("{output_dir}/playlist.m3u8");
+        let playlist_path = format!("{output_dir}/index.m3u8");
         let c_playlist = CString::new(playlist_path.as_str())
             .map_err(|_| ffmpeg_err_msg("playlist path contains null byte"))?;
 
