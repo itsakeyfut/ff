@@ -75,6 +75,7 @@ pub mod dash;
 pub(crate) mod dash_inner;
 /// Unified error type for the `ff-stream` crate.
 pub mod error;
+pub mod fanout;
 pub mod hls;
 pub(crate) mod hls_inner;
 pub mod live_dash;
@@ -88,6 +89,7 @@ pub(crate) mod rtmp_inner;
 pub use abr::{AbrLadder, Rendition};
 pub use dash::DashOutput;
 pub use error::StreamError;
+pub use fanout::FanoutOutput;
 pub use hls::HlsOutput;
 pub use live_dash::LiveDashOutput;
 pub use live_hls::LiveHlsOutput;

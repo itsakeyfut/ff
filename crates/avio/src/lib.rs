@@ -269,8 +269,8 @@ pub use ff_pipeline::{
 // Enabling `stream` also enables `pipeline` (and transitively `filter`).
 #[cfg(feature = "stream")]
 pub use ff_stream::{
-    AbrLadder, DashOutput, HlsOutput, LiveDashOutput, LiveHlsOutput, Rendition, RtmpOutput,
-    StreamError, StreamOutput,
+    AbrLadder, DashOutput, FanoutOutput, HlsOutput, LiveDashOutput, LiveHlsOutput, Rendition,
+    RtmpOutput, StreamError, StreamOutput,
 };
 
 #[cfg(test)]

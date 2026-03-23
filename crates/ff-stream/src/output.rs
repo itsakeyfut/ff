@@ -6,8 +6,10 @@ use crate::error::StreamError;
 
 /// Common interface for all live stream outputs.
 ///
-/// Implementors: [`LiveHlsOutput`](crate::live_hls::LiveHlsOutput) (and future
-/// `LiveDashOutput`, `RtmpOutput`, etc.).
+/// Implementors: [`LiveHlsOutput`](crate::live_hls::LiveHlsOutput),
+/// [`LiveDashOutput`](crate::live_dash::LiveDashOutput),
+/// [`RtmpOutput`](crate::rtmp::RtmpOutput),
+/// [`FanoutOutput`](crate::fanout::FanoutOutput).
 pub trait StreamOutput: Send {
     /// Push one video frame into the stream.
     fn push_video(&mut self, frame: &VideoFrame) -> Result<(), StreamError>;
