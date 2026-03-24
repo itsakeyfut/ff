@@ -3,14 +3,14 @@
 //! Demonstrates the `hwaccel` feature (enabled by default in `avio`):
 //!
 //! - `HardwareEncoder::available()` — probe which hardware backends are present
-//!   on the current system (NVENC, QSV, AMF, VideoToolbox, VA-API)
+//!   on the current system (`NVENC`, `QSV`, `AMF`, `VideoToolbox`, `VA-API`)
 //! - `HardwareEncoder::is_available()` — check a single backend explicitly
 //! - `.hardware_encoder()` on `VideoEncoderBuilder` — request a specific backend
 //! - `VideoEncoder::actual_video_codec()` — see the exact encoder `FFmpeg` selected
 //! - `VideoEncoder::is_lgpl_compliant()` — confirm the encoder's license status
 //!
 //! Auto-detection priority (when `--hw auto`):
-//!   NVENC → QSV → AMF → VideoToolbox → VA-API → software fallback
+//!   `NVENC` → `QSV` → `AMF` → `VideoToolbox` → `VA-API` → software fallback
 //!
 //! The encoder falls back to software automatically when the requested backend
 //! is unavailable. This means `build()` never fails due to missing hardware —
