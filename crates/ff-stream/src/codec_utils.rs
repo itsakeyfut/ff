@@ -17,9 +17,12 @@
 #![allow(clippy::ref_as_ptr)]
 
 use ff_sys::{
-    AVCodec, AVCodecContext, AVFormatContext, AVRational, av_interleaved_write_frame,
-    av_packet_alloc, av_packet_free, av_packet_rescale_ts, av_packet_unref, av_rescale_q,
+    AVCodec, AVCodecContext, AVFormatContext, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NONE,
+    AVRational, AVSampleFormat, av_interleaved_write_frame, av_packet_alloc, av_packet_free,
+    av_packet_rescale_ts, av_packet_unref, av_rescale_q,
 };
+
+use ff_format::{PixelFormat, SampleFormat};
 
 use crate::error::StreamError;
 
@@ -111,6 +114,54 @@ pub(crate) unsafe fn open_aac_encoder(
          sample_rate={sample_rate} channels={nb_channels} bit_rate={bit_rate}"
     );
     Ok(ctx)
+}
+
+// ============================================================================
+// Format conversion helpers
+// ============================================================================
+
+/// Map a [`PixelFormat`] to the corresponding `AVPixelFormat` constant.
+///
+/// Returns `AV_PIX_FMT_NONE` for unknown or `Other(_)` variants.
+pub(crate) fn pixel_format_to_av(fmt: PixelFormat) -> AVPixelFormat {
+    match fmt {
+        PixelFormat::Yuv420p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P,
+        PixelFormat::Yuv422p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P,
+        PixelFormat::Yuv444p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P,
+        PixelFormat::Rgb24 => ff_sys::AVPixelFormat_AV_PIX_FMT_RGB24,
+        PixelFormat::Bgr24 => ff_sys::AVPixelFormat_AV_PIX_FMT_BGR24,
+        PixelFormat::Rgba => ff_sys::AVPixelFormat_AV_PIX_FMT_RGBA,
+        PixelFormat::Bgra => ff_sys::AVPixelFormat_AV_PIX_FMT_BGRA,
+        PixelFormat::Nv12 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV12,
+        PixelFormat::Nv21 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV21,
+        PixelFormat::Yuv420p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE,
+        PixelFormat::Yuv422p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE,
+        PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
+        PixelFormat::Yuva444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE,
+        PixelFormat::P010le => ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE,
+        PixelFormat::Gray8 => ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8,
+        PixelFormat::Gbrpf32le => ff_sys::AVPixelFormat_AV_PIX_FMT_GBRPF32LE,
+        PixelFormat::Other(_) | _ => AVPixelFormat_AV_PIX_FMT_NONE,
+    }
+}
+
+/// Map a [`SampleFormat`] to the corresponding `AVSampleFormat` constant.
+///
+/// Returns `AV_SAMPLE_FMT_NONE` for unknown or `Other(_)` variants.
+pub(crate) fn sample_format_to_av(fmt: SampleFormat) -> AVSampleFormat {
+    match fmt {
+        SampleFormat::U8 => ff_sys::swresample::sample_format::U8,
+        SampleFormat::I16 => ff_sys::swresample::sample_format::S16,
+        SampleFormat::I32 => ff_sys::swresample::sample_format::S32,
+        SampleFormat::F32 => ff_sys::swresample::sample_format::FLT,
+        SampleFormat::F64 => ff_sys::swresample::sample_format::DBL,
+        SampleFormat::U8p => ff_sys::swresample::sample_format::U8P,
+        SampleFormat::I16p => ff_sys::swresample::sample_format::S16P,
+        SampleFormat::I32p => ff_sys::swresample::sample_format::S32P,
+        SampleFormat::F32p => ff_sys::swresample::sample_format::FLTP,
+        SampleFormat::F64p => ff_sys::swresample::sample_format::DBLP,
+        SampleFormat::Other(_) | _ => ff_sys::swresample::sample_format::NONE,
+    }
 }
 
 /// Drain all available encoded packets from `enc_ctx` into `out_ctx`.

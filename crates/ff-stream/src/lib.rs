@@ -83,6 +83,7 @@ pub mod live_dash;
 pub(crate) mod live_dash_inner;
 pub mod live_hls;
 pub(crate) mod live_hls_inner;
+pub(crate) mod muxer_core;
 pub mod output;
 pub mod rtmp;
 pub(crate) mod rtmp_inner;
