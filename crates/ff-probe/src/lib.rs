@@ -9,7 +9,7 @@
 //! ## Module Structure
 //!
 //! - `error` - Error types ([`ProbeError`])
-//! - `info` - Media info extraction ([`open`])
+//! - `probe` - Media info extraction ([`open`])
 //!
 //! ## Quick Start
 //!
@@ -128,7 +128,7 @@
 #![warn(clippy::pedantic)]
 
 mod error;
-mod info;
+mod probe;
 
 // Re-export types from ff-format for convenience
 pub use ff_format::{
@@ -140,7 +140,7 @@ pub use ff_format::{
 pub use error::ProbeError;
 
 // Re-export the open function at the crate level
-pub use info::open;
+pub use probe::open;
 
 /// Prelude module for convenient imports.
 ///
