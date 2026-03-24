@@ -38,218 +38,272 @@ ff-stream   = { workspace = true, optional = true }
 
 [[example]]
 name = "probe_info"
+path = "examples/probe/probe_info.rs"
 required-features = ["probe"]
 
 [[example]]
 name = "transcode"
+path = "examples/transcode/transcode.rs"
 required-features = ["pipeline"]
 
 [[example]]
 name = "extract_thumbnails"
+path = "examples/transcode/extract_thumbnails.rs"
 required-features = ["pipeline", "encode"]
 
 [[example]]
 name = "trim_and_scale"
+path = "examples/transcode/trim_and_scale.rs"
 required-features = ["pipeline"]
 
 [[example]]
 name = "concat_clips"
+path = "examples/transcode/concat_clips.rs"
 required-features = ["pipeline", "probe"]
 
 [[example]]
 name = "add_watermark"
+path = "examples/filter/add_watermark.rs"
 required-features = ["pipeline", "decode", "encode"]
 
 [[example]]
 name = "decode_image"
+path = "examples/decode/decode_image.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "encode_image"
+path = "examples/encode/encode_image.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "hls_output"
+path = "examples/stream/hls_output.rs"
 required-features = ["stream"]
 
 [[example]]
 name = "abr_ladder"
+path = "examples/stream/abr_ladder.rs"
 required-features = ["stream", "probe"]
 
 [[example]]
 name = "audio_transcode"
+path = "examples/transcode/audio_transcode.rs"
 required-features = ["pipeline", "decode", "encode"]
 
 [[example]]
 name = "dash_output"
+path = "examples/stream/dash_output.rs"
 required-features = ["stream"]
 
 [[example]]
 name = "video_effects"
+path = "examples/filter/video_effects.rs"
 required-features = ["pipeline"]
 
 [[example]]
 name = "audio_filters"
+path = "examples/filter/audio_filters.rs"
 required-features = ["pipeline"]
 
 [[example]]
 name = "two_pass_encode"
+path = "examples/transcode/two_pass_encode.rs"
 required-features = ["pipeline", "decode", "encode"]
 
 [[example]]
 name = "write_metadata"
+path = "examples/transcode/write_metadata.rs"
 required-features = ["pipeline", "decode", "encode"]
 
 [[example]]
 name = "hw_transcode"
+path = "examples/transcode/hw_transcode.rs"
 required-features = ["pipeline"]
 
 [[example]]
 name = "video_transcode"
+path = "examples/transcode/video_transcode.rs"
 required-features = ["pipeline", "encode"]
 
 [[example]]
 name = "audio_raw_dump"
+path = "examples/decode/audio_raw_dump.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "decode_to_pcm"
+path = "examples/decode/decode_to_pcm.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "encode_audio_direct"
+path = "examples/encode/encode_audio_direct.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "encode_video_direct"
+path = "examples/encode/encode_video_direct.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "decode_format_convert"
+path = "examples/decode/decode_format_convert.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "decode_scaled"
+path = "examples/decode/decode_scaled.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "filter_direct"
+path = "examples/filter/filter_direct.rs"
 required-features = ["decode", "encode", "filter"]
 
 [[example]]
 name = "encode_with_progress"
+path = "examples/encode/encode_with_progress.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "hardware_decode"
+path = "examples/decode/hardware_decode.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "frame_pool_usage"
+path = "examples/decode/frame_pool_usage.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "container_format"
+path = "examples/encode/container_format.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "tone_map_hdr"
+path = "examples/filter/tone_map_hdr.rs"
 required-features = ["pipeline", "probe"]
 
 [[example]]
 name = "decode_iterator"
+path = "examples/decode/decode_iterator.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "audio_timestamps"
+path = "examples/decode/audio_timestamps.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "decode_metadata"
+path = "examples/decode/decode_metadata.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "async_decode_video"
+path = "examples/async/async_decode_video.rs"
 required-features = ["tokio"]
 
 [[example]]
 name = "async_decode_audio"
+path = "examples/async/async_decode_audio.rs"
 required-features = ["tokio"]
 
 [[example]]
 name = "async_decode_image"
+path = "examples/async/async_decode_image.rs"
 required-features = ["tokio"]
 
 [[example]]
 name = "async_encode_video"
+path = "examples/async/async_encode_video.rs"
 required-features = ["tokio"]
 
 [[example]]
 name = "async_encode_audio"
+path = "examples/async/async_encode_audio.rs"
 required-features = ["tokio"]
 
 [[example]]
 name = "async_transcode"
+path = "examples/async/async_transcode.rs"
 required-features = ["tokio"]
 
 [[example]]
 name = "codec_options"
+path = "examples/encode/codec_options.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "audio_codec_options"
+path = "examples/encode/audio_codec_options.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "professional_formats"
+path = "examples/encode/professional_formats.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "hdr10_encode"
+path = "examples/encode/hdr10_encode.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "image_sequence"
+path = "examples/encode/image_sequence.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "openexr_sequence"
+path = "examples/decode/openexr_sequence.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "hwaccel_encode"
+path = "examples/encode/hwaccel_encode.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "gpl_encode"
+path = "examples/encode/gpl_encode.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
 name = "decode_from_url"
+path = "examples/decode/decode_from_url.rs"
 required-features = ["decode"]
 
 [[example]]
 name = "live_hls_output"
+path = "examples/stream/live_hls_output.rs"
 required-features = ["stream"]
 
 [[example]]
 name = "live_dash_output"
+path = "examples/stream/live_dash_output.rs"
 required-features = ["stream"]
 
 [[example]]
 name = "rtmp_output"
+path = "examples/stream/rtmp_output.rs"
 required-features = ["stream"]
 
 [[example]]
 name = "fanout_output"
+path = "examples/stream/fanout_output.rs"
 required-features = ["stream"]
 
 [[example]]
 name = "live_abr_ladder"
+path = "examples/stream/live_abr_ladder.rs"
 required-features = ["stream"]
 
 [[example]]
 name = "srt_output"
+path = "examples/stream/srt_output.rs"
 required-features = ["stream", "srt"]
 
 [dev-dependencies]
