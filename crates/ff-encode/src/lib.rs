@@ -209,7 +209,7 @@ pub use audio::{
 };
 pub use bitrate::{BitrateMode, CRF_MAX};
 pub use codec::{AudioCodec, VideoCodec, VideoCodecEncodeExt};
-pub use container::Container;
+pub use container::OutputContainer;
 pub use error::EncodeError;
 pub use hardware::HardwareEncoder;
 pub use image::{ImageEncoder, ImageEncoderBuilder};

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use ff_decode::AudioDecoder;
 use ff_encode::{
-    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioEncoder, Container, EncodeError,
-    FlacOptions, Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
+    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioEncoder, EncodeError, FlacOptions,
+    Mp3Options, Mp3Quality, OpusApplication, OpusOptions, OutputContainer,
 };
 use ff_format::{AudioFrame, SampleFormat};
 
@@ -618,7 +618,7 @@ fn flac_level_0_should_produce_larger_file_than_level_12() {
     );
 }
 
-// ── FLAC Container Tests ──────────────────────────────────────────────────────
+// ── FLAC OutputContainer Tests ──────────────────────────────────────────────────────
 
 #[test]
 fn flac_auto_default_codec_should_not_return_container_codec_error() {
@@ -653,7 +653,7 @@ fn flac_with_incompatible_codec_should_return_error() {
 fn flac_container_enum_with_incompatible_codec_should_return_error() {
     let result = AudioEncoder::create("output.audio")
         .audio(44100, 2)
-        .container(Container::Flac)
+        .container(OutputContainer::Flac)
         .audio_codec(AudioCodec::Aac)
         .build();
     assert!(
@@ -692,7 +692,7 @@ fn flac_flac_codec_should_produce_valid_output() {
     assert_valid_output_file(output.path());
 }
 
-// ── OGG Container Tests ───────────────────────────────────────────────────────
+// ── OGG OutputContainer Tests ───────────────────────────────────────────────────────
 
 #[test]
 fn ogg_auto_default_codec_should_not_return_container_codec_error() {
@@ -727,7 +727,7 @@ fn ogg_with_incompatible_codec_should_return_error() {
 fn ogg_container_enum_with_incompatible_codec_should_return_error() {
     let result = AudioEncoder::create("output.audio")
         .audio(44100, 2)
-        .container(Container::Ogg)
+        .container(OutputContainer::Ogg)
         .audio_codec(AudioCodec::Flac)
         .build();
     assert!(

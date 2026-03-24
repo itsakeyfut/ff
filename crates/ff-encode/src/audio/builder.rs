@@ -10,7 +10,7 @@ use ff_format::AudioFrame;
 
 use super::codec_options::{AudioCodecOptions, Mp3Quality};
 use super::encoder_inner::{AudioEncoderConfig, AudioEncoderInner};
-use crate::{AudioCodec, Container, EncodeError};
+use crate::{AudioCodec, EncodeError, OutputContainer};
 
 /// Builder for constructing an [`AudioEncoder`].
 ///
@@ -29,7 +29,7 @@ use crate::{AudioCodec, Container, EncodeError};
 /// ```
 pub struct AudioEncoderBuilder {
     pub(crate) path: PathBuf,
-    pub(crate) container: Option<Container>,
+    pub(crate) container: Option<OutputContainer>,
     pub(crate) audio_sample_rate: Option<u32>,
     pub(crate) audio_channels: Option<u32>,
     pub(crate) audio_codec: AudioCodec,
@@ -77,7 +77,7 @@ impl AudioEncoderBuilder {
 
     /// Set container format explicitly (usually auto-detected from file extension).
     #[must_use]
-    pub fn container(mut self, container: Container) -> Self {
+    pub fn container(mut self, container: OutputContainer) -> Self {
         self.container = Some(container);
         self
     }
@@ -101,7 +101,7 @@ impl AudioEncoderBuilder {
             || self
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::Flac);
+                .is_some_and(|c| *c == OutputContainer::Flac);
         if is_flac && !self.audio_codec_explicit {
             self.audio_codec = AudioCodec::Flac;
         }
@@ -114,7 +114,7 @@ impl AudioEncoderBuilder {
             || self
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::Ogg);
+                .is_some_and(|c| *c == OutputContainer::Ogg);
         if is_ogg && !self.audio_codec_explicit {
             self.audio_codec = AudioCodec::Vorbis;
         }
@@ -173,7 +173,7 @@ impl AudioEncoder {
             || builder
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::Flac);
+                .is_some_and(|c| *c == OutputContainer::Flac);
         if is_flac && !matches!(builder.audio_codec, AudioCodec::Flac) {
             return Err(EncodeError::UnsupportedContainerCodecCombination {
                 container: "flac".to_string(),
@@ -191,7 +191,7 @@ impl AudioEncoder {
             || builder
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::Ogg);
+                .is_some_and(|c| *c == OutputContainer::Ogg);
         if is_ogg && !matches!(builder.audio_codec, AudioCodec::Vorbis | AudioCodec::Opus) {
             return Err(EncodeError::UnsupportedContainerCodecCombination {
                 container: "ogg".to_string(),
@@ -364,7 +364,7 @@ mod tests {
     fn flac_container_enum_without_explicit_codec_should_default_to_flac() {
         let builder = AudioEncoder::create("output.audio")
             .audio(44100, 2)
-            .container(Container::Flac);
+            .container(OutputContainer::Flac);
         let mut b = builder;
         b.apply_container_defaults();
         assert_eq!(b.audio_codec, AudioCodec::Flac);
@@ -374,7 +374,7 @@ mod tests {
     fn ogg_container_enum_without_explicit_codec_should_default_to_vorbis() {
         let builder = AudioEncoder::create("output.audio")
             .audio(44100, 2)
-            .container(Container::Ogg);
+            .container(OutputContainer::Ogg);
         let mut b = builder;
         b.apply_container_defaults();
         assert_eq!(b.audio_codec, AudioCodec::Vorbis);
