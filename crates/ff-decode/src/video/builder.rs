@@ -50,34 +50,6 @@ pub(crate) enum OutputScale {
     FitHeight(u32),
 }
 
-/// Internal configuration for the decoder.
-///
-/// NOTE: Fields are currently unused but will be used when `FFmpeg` integration
-/// is implemented in a future issue.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(crate) struct VideoDecoderConfig {
-    /// Output pixel format (None = use source format)
-    pub output_format: Option<PixelFormat>,
-    /// Output scale (None = use source dimensions)
-    pub output_scale: Option<OutputScale>,
-    /// Hardware acceleration setting
-    pub hardware_accel: HardwareAccel,
-    /// Number of decoding threads (0 = auto)
-    pub thread_count: usize,
-}
-
-impl Default for VideoDecoderConfig {
-    fn default() -> Self {
-        Self {
-            output_format: None,
-            output_scale: None,
-            hardware_accel: HardwareAccel::Auto,
-            thread_count: 0, // Auto-detect
-        }
-    }
-}
-
 /// Builder for configuring and constructing a [`VideoDecoder`].
 ///
 /// This struct provides a fluent interface for setting up decoder options
@@ -624,14 +596,6 @@ impl VideoDecoderBuilder {
             });
         }
 
-        // Build the internal configuration
-        let config = VideoDecoderConfig {
-            output_format: self.output_format,
-            output_scale: self.output_scale,
-            hardware_accel: self.hardware_accel,
-            thread_count: self.thread_count,
-        };
-
         // Create the decoder inner
         let (inner, stream_info, container_info) = VideoDecoderInner::new(
             &self.path,
@@ -646,7 +610,6 @@ impl VideoDecoderBuilder {
 
         Ok(VideoDecoder {
             path: self.path,
-            config,
             frame_pool: self.frame_pool,
             inner,
             stream_info,
@@ -708,12 +671,6 @@ impl VideoDecoderBuilder {
 pub struct VideoDecoder {
     /// Path to the media file
     path: PathBuf,
-    /// Decoder configuration
-    ///
-    /// NOTE: Currently unused but will be used when `FFmpeg` integration
-    /// is implemented in a future issue.
-    #[allow(dead_code)]
-    config: VideoDecoderConfig,
     /// Optional frame pool for memory reuse
     frame_pool: Option<Arc<dyn FramePool>>,
     /// Internal decoder state
@@ -1453,15 +1410,6 @@ mod tests {
                     || matches!(e, DecodeError::Ffmpeg { .. })
             );
         }
-    }
-
-    #[test]
-    fn test_decoder_config_default() {
-        let config = VideoDecoderConfig::default();
-
-        assert!(config.output_format.is_none());
-        assert_eq!(config.hardware_accel, HardwareAccel::Auto);
-        assert_eq!(config.thread_count, 0);
     }
 
     #[test]

@@ -226,16 +226,6 @@ impl Drop for AvFrameGuard {
 /// RAII guard for `SwrContext` to ensure proper cleanup.
 struct SwrContextGuard(*mut SwrContext);
 
-impl SwrContextGuard {
-    /// Consumes the guard and returns the raw pointer without dropping.
-    #[allow(dead_code)]
-    fn into_raw(self) -> *mut SwrContext {
-        let ptr = self.0;
-        std::mem::forget(self);
-        ptr
-    }
-}
-
 impl Drop for SwrContextGuard {
     fn drop(&mut self) {
         if !self.0.is_null() {
