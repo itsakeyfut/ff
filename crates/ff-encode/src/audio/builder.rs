@@ -284,8 +284,7 @@ impl AudioEncoder {
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Audio encoder not initialized".to_string(),
             })?;
-        // SAFETY: inner is properly initialised and we have exclusive access.
-        unsafe { inner.push_frame(frame)? };
+        inner.push_frame(frame)?;
         Ok(())
     }
 
@@ -296,8 +295,7 @@ impl AudioEncoder {
     /// Returns [`EncodeError`] if finalising fails.
     pub fn finish(mut self) -> Result<(), EncodeError> {
         if let Some(mut inner) = self.inner.take() {
-            // SAFETY: inner is properly initialised and we have exclusive access.
-            unsafe { inner.finish()? };
+            inner.finish()?;
         }
         Ok(())
     }

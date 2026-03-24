@@ -614,35 +614,35 @@ unsafe fn apply_quality(codec_ctx: *mut ff_sys::AVCodecContext, codec_id: AVCode
 /// which frees frame → packet → sws_ctx → codec_ctx → format_ctx regardless
 /// of whether encoding succeeds or fails.
 ///
-/// # Safety
-///
-/// `path` must be a valid UTF-8 file path. The caller must ensure that `opts`
-/// and `frame` are consistent (i.e. non-zero dimensions after fallback).
-pub(super) unsafe fn encode_image(
+pub(super) fn encode_image(
     path: &Path,
     frame: &VideoFrame,
     opts: &ImageEncodeOptions,
 ) -> Result<(), EncodeError> {
-    ff_sys::ensure_initialized();
+    // SAFETY: ImageEncoderInner::open and encode_frame exclusively own all
+    // FFmpeg resources; Drop frees them on every exit path.
+    unsafe {
+        ff_sys::ensure_initialized();
 
-    // Open the encoder; any error here drops `inner` (partially initialised),
-    // which frees whatever was allocated so far.
-    let mut inner = ImageEncoderInner::open(path, opts, frame)?;
+        // Open the encoder; any error here drops `inner` (partially initialised),
+        // which frees whatever was allocated so far.
+        let mut inner = ImageEncoderInner::open(path, opts, frame)?;
 
-    // Encode and finalise the file; on error `inner` is dropped here via `?`,
-    // releasing all remaining FFmpeg resources.
-    inner.encode_frame(frame)?;
+        // Encode and finalise the file; on error `inner` is dropped here via `?`,
+        // releasing all remaining FFmpeg resources.
+        inner.encode_frame(frame)?;
 
-    log::info!(
-        "Image encoded successfully path={} src={}x{} dst={}x{}",
-        path.display(),
-        frame.width(),
-        frame.height(),
-        inner.dst_width,
-        inner.dst_height,
-    );
+        log::info!(
+            "Image encoded successfully path={} src={}x{} dst={}x{}",
+            path.display(),
+            frame.width(),
+            frame.height(),
+            inner.dst_width,
+            inner.dst_height,
+        );
 
-    Ok(())
+        Ok(())
+    } // unsafe
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

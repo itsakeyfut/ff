@@ -919,8 +919,7 @@ impl VideoEncoder {
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Video encoder not initialized".to_string(),
             })?;
-        // SAFETY: inner is properly initialised and we have exclusive access.
-        unsafe { inner.push_video_frame(frame)? };
+        inner.push_video_frame(frame)?;
         let progress = self.create_progress_info();
         if let Some(ref mut callback) = self.progress_callback {
             callback.on_progress(&progress);
@@ -945,8 +944,7 @@ impl VideoEncoder {
             .ok_or_else(|| EncodeError::InvalidConfig {
                 reason: "Audio encoder not initialized".to_string(),
             })?;
-        // SAFETY: inner is properly initialised and we have exclusive access.
-        unsafe { inner.push_audio_frame(frame)? };
+        inner.push_audio_frame(frame)?;
         let progress = self.create_progress_info();
         if let Some(ref mut callback) = self.progress_callback {
             callback.on_progress(&progress);
@@ -961,8 +959,7 @@ impl VideoEncoder {
     /// Returns [`EncodeError`] if finalising fails.
     pub fn finish(mut self) -> Result<(), EncodeError> {
         if let Some(mut inner) = self.inner.take() {
-            // SAFETY: inner is properly initialised and we have exclusive access.
-            unsafe { inner.finish()? };
+            inner.finish()?;
         }
         Ok(())
     }

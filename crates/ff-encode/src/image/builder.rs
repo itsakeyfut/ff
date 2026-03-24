@@ -163,9 +163,7 @@ impl ImageEncoder {
             quality: self.quality,
             pixel_format: self.pixel_format,
         };
-        // SAFETY: encode_image manages all FFmpeg resources internally and
-        // frees them before returning, whether on success or error.
-        unsafe { encoder_inner::encode_image(&self.path, frame, &opts) }
+        encoder_inner::encode_image(&self.path, frame, &opts)
     }
 }
 
