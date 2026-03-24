@@ -7,6 +7,7 @@
 pub mod async_decoder;
 pub mod builder;
 pub mod decoder_inner;
+pub(crate) mod resample_inner;
 
 #[cfg(feature = "tokio")]
 pub use async_decoder::AsyncAudioDecoder;
