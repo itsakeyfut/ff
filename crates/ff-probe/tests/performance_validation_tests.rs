@@ -3,6 +3,12 @@
 //! These tests validate that metadata extraction meets the performance target:
 //! - Metadata extraction: 20-30ms (same as legacy ffmpeg-next)
 //!
+//! # Temporary file cleanup
+//!
+//! These tests are read-only: they call `ff_probe::open()` to inspect existing
+//! media files and do not produce any temporary output files. No
+//! `fixtures/mod.rs` with `FileGuard`/`DirGuard` is needed.
+//!
 //! Note: These tests use relaxed thresholds to account for CI environment variability.
 
 // Tests are allowed to use unwrap() for simplicity
