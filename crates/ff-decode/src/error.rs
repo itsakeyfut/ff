@@ -321,9 +321,17 @@ impl DecodeError {
 
     /// Returns `true` if this error is recoverable.
     ///
-    /// Recoverable errors are those where the decoder can continue
-    /// operating after the error, such as corrupted frames that can
-    /// be skipped.
+    /// Recoverable errors are those where the operation that raised the error
+    /// can be retried (or the decoder can transparently reconnect) without
+    /// rebuilding the decoder from scratch.
+    ///
+    /// | Variant | Recoverable |
+    /// |---|---|
+    /// | [`DecodingFailed`](Self::DecodingFailed) | ✓ — corrupt frame; skip and continue |
+    /// | [`SeekFailed`](Self::SeekFailed) | ✓ — retry at a different position |
+    /// | [`NetworkTimeout`](Self::NetworkTimeout) | ✓ — transient; reconnect |
+    /// | [`StreamInterrupted`](Self::StreamInterrupted) | ✓ — transient; reconnect |
+    /// | all others | ✗ |
     ///
     /// # Examples
     ///
@@ -340,13 +348,42 @@ impl DecodeError {
     /// ```
     #[must_use]
     pub fn is_recoverable(&self) -> bool {
-        matches!(self, Self::DecodingFailed { .. } | Self::SeekFailed { .. })
+        match self {
+            Self::DecodingFailed { .. }
+            | Self::SeekFailed { .. }
+            | Self::NetworkTimeout { .. }
+            | Self::StreamInterrupted { .. } => true,
+            Self::FileNotFound { .. }
+            | Self::NoVideoStream { .. }
+            | Self::NoAudioStream { .. }
+            | Self::UnsupportedCodec { .. }
+            | Self::DecoderUnavailable { .. }
+            | Self::HwAccelUnavailable { .. }
+            | Self::InvalidOutputDimensions { .. }
+            | Self::ConnectionFailed { .. }
+            | Self::Io(_)
+            | Self::Ffmpeg { .. }
+            | Self::SeekNotSupported => false,
+        }
     }
 
     /// Returns `true` if this error is fatal.
     ///
-    /// Fatal errors indicate that the decoder cannot continue and
-    /// must be recreated or the file reopened.
+    /// Fatal errors indicate that the decoder cannot continue operating and
+    /// must be discarded; re-opening or reconfiguring is required.
+    ///
+    /// | Variant | Fatal |
+    /// |---|---|
+    /// | [`FileNotFound`](Self::FileNotFound) | ✓ |
+    /// | [`NoVideoStream`](Self::NoVideoStream) | ✓ |
+    /// | [`NoAudioStream`](Self::NoAudioStream) | ✓ |
+    /// | [`UnsupportedCodec`](Self::UnsupportedCodec) | ✓ |
+    /// | [`DecoderUnavailable`](Self::DecoderUnavailable) | ✓ |
+    /// | [`HwAccelUnavailable`](Self::HwAccelUnavailable) | ✓ — must reconfigure without HW |
+    /// | [`InvalidOutputDimensions`](Self::InvalidOutputDimensions) | ✓ — bad config |
+    /// | [`ConnectionFailed`](Self::ConnectionFailed) | ✓ — host unreachable |
+    /// | [`Io`](Self::Io) | ✓ — I/O failure |
+    /// | all others | ✗ |
     ///
     /// # Examples
     ///
@@ -363,14 +400,23 @@ impl DecodeError {
     /// ```
     #[must_use]
     pub fn is_fatal(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::FileNotFound { .. }
-                | Self::NoVideoStream { .. }
-                | Self::NoAudioStream { .. }
-                | Self::UnsupportedCodec { .. }
-                | Self::DecoderUnavailable { .. }
-        )
+            | Self::NoVideoStream { .. }
+            | Self::NoAudioStream { .. }
+            | Self::UnsupportedCodec { .. }
+            | Self::DecoderUnavailable { .. }
+            | Self::HwAccelUnavailable { .. }
+            | Self::InvalidOutputDimensions { .. }
+            | Self::ConnectionFailed { .. }
+            | Self::Io(_) => true,
+            Self::DecodingFailed { .. }
+            | Self::SeekFailed { .. }
+            | Self::NetworkTimeout { .. }
+            | Self::StreamInterrupted { .. }
+            | Self::Ffmpeg { .. }
+            | Self::SeekNotSupported => false,
+        }
     }
 }
 
@@ -536,5 +582,138 @@ mod tests {
                 .contains("Hardware acceleration unavailable")
         );
         assert!(error.to_string().contains("Nvdec"));
+    }
+
+    // ── is_fatal / is_recoverable exhaustive coverage ────────────────────────
+
+    #[test]
+    fn file_not_found_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::FileNotFound {
+            path: PathBuf::new(),
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn no_video_stream_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::NoVideoStream {
+            path: PathBuf::new(),
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn no_audio_stream_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::NoAudioStream {
+            path: PathBuf::new(),
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn unsupported_codec_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::UnsupportedCodec {
+            codec: "test".to_string(),
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn decoder_unavailable_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::decoder_unavailable("exr", "hint");
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn decoding_failed_should_be_recoverable_and_not_fatal() {
+        let e = DecodeError::decoding_failed("corrupt frame");
+        assert!(e.is_recoverable());
+        assert!(!e.is_fatal());
+    }
+
+    #[test]
+    fn seek_failed_should_be_recoverable_and_not_fatal() {
+        let e = DecodeError::seek_failed(Duration::from_secs(5), "index not found");
+        assert!(e.is_recoverable());
+        assert!(!e.is_fatal());
+    }
+
+    #[test]
+    fn hw_accel_unavailable_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::HwAccelUnavailable {
+            accel: HardwareAccel::Nvdec,
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn invalid_output_dimensions_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::InvalidOutputDimensions {
+            width: 0,
+            height: 0,
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn ffmpeg_error_should_be_neither_fatal_nor_recoverable() {
+        let e = DecodeError::ffmpeg(-22, "AVERROR_INVALIDDATA");
+        assert!(!e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn io_error_should_be_fatal_and_not_recoverable() {
+        let e: DecodeError =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied").into();
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn network_timeout_should_be_recoverable_and_not_fatal() {
+        let e = DecodeError::NetworkTimeout {
+            code: -110,
+            endpoint: "rtmp://example.com/live".to_string(),
+            message: "timed out".to_string(),
+        };
+        assert!(e.is_recoverable());
+        assert!(!e.is_fatal());
+    }
+
+    #[test]
+    fn connection_failed_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::ConnectionFailed {
+            code: -111,
+            endpoint: "rtmp://example.com/live".to_string(),
+            message: "connection refused".to_string(),
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn stream_interrupted_should_be_recoverable_and_not_fatal() {
+        let e = DecodeError::StreamInterrupted {
+            code: -5,
+            endpoint: "rtmp://example.com/live".to_string(),
+            message: "I/O error".to_string(),
+        };
+        assert!(e.is_recoverable());
+        assert!(!e.is_fatal());
+    }
+
+    #[test]
+    fn seek_not_supported_should_be_neither_fatal_nor_recoverable() {
+        let e = DecodeError::SeekNotSupported;
+        assert!(!e.is_fatal());
+        assert!(!e.is_recoverable());
     }
 }
