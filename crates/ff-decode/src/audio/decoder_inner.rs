@@ -30,12 +30,12 @@ use std::time::Duration;
 use ff_format::channel::ChannelLayout;
 use ff_format::codec::AudioCodec;
 use ff_format::container::ContainerInfo;
-use ff_format::time::{Rational, Timestamp};
 use ff_format::{AudioFrame, AudioStreamInfo, NetworkOptions, SampleFormat};
 use ff_sys::{
     AVCodecContext, AVCodecID, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_AUDIO, AVPacket,
-    AVSampleFormat, SwrContext,
 };
+
+use super::resample_inner;
 
 use crate::error::DecodeError;
 
@@ -223,20 +223,6 @@ impl Drop for AvFrameGuard {
     }
 }
 
-/// RAII guard for `SwrContext` to ensure proper cleanup.
-struct SwrContextGuard(*mut SwrContext);
-
-impl Drop for SwrContextGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: self.0 is valid and owned by this guard
-            unsafe {
-                ff_sys::swr_free(&mut (self.0 as *mut _));
-            }
-        }
-    }
-}
-
 /// Internal decoder state holding FFmpeg contexts.
 ///
 /// This structure manages the lifecycle of FFmpeg objects and is responsible
@@ -248,8 +234,6 @@ pub(crate) struct AudioDecoderInner {
     codec_ctx: *mut AVCodecContext,
     /// Audio stream index in the format context
     stream_index: i32,
-    /// SwResample context for sample format conversion (optional)
-    swr_ctx: Option<*mut SwrContext>,
     /// Target output sample format (if conversion is needed)
     output_format: Option<SampleFormat>,
     /// Target output sample rate (if resampling is needed)
@@ -424,7 +408,6 @@ impl AudioDecoderInner {
                 format_ctx: format_ctx_guard.into_raw(),
                 codec_ctx: codec_ctx_guard.into_raw(),
                 stream_index: stream_index as i32,
-                swr_ctx: None,
                 output_format,
                 output_sample_rate,
                 output_channels,
@@ -510,7 +493,7 @@ impl AudioDecoderInner {
         };
 
         // Extract sample format
-        let sample_format = Self::convert_sample_format(sample_fmt);
+        let sample_format = resample_inner::convert_sample_format(sample_fmt);
 
         // Extract channel layout
         let channel_layout_enum = Self::convert_channel_layout(&channel_layout, channels);
@@ -572,36 +555,6 @@ impl AudioDecoderInner {
         }
     }
 
-    /// Converts FFmpeg sample format to our `SampleFormat` enum.
-    fn convert_sample_format(fmt: AVSampleFormat) -> SampleFormat {
-        if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_U8 {
-            SampleFormat::U8
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S16 {
-            SampleFormat::I16
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S32 {
-            SampleFormat::I32
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLT {
-            SampleFormat::F32
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_DBL {
-            SampleFormat::F64
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_U8P {
-            SampleFormat::U8p
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S16P {
-            SampleFormat::I16p
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S32P {
-            SampleFormat::I32p
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLTP {
-            SampleFormat::F32p
-        } else if fmt == ff_sys::AVSampleFormat_AV_SAMPLE_FMT_DBLP {
-            SampleFormat::F64p
-        } else {
-            log::warn!(
-                "sample_format unsupported, falling back to F32 requested={fmt} fallback=F32"
-            );
-            SampleFormat::F32
-        }
-    }
-
     /// Converts FFmpeg channel layout to our `ChannelLayout` enum.
     fn convert_channel_layout(layout: &ff_sys::AVChannelLayout, channels: u32) -> ChannelLayout {
         if layout.order == ff_sys::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE {
@@ -633,21 +586,6 @@ impl AudioDecoderInner {
             );
             ChannelLayout::from_channels(channels)
         }
-    }
-
-    /// Creates an `AVChannelLayout` from channel count.
-    ///
-    /// # Safety
-    ///
-    /// The returned layout must be freed with `av_channel_layout_uninit`.
-    unsafe fn create_channel_layout(channels: u32) -> ff_sys::AVChannelLayout {
-        // SAFETY: Zeroing AVChannelLayout is safe
-        let mut layout = unsafe { std::mem::zeroed::<ff_sys::AVChannelLayout>() };
-        // SAFETY: Caller ensures proper cleanup
-        unsafe {
-            ff_sys::av_channel_layout_default(&raw mut layout, channels as i32);
-        }
-        layout
     }
 
     /// Converts FFmpeg codec ID to our `AudioCodec` enum.
@@ -708,7 +646,14 @@ impl AudioDecoderInner {
 
                 if ret == 0 {
                     // Successfully received a frame
-                    let audio_frame = self.convert_frame_to_audio_frame()?;
+                    let audio_frame = resample_inner::convert_frame_to_audio_frame(
+                        self.frame,
+                        self.format_ctx,
+                        self.stream_index,
+                        self.output_format,
+                        self.output_sample_rate,
+                        self.output_channels,
+                    )?;
 
                     // Update position based on frame timestamp
                     let pts = (*self.frame).pts;
@@ -778,332 +723,6 @@ impl AudioDecoderInner {
                         reason: ff_sys::av_error_string(ret),
                     });
                 }
-            }
-        }
-    }
-
-    /// Converts an AVFrame to an AudioFrame, applying sample format conversion if needed.
-    unsafe fn convert_frame_to_audio_frame(&mut self) -> Result<AudioFrame, DecodeError> {
-        // SAFETY: Caller ensures self.frame is valid
-        unsafe {
-            let nb_samples = (*self.frame).nb_samples as usize;
-            let channels = (*self.frame).ch_layout.nb_channels as u32;
-            let sample_rate = (*self.frame).sample_rate as u32;
-            let src_format = (*self.frame).format;
-
-            // Determine if we need conversion
-            let needs_conversion = self.output_format.is_some()
-                || self.output_sample_rate.is_some()
-                || self.output_channels.is_some();
-
-            if needs_conversion {
-                self.convert_with_swr(nb_samples, channels, sample_rate, src_format)
-            } else {
-                self.av_frame_to_audio_frame(self.frame)
-            }
-        }
-    }
-
-    /// Converts sample format/rate/channels using SwResample.
-    unsafe fn convert_with_swr(
-        &mut self,
-        nb_samples: usize,
-        src_channels: u32,
-        src_sample_rate: u32,
-        src_format: i32,
-    ) -> Result<AudioFrame, DecodeError> {
-        // Determine target parameters
-        let dst_format = self
-            .output_format
-            .map_or(src_format, Self::sample_format_to_av);
-        let dst_sample_rate = self.output_sample_rate.unwrap_or(src_sample_rate);
-        let dst_channels = self.output_channels.unwrap_or(src_channels);
-
-        // If no conversion is needed, return the frame directly
-        if src_format == dst_format
-            && src_sample_rate == dst_sample_rate
-            && src_channels == dst_channels
-        {
-            return unsafe { self.av_frame_to_audio_frame(self.frame) };
-        }
-
-        // Create channel layouts for source and destination
-        // SAFETY: We'll properly clean up these layouts
-        let mut src_ch_layout = unsafe { Self::create_channel_layout(src_channels) };
-        let mut dst_ch_layout = unsafe { Self::create_channel_layout(dst_channels) };
-
-        // Create SwrContext using swr_alloc_set_opts2
-        let mut swr_ctx: *mut SwrContext = ptr::null_mut();
-
-        // SAFETY: FFmpeg API call with valid parameters
-        let ret = unsafe {
-            ff_sys::swr_alloc_set_opts2(
-                &raw mut swr_ctx,
-                &raw const dst_ch_layout,
-                dst_format,
-                dst_sample_rate as i32,
-                &raw const src_ch_layout,
-                src_format,
-                src_sample_rate as i32,
-                0,
-                ptr::null_mut(),
-            )
-        };
-
-        if ret < 0 {
-            // Clean up channel layouts
-            unsafe {
-                ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
-                ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
-            }
-            return Err(DecodeError::Ffmpeg {
-                code: ret,
-                message: format!(
-                    "Failed to allocate SwrContext: {}",
-                    ff_sys::av_error_string(ret)
-                ),
-            });
-        }
-
-        // Wrap in RAII guard for automatic cleanup
-        let _swr_guard = SwrContextGuard(swr_ctx);
-
-        // Initialize the resampler
-        // SAFETY: swr_ctx is valid
-        let ret = unsafe { ff_sys::swr_init(swr_ctx) };
-        if ret < 0 {
-            // Clean up channel layouts
-            unsafe {
-                ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
-                ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
-            }
-            return Err(DecodeError::Ffmpeg {
-                code: ret,
-                message: format!(
-                    "Failed to initialize SwrContext: {}",
-                    ff_sys::av_error_string(ret)
-                ),
-            });
-        }
-
-        // Calculate output sample count
-        // SAFETY: swr_ctx is valid and initialized
-        let out_samples = unsafe { ff_sys::swr_get_out_samples(swr_ctx, nb_samples as i32) };
-
-        if out_samples < 0 {
-            // Clean up channel layouts
-            unsafe {
-                ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
-                ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
-            }
-            return Err(DecodeError::Ffmpeg {
-                code: 0,
-                message: "Failed to calculate output sample count".to_string(),
-            });
-        }
-
-        let out_samples = out_samples as usize;
-
-        // Calculate buffer size for output
-        let dst_sample_fmt = Self::convert_sample_format(dst_format);
-        let bytes_per_sample = dst_sample_fmt.bytes_per_sample();
-        let is_planar = dst_sample_fmt.is_planar();
-
-        // Allocate output buffer
-        let buffer_size = if is_planar {
-            // For planar formats, each plane has samples * bytes_per_sample
-            out_samples * bytes_per_sample * dst_channels as usize
-        } else {
-            // For packed formats, interleaved samples
-            out_samples * bytes_per_sample * dst_channels as usize
-        };
-
-        let mut out_buffer = vec![0u8; buffer_size];
-
-        // Prepare output pointers for swr_convert
-        let mut out_ptrs = if is_planar {
-            // For planar formats, create separate pointers for each channel
-            let plane_size = out_samples * bytes_per_sample;
-            (0..dst_channels)
-                .map(|i| {
-                    let offset = i as usize * plane_size;
-                    out_buffer[offset..].as_mut_ptr()
-                })
-                .collect::<Vec<_>>()
-        } else {
-            // For packed formats, single pointer
-            vec![out_buffer.as_mut_ptr()]
-        };
-
-        // Get input data pointers from frame
-        // SAFETY: self.frame is valid
-        let in_ptrs = unsafe { (*self.frame).data };
-
-        // Convert samples using SwResample
-        // SAFETY: All pointers are valid and buffers are properly sized
-        let converted_samples = unsafe {
-            ff_sys::swr_convert(
-                swr_ctx,
-                out_ptrs.as_mut_ptr(),
-                out_samples as i32,
-                in_ptrs.as_ptr() as *mut *const u8,
-                nb_samples as i32,
-            )
-        };
-
-        // Clean up channel layouts
-        unsafe {
-            ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
-            ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
-        }
-
-        if converted_samples < 0 {
-            return Err(DecodeError::Ffmpeg {
-                code: converted_samples,
-                message: format!(
-                    "Failed to convert samples: {}",
-                    ff_sys::av_error_string(converted_samples)
-                ),
-            });
-        }
-
-        // Extract timestamp from original frame
-        // SAFETY: self.frame is valid
-        let timestamp = unsafe {
-            let pts = (*self.frame).pts;
-            if pts != ff_sys::AV_NOPTS_VALUE {
-                let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
-                let time_base = (*(*stream)).time_base;
-                Timestamp::new(pts, Rational::new(time_base.num, time_base.den))
-            } else {
-                Timestamp::invalid()
-            }
-        };
-
-        // Create planes for AudioFrame
-        let planes = if is_planar {
-            let plane_size = converted_samples as usize * bytes_per_sample;
-            (0..dst_channels)
-                .map(|i| {
-                    let offset = i as usize * plane_size;
-                    out_buffer[offset..offset + plane_size].to_vec()
-                })
-                .collect()
-        } else {
-            // For packed formats, single plane with all data
-            vec![
-                out_buffer[..converted_samples as usize * bytes_per_sample * dst_channels as usize]
-                    .to_vec(),
-            ]
-        };
-
-        AudioFrame::new(
-            planes,
-            converted_samples as usize,
-            dst_channels,
-            dst_sample_rate,
-            dst_sample_fmt,
-            timestamp,
-        )
-        .map_err(|e| DecodeError::Ffmpeg {
-            code: 0,
-            message: format!("Failed to create AudioFrame: {e}"),
-        })
-    }
-
-    /// Converts an AVFrame to an AudioFrame.
-    unsafe fn av_frame_to_audio_frame(
-        &self,
-        frame: *const AVFrame,
-    ) -> Result<AudioFrame, DecodeError> {
-        // SAFETY: Caller ensures frame and format_ctx are valid
-        unsafe {
-            let nb_samples = (*frame).nb_samples as usize;
-            let channels = (*frame).ch_layout.nb_channels as u32;
-            let sample_rate = (*frame).sample_rate as u32;
-            let format = Self::convert_sample_format((*frame).format);
-
-            // Extract timestamp
-            let pts = (*frame).pts;
-            let timestamp = if pts != ff_sys::AV_NOPTS_VALUE {
-                let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
-                let time_base = (*(*stream)).time_base;
-                Timestamp::new(
-                    pts as i64,
-                    Rational::new(time_base.num as i32, time_base.den as i32),
-                )
-            } else {
-                Timestamp::invalid()
-            };
-
-            // Convert frame to planes
-            let planes = Self::extract_planes(frame, nb_samples, channels, format)?;
-
-            AudioFrame::new(planes, nb_samples, channels, sample_rate, format, timestamp).map_err(
-                |e| DecodeError::Ffmpeg {
-                    code: 0,
-                    message: format!("Failed to create AudioFrame: {e}"),
-                },
-            )
-        }
-    }
-
-    /// Extracts planes from an AVFrame.
-    unsafe fn extract_planes(
-        frame: *const AVFrame,
-        nb_samples: usize,
-        channels: u32,
-        format: SampleFormat,
-    ) -> Result<Vec<Vec<u8>>, DecodeError> {
-        // SAFETY: Caller ensures frame is valid and format matches actual frame format
-        unsafe {
-            let mut planes = Vec::new();
-            let bytes_per_sample = format.bytes_per_sample();
-
-            if format.is_planar() {
-                // Planar: one plane per channel
-                for ch in 0..channels as usize {
-                    let plane_size = nb_samples * bytes_per_sample;
-                    let mut plane_data = vec![0u8; plane_size];
-
-                    let src_ptr = (*frame).data[ch];
-                    std::ptr::copy_nonoverlapping(src_ptr, plane_data.as_mut_ptr(), plane_size);
-
-                    planes.push(plane_data);
-                }
-            } else {
-                // Packed: single plane with interleaved samples
-                let plane_size = nb_samples * channels as usize * bytes_per_sample;
-                let mut plane_data = vec![0u8; plane_size];
-
-                let src_ptr = (*frame).data[0];
-                std::ptr::copy_nonoverlapping(src_ptr, plane_data.as_mut_ptr(), plane_size);
-
-                planes.push(plane_data);
-            }
-
-            Ok(planes)
-        }
-    }
-
-    /// Converts our `SampleFormat` to FFmpeg `AVSampleFormat`.
-    fn sample_format_to_av(format: SampleFormat) -> AVSampleFormat {
-        match format {
-            SampleFormat::U8 => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_U8,
-            SampleFormat::I16 => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S16,
-            SampleFormat::I32 => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S32,
-            SampleFormat::F32 => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLT,
-            SampleFormat::F64 => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_DBL,
-            SampleFormat::U8p => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_U8P,
-            SampleFormat::I16p => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S16P,
-            SampleFormat::I32p => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_S32P,
-            SampleFormat::F32p => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLTP,
-            SampleFormat::F64p => ff_sys::AVSampleFormat_AV_SAMPLE_FMT_DBLP,
-            _ => {
-                log::warn!(
-                    "sample_format has no AV mapping, falling back to F32 format={format:?} fallback=AV_SAMPLE_FMT_FLT"
-                );
-                ff_sys::AVSampleFormat_AV_SAMPLE_FMT_FLT
             }
         }
     }
@@ -1334,15 +953,6 @@ impl AudioDecoderInner {
 
 impl Drop for AudioDecoderInner {
     fn drop(&mut self) {
-        // Free SwResample context if allocated
-        if let Some(swr_ctx) = self.swr_ctx {
-            // SAFETY: swr_ctx is valid and owned by this instance
-            unsafe {
-                // swr_free frees a SwrContext
-                ff_sys::swr_free(&mut (swr_ctx as *mut _));
-            }
-        }
-
         // Free frame and packet
         if !self.frame.is_null() {
             // SAFETY: self.frame is valid and owned by this instance
