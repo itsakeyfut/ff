@@ -1586,19 +1586,91 @@ impl VideoEncoderInner {
     /// In two-pass mode the frame is converted to YUV420P via the pass-1 codec
     /// context, the converted data is buffered for pass-2 replay, and the frame
     /// is then sent through the pass-1 encoder (whose output is discarded).
-    pub(super) unsafe fn push_video_frame(
-        &mut self,
-        frame: &VideoFrame,
-    ) -> Result<(), EncodeError> {
-        // ── Two-pass path ────────────────────────────────────────────────────
-        if self.two_pass {
-            let pass1_ctx = self
-                .pass1_codec_ctx
+    pub(super) fn push_video_frame(&mut self, frame: &VideoFrame) -> Result<(), EncodeError> {
+        // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
+        unsafe {
+            // ── Two-pass path ────────────────────────────────────────────────────
+            if self.two_pass {
+                let pass1_ctx = self
+                    .pass1_codec_ctx
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Pass-1 codec context not initialized".to_string(),
+                    })?;
+
+                // Convert the incoming frame to YUV420P (the pass-1 codec's format).
+                let mut av_frame = av_frame_alloc();
+                if av_frame.is_null() {
+                    return Err(EncodeError::Ffmpeg {
+                        code: 0,
+                        message: "Cannot allocate frame".to_string(),
+                    });
+                }
+
+                let convert_result = self.convert_video_frame(frame, av_frame, pass1_ctx);
+                if let Err(e) = convert_result {
+                    av_frame_free(&mut av_frame as *mut *mut _);
+                    return Err(e);
+                }
+
+                // Buffer the converted YUV420P data for pass-2 replay.
+                let width = (*pass1_ctx).width as u32;
+                let height = (*pass1_ctx).height as u32;
+                let uv_height = (height as usize).div_ceil(2);
+
+                let planes: Vec<Vec<u8>> = (0..3)
+                    .map(|i| {
+                        if (*av_frame).data[i].is_null() {
+                            return Vec::new();
+                        }
+                        let stride = (*av_frame).linesize[i] as usize;
+                        let h = if i == 0 { height as usize } else { uv_height };
+                        // SAFETY: data[i] points to a valid buffer of stride * h bytes
+                        // allocated by av_frame_get_buffer inside convert_video_frame.
+                        std::slice::from_raw_parts((*av_frame).data[i], stride * h).to_vec()
+                    })
+                    .collect();
+
+                let strides: Vec<usize> =
+                    (0..3).map(|i| (*av_frame).linesize[i] as usize).collect();
+
+                self.buffered_frames.push(TwoPassFrame {
+                    planes,
+                    strides,
+                    width,
+                    height,
+                    pts: self.frame_count as i64,
+                });
+
+                // Send to pass-1 encoder and discard the encoded output.
+                (*av_frame).pts = self.frame_count as i64;
+                let send_result = avcodec::send_frame(pass1_ctx, av_frame);
+                if let Err(e) = send_result {
+                    av_frame_free(&mut av_frame as *mut *mut _);
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Failed to send frame to pass-1 encoder: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    });
+                }
+
+                let drain_result = self.drain_pass1_packets(pass1_ctx);
+                av_frame_free(&mut av_frame as *mut *mut _);
+                drain_result?;
+
+                self.frame_count += 1;
+                return Ok(());
+            }
+
+            // ── Single-pass path ─────────────────────────────────────────────────
+            let codec_ctx = self
+                .video_codec_ctx
                 .ok_or_else(|| EncodeError::InvalidConfig {
-                    reason: "Pass-1 codec context not initialized".to_string(),
+                    reason: "Video codec not initialized".to_string(),
                 })?;
 
-            // Convert the incoming frame to YUV420P (the pass-1 codec's format).
+            // Allocate AVFrame
             let mut av_frame = av_frame_alloc();
             if av_frame.is_null() {
                 return Err(EncodeError::Ffmpeg {
@@ -1607,110 +1679,39 @@ impl VideoEncoderInner {
                 });
             }
 
-            let convert_result = self.convert_video_frame(frame, av_frame, pass1_ctx);
+            // Convert VideoFrame to AVFrame
+            let convert_result = self.convert_video_frame(frame, av_frame, codec_ctx);
             if let Err(e) = convert_result {
                 av_frame_free(&mut av_frame as *mut *mut _);
                 return Err(e);
             }
 
-            // Buffer the converted YUV420P data for pass-2 replay.
-            let width = (*pass1_ctx).width as u32;
-            let height = (*pass1_ctx).height as u32;
-            let uv_height = (height as usize).div_ceil(2);
-
-            let planes: Vec<Vec<u8>> = (0..3)
-                .map(|i| {
-                    if (*av_frame).data[i].is_null() {
-                        return Vec::new();
-                    }
-                    let stride = (*av_frame).linesize[i] as usize;
-                    let h = if i == 0 { height as usize } else { uv_height };
-                    // SAFETY: data[i] points to a valid buffer of stride * h bytes
-                    // allocated by av_frame_get_buffer inside convert_video_frame.
-                    std::slice::from_raw_parts((*av_frame).data[i], stride * h).to_vec()
-                })
-                .collect();
-
-            let strides: Vec<usize> = (0..3).map(|i| (*av_frame).linesize[i] as usize).collect();
-
-            self.buffered_frames.push(TwoPassFrame {
-                planes,
-                strides,
-                width,
-                height,
-                pts: self.frame_count as i64,
-            });
-
-            // Send to pass-1 encoder and discard the encoded output.
+            // Set frame properties
             (*av_frame).pts = self.frame_count as i64;
-            let send_result = avcodec::send_frame(pass1_ctx, av_frame);
+
+            // Send frame to encoder
+            let send_result = avcodec::send_frame(codec_ctx, av_frame);
             if let Err(e) = send_result {
                 av_frame_free(&mut av_frame as *mut *mut _);
                 return Err(EncodeError::Ffmpeg {
                     code: e,
-                    message: format!(
-                        "Failed to send frame to pass-1 encoder: {}",
-                        ff_sys::av_error_string(e)
-                    ),
+                    message: format!("Failed to send frame: {}", ff_sys::av_error_string(e)),
                 });
             }
 
-            let drain_result = self.drain_pass1_packets(pass1_ctx);
+            // Receive packets
+            let receive_result = self.receive_packets();
+
+            // Always cleanup the frame
             av_frame_free(&mut av_frame as *mut *mut _);
-            drain_result?;
+
+            // Check if receiving packets failed
+            receive_result?;
 
             self.frame_count += 1;
-            return Ok(());
-        }
 
-        // ── Single-pass path ─────────────────────────────────────────────────
-        let codec_ctx = self
-            .video_codec_ctx
-            .ok_or_else(|| EncodeError::InvalidConfig {
-                reason: "Video codec not initialized".to_string(),
-            })?;
-
-        // Allocate AVFrame
-        let mut av_frame = av_frame_alloc();
-        if av_frame.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot allocate frame".to_string(),
-            });
-        }
-
-        // Convert VideoFrame to AVFrame
-        let convert_result = self.convert_video_frame(frame, av_frame, codec_ctx);
-        if let Err(e) = convert_result {
-            av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(e);
-        }
-
-        // Set frame properties
-        (*av_frame).pts = self.frame_count as i64;
-
-        // Send frame to encoder
-        let send_result = avcodec::send_frame(codec_ctx, av_frame);
-        if let Err(e) = send_result {
-            av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(EncodeError::Ffmpeg {
-                code: e,
-                message: format!("Failed to send frame: {}", ff_sys::av_error_string(e)),
-            });
-        }
-
-        // Receive packets
-        let receive_result = self.receive_packets();
-
-        // Always cleanup the frame
-        av_frame_free(&mut av_frame as *mut *mut _);
-
-        // Check if receiving packets failed
-        receive_result?;
-
-        self.frame_count += 1;
-
-        Ok(())
+            Ok(())
+        } // unsafe
     }
 
     /// Drain and discard all pending packets from a codec context.
@@ -2158,57 +2159,57 @@ impl VideoEncoderInner {
     }
 
     /// Push an audio frame for encoding.
-    pub(super) unsafe fn push_audio_frame(
-        &mut self,
-        frame: &AudioFrame,
-    ) -> Result<(), EncodeError> {
-        let codec_ctx = self
-            .audio_codec_ctx
-            .ok_or_else(|| EncodeError::InvalidConfig {
-                reason: "Audio codec not initialized".to_string(),
-            })?;
+    pub(super) fn push_audio_frame(&mut self, frame: &AudioFrame) -> Result<(), EncodeError> {
+        // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
+        unsafe {
+            let codec_ctx = self
+                .audio_codec_ctx
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Audio codec not initialized".to_string(),
+                })?;
 
-        // Allocate AVFrame
-        let mut av_frame = av_frame_alloc();
-        if av_frame.is_null() {
-            return Err(EncodeError::Ffmpeg {
-                code: 0,
-                message: "Cannot allocate frame".to_string(),
-            });
-        }
+            // Allocate AVFrame
+            let mut av_frame = av_frame_alloc();
+            if av_frame.is_null() {
+                return Err(EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Cannot allocate frame".to_string(),
+                });
+            }
 
-        // Convert AudioFrame to AVFrame
-        let convert_result = self.convert_audio_frame(frame, av_frame);
-        if let Err(e) = convert_result {
+            // Convert AudioFrame to AVFrame
+            let convert_result = self.convert_audio_frame(frame, av_frame);
+            if let Err(e) = convert_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(e);
+            }
+
+            // Set frame properties
+            (*av_frame).pts = self.audio_sample_count as i64;
+
+            // Send frame to encoder
+            let send_result = avcodec::send_frame(codec_ctx, av_frame);
+            if let Err(e) = send_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(EncodeError::Ffmpeg {
+                    code: e,
+                    message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
+                });
+            }
+
+            // Receive packets
+            let receive_result = self.receive_audio_packets();
+
+            // Always cleanup the frame
             av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(e);
-        }
 
-        // Set frame properties
-        (*av_frame).pts = self.audio_sample_count as i64;
+            // Check if receiving packets failed
+            receive_result?;
 
-        // Send frame to encoder
-        let send_result = avcodec::send_frame(codec_ctx, av_frame);
-        if let Err(e) = send_result {
-            av_frame_free(&mut av_frame as *mut *mut _);
-            return Err(EncodeError::Ffmpeg {
-                code: e,
-                message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
-            });
-        }
+            self.audio_sample_count += frame.samples() as u64;
 
-        // Receive packets
-        let receive_result = self.receive_audio_packets();
-
-        // Always cleanup the frame
-        av_frame_free(&mut av_frame as *mut *mut _);
-
-        // Check if receiving packets failed
-        receive_result?;
-
-        self.audio_sample_count += frame.samples() as u64;
-
-        Ok(())
+            Ok(())
+        } // unsafe
     }
 
     /// Convert AudioFrame to AVFrame with resampling if needed.
@@ -2413,39 +2414,44 @@ impl VideoEncoderInner {
     }
 
     /// Finish encoding and write trailer.
-    pub(super) unsafe fn finish(&mut self) -> Result<(), EncodeError> {
-        // For two-pass, run the second pass now (handles flushing + trailer).
-        if self.two_pass {
-            return self.run_pass2();
-        }
+    pub(super) fn finish(&mut self) -> Result<(), EncodeError> {
+        // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
+        unsafe {
+            // For two-pass, run the second pass now (handles flushing + trailer).
+            if self.two_pass {
+                return self.run_pass2();
+            }
 
-        // Single-pass: flush video encoder
-        if let Some(codec_ctx) = self.video_codec_ctx {
-            // Send NULL frame to flush
-            avcodec::send_frame(codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
-            self.receive_packets()?;
-        }
+            // Single-pass: flush video encoder
+            if let Some(codec_ctx) = self.video_codec_ctx {
+                // Send NULL frame to flush
+                avcodec::send_frame(codec_ctx, ptr::null())
+                    .map_err(EncodeError::from_ffmpeg_error)?;
+                self.receive_packets()?;
+            }
 
-        // Flush audio encoder
-        if let Some(codec_ctx) = self.audio_codec_ctx {
-            // Send NULL frame to flush
-            avcodec::send_frame(codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
-            self.receive_audio_packets()?;
-        }
+            // Flush audio encoder
+            if let Some(codec_ctx) = self.audio_codec_ctx {
+                // Send NULL frame to flush
+                avcodec::send_frame(codec_ctx, ptr::null())
+                    .map_err(EncodeError::from_ffmpeg_error)?;
+                self.receive_audio_packets()?;
+            }
 
-        // Write subtitle passthrough packets before trailer.
-        self.write_subtitle_packets()?;
+            // Write subtitle passthrough packets before trailer.
+            self.write_subtitle_packets()?;
 
-        // Write trailer
-        let ret = av_write_trailer(self.format_ctx);
-        if ret < 0 {
-            return Err(EncodeError::Ffmpeg {
-                code: ret,
-                message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
-            });
-        }
+            // Write trailer
+            let ret = av_write_trailer(self.format_ctx);
+            if ret < 0 {
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
+                });
+            }
 
-        Ok(())
+            Ok(())
+        } // unsafe
     }
 
     /// Run the second pass of two-pass encoding.

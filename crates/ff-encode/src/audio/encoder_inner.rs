@@ -452,88 +452,94 @@ impl AudioEncoderInner {
     }
 
     /// Push an audio frame for encoding.
-    pub(super) unsafe fn push_frame(&mut self, frame: &AudioFrame) -> Result<(), EncodeError> {
-        let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
-            reason: "Audio codec not initialized".to_string(),
-        })?;
-
-        if !self.fifo.is_null() {
-            // Fixed-frame-size path: convert → write into AVAudioFifo → drain
-            // complete frames.  AVAudioFifo manages the ring buffer internally.
-            let mut av_frame = av_frame_alloc();
-            if av_frame.is_null() {
-                return Err(EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Cannot allocate frame".to_string(),
-                });
-            }
-
-            let convert_result = self.convert_audio_frame(frame, av_frame);
-            if let Err(e) = convert_result {
-                av_frame_free(&mut av_frame as *mut *mut _);
-                return Err(e);
-            }
-
-            let nb_samples = (*av_frame).nb_samples;
-
-            // Write converted samples into AVAudioFifo.
-            // SAFETY: av_frame data buffers were allocated by convert_audio_frame
-            let write_result = swresample::audio_fifo::write(
-                self.fifo,
-                (*av_frame).data.as_ptr().cast::<*mut c_void>(),
-                nb_samples,
-            );
-
-            av_frame_free(&mut av_frame as *mut *mut _);
-
-            write_result.map_err(|e| EncodeError::Ffmpeg {
-                code: e,
-                message: format!(
-                    "Failed to write to audio FIFO: {}",
-                    ff_sys::av_error_string(e)
-                ),
+    pub(super) fn push_frame(&mut self, frame: &AudioFrame) -> Result<(), EncodeError> {
+        // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
+        unsafe {
+            let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Audio codec not initialized".to_string(),
             })?;
 
-            // Drain all complete frames from the FIFO
-            let frame_size = self.frame_size as i32;
-            while swresample::audio_fifo::size(self.fifo) >= frame_size {
-                self.drain_fifo_frame(codec_ctx, frame_size, false)?;
-            }
-        } else {
-            // Direct path: send frame straight to the encoder.
-            let mut av_frame = av_frame_alloc();
-            if av_frame.is_null() {
-                return Err(EncodeError::Ffmpeg {
-                    code: 0,
-                    message: "Cannot allocate frame".to_string(),
-                });
-            }
+            if !self.fifo.is_null() {
+                // Fixed-frame-size path: convert → write into AVAudioFifo → drain
+                // complete frames.  AVAudioFifo manages the ring buffer internally.
+                let mut av_frame = av_frame_alloc();
+                if av_frame.is_null() {
+                    return Err(EncodeError::Ffmpeg {
+                        code: 0,
+                        message: "Cannot allocate frame".to_string(),
+                    });
+                }
 
-            let convert_result = self.convert_audio_frame(frame, av_frame);
-            if let Err(e) = convert_result {
+                let convert_result = self.convert_audio_frame(frame, av_frame);
+                if let Err(e) = convert_result {
+                    av_frame_free(&mut av_frame as *mut *mut _);
+                    return Err(e);
+                }
+
+                let nb_samples = (*av_frame).nb_samples;
+
+                // Write converted samples into AVAudioFifo.
+                // SAFETY: av_frame data buffers were allocated by convert_audio_frame
+                let write_result = swresample::audio_fifo::write(
+                    self.fifo,
+                    (*av_frame).data.as_ptr().cast::<*mut c_void>(),
+                    nb_samples,
+                );
+
                 av_frame_free(&mut av_frame as *mut *mut _);
-                return Err(e);
-            }
 
-            (*av_frame).pts = self.sample_count as i64;
-
-            let send_result = avcodec::send_frame(codec_ctx, av_frame);
-            if let Err(e) = send_result {
-                av_frame_free(&mut av_frame as *mut *mut _);
-                return Err(EncodeError::Ffmpeg {
+                write_result.map_err(|e| EncodeError::Ffmpeg {
                     code: e,
-                    message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
-                });
+                    message: format!(
+                        "Failed to write to audio FIFO: {}",
+                        ff_sys::av_error_string(e)
+                    ),
+                })?;
+
+                // Drain all complete frames from the FIFO
+                let frame_size = self.frame_size as i32;
+                while swresample::audio_fifo::size(self.fifo) >= frame_size {
+                    self.drain_fifo_frame(codec_ctx, frame_size, false)?;
+                }
+            } else {
+                // Direct path: send frame straight to the encoder.
+                let mut av_frame = av_frame_alloc();
+                if av_frame.is_null() {
+                    return Err(EncodeError::Ffmpeg {
+                        code: 0,
+                        message: "Cannot allocate frame".to_string(),
+                    });
+                }
+
+                let convert_result = self.convert_audio_frame(frame, av_frame);
+                if let Err(e) = convert_result {
+                    av_frame_free(&mut av_frame as *mut *mut _);
+                    return Err(e);
+                }
+
+                (*av_frame).pts = self.sample_count as i64;
+
+                let send_result = avcodec::send_frame(codec_ctx, av_frame);
+                if let Err(e) = send_result {
+                    av_frame_free(&mut av_frame as *mut *mut _);
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Failed to send audio frame: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    });
+                }
+
+                let receive_result = self.receive_packets();
+                av_frame_free(&mut av_frame as *mut *mut _);
+                receive_result?;
+
+                self.sample_count += frame.samples() as u64;
             }
 
-            let receive_result = self.receive_packets();
-            av_frame_free(&mut av_frame as *mut *mut _);
-            receive_result?;
-
-            self.sample_count += frame.samples() as u64;
-        }
-
-        Ok(())
+            Ok(())
+        } // unsafe
     }
 
     /// Read `frame_size` samples from the FIFO into a new AVFrame and encode it.
@@ -826,33 +832,37 @@ impl AudioEncoderInner {
     }
 
     /// Finish encoding and write trailer.
-    pub(super) unsafe fn finish(&mut self) -> Result<(), EncodeError> {
-        // Flush any remaining samples from the AVAudioFifo (silence-padded to a
-        // full frame so the encoder always receives its required frame_size).
-        if !self.fifo.is_null() && swresample::audio_fifo::size(self.fifo) > 0 {
-            let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
-                reason: "Audio codec not initialized".to_string(),
-            })?;
-            self.drain_fifo_frame(codec_ctx, self.frame_size as i32, true)?;
-        }
+    pub(super) fn finish(&mut self) -> Result<(), EncodeError> {
+        // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
+        unsafe {
+            // Flush any remaining samples from the AVAudioFifo (silence-padded to a
+            // full frame so the encoder always receives its required frame_size).
+            if !self.fifo.is_null() && swresample::audio_fifo::size(self.fifo) > 0 {
+                let codec_ctx = self.codec_ctx.ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Audio codec not initialized".to_string(),
+                })?;
+                self.drain_fifo_frame(codec_ctx, self.frame_size as i32, true)?;
+            }
 
-        // Flush audio encoder
-        if let Some(codec_ctx) = self.codec_ctx {
-            // Send NULL frame to flush
-            avcodec::send_frame(codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
-            self.receive_packets()?;
-        }
+            // Flush audio encoder
+            if let Some(codec_ctx) = self.codec_ctx {
+                // Send NULL frame to flush
+                avcodec::send_frame(codec_ctx, ptr::null())
+                    .map_err(EncodeError::from_ffmpeg_error)?;
+                self.receive_packets()?;
+            }
 
-        // Write trailer
-        let ret = av_write_trailer(self.format_ctx);
-        if ret < 0 {
-            return Err(EncodeError::Ffmpeg {
-                code: ret,
-                message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
-            });
-        }
+            // Write trailer
+            let ret = av_write_trailer(self.format_ctx);
+            if ret < 0 {
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
+                });
+            }
 
-        Ok(())
+            Ok(())
+        } // unsafe
     }
 
     /// Cleanup FFmpeg resources.
