@@ -102,8 +102,10 @@
 // Module declarations
 pub mod audio;
 pub mod error;
+mod hardware;
 pub mod image;
 pub(crate) mod network;
+mod seek;
 pub mod video;
 
 // Re-exports for convenience
@@ -111,7 +113,9 @@ pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
 pub use ff_common::{FramePool, PooledBuffer};
 pub use ff_format::ContainerInfo;
+pub use hardware::HardwareAccel;
 pub use image::{ImageDecoder, ImageDecoderBuilder};
+pub use seek::SeekMode;
 pub use video::{VideoDecoder, VideoDecoderBuilder};
 
 #[cfg(feature = "tokio")]
@@ -120,172 +124,6 @@ pub use audio::AsyncAudioDecoder;
 pub use image::AsyncImageDecoder;
 #[cfg(feature = "tokio")]
 pub use video::AsyncVideoDecoder;
-
-/// Seek mode for positioning the decoder.
-///
-/// This enum determines how seeking is performed when navigating
-/// through a media file.
-///
-/// # Performance Considerations
-///
-/// - [`Keyframe`](Self::Keyframe) is fastest but may land slightly before or after the target
-/// - [`Exact`](Self::Exact) is slower but guarantees landing on the exact frame
-/// - [`Backward`](Self::Backward) is useful for editing workflows where the previous keyframe is needed
-///
-/// # Examples
-///
-/// ```
-/// use ff_decode::SeekMode;
-///
-/// // Default is Keyframe mode
-/// let mode = SeekMode::default();
-/// assert_eq!(mode, SeekMode::Keyframe);
-///
-/// // Use exact mode for frame-accurate positioning
-/// let exact = SeekMode::Exact;
-/// assert_eq!(format!("{:?}", exact), "Exact");
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum SeekMode {
-    /// Seek to nearest keyframe (fast, may have small offset).
-    ///
-    /// This mode seeks to the closest keyframe to the target position.
-    /// It's the fastest option but the actual position may differ from
-    /// the requested position by up to the GOP (Group of Pictures) size.
-    #[default]
-    Keyframe = 0,
-
-    /// Seek to exact frame (slower but precise).
-    ///
-    /// This mode first seeks to the previous keyframe, then decodes
-    /// frames until reaching the exact target position. This guarantees
-    /// frame-accurate positioning but is slower, especially for long GOPs.
-    Exact = 1,
-
-    /// Seek to keyframe at or before the target position.
-    ///
-    /// Similar to [`Keyframe`](Self::Keyframe), but guarantees the resulting
-    /// position is at or before the target. Useful for editing workflows
-    /// where you need to start decoding before a specific point.
-    Backward = 2,
-}
-
-/// Hardware acceleration configuration.
-///
-/// This enum specifies which hardware acceleration method to use for
-/// video decoding. Hardware acceleration can significantly improve
-/// decoding performance, especially for high-resolution content.
-///
-/// # Platform Support
-///
-/// | Mode | Platform | GPU Required |
-/// |------|----------|--------------|
-/// | [`Nvdec`](Self::Nvdec) | Windows/Linux | NVIDIA |
-/// | [`Qsv`](Self::Qsv) | Windows/Linux | Intel |
-/// | [`Amf`](Self::Amf) | Windows/Linux | AMD |
-/// | [`VideoToolbox`](Self::VideoToolbox) | macOS/iOS | Any |
-/// | [`Vaapi`](Self::Vaapi) | Linux | Various |
-///
-/// # Fallback Behavior
-///
-/// When [`Auto`](Self::Auto) is used, the decoder will try available
-/// accelerators in order of preference and fall back to software
-/// decoding if none are available.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HardwareAccel {
-    /// Automatically detect and use available hardware.
-    ///
-    /// The decoder will probe for available hardware accelerators
-    /// and use the best one available. Falls back to software decoding
-    /// if no hardware acceleration is available.
-    #[default]
-    Auto,
-
-    /// Disable hardware acceleration (CPU only).
-    ///
-    /// Forces software decoding using the CPU. This may be useful for
-    /// debugging, consistency, or when hardware acceleration causes issues.
-    None,
-
-    /// NVIDIA NVDEC.
-    ///
-    /// Uses NVIDIA's dedicated video decoding hardware. Supports most
-    /// common codecs including H.264, H.265, VP9, and AV1 (on newer GPUs).
-    /// Requires an NVIDIA GPU with NVDEC support.
-    Nvdec,
-
-    /// Intel Quick Sync Video.
-    ///
-    /// Uses Intel's integrated GPU video engine. Available on most
-    /// Intel CPUs with integrated graphics. Supports H.264, H.265,
-    /// VP9, and AV1 (on newer platforms).
-    Qsv,
-
-    /// AMD Advanced Media Framework.
-    ///
-    /// Uses AMD's dedicated video decoding hardware. Available on AMD
-    /// GPUs and APUs. Supports H.264, H.265, and VP9.
-    Amf,
-
-    /// Apple `VideoToolbox`.
-    ///
-    /// Uses Apple's hardware video decoding on macOS and iOS. Works with
-    /// both Intel and Apple Silicon Macs. Supports H.264, H.265, and `ProRes`.
-    VideoToolbox,
-
-    /// Video Acceleration API (Linux).
-    ///
-    /// A Linux-specific API that provides hardware-accelerated video
-    /// decoding across different GPU vendors. Widely supported on
-    /// Intel, AMD, and NVIDIA GPUs on Linux.
-    Vaapi,
-}
-
-impl HardwareAccel {
-    /// Returns `true` if this represents an enabled hardware accelerator.
-    ///
-    /// Returns `false` for [`None`](Self::None) and [`Auto`](Self::Auto).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_decode::HardwareAccel;
-    ///
-    /// assert!(!HardwareAccel::Auto.is_specific());
-    /// assert!(!HardwareAccel::None.is_specific());
-    /// assert!(HardwareAccel::Nvdec.is_specific());
-    /// assert!(HardwareAccel::Qsv.is_specific());
-    /// ```
-    #[must_use]
-    pub const fn is_specific(&self) -> bool {
-        !matches!(self, Self::Auto | Self::None)
-    }
-
-    /// Returns the name of the hardware accelerator.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ff_decode::HardwareAccel;
-    ///
-    /// assert_eq!(HardwareAccel::Auto.name(), "auto");
-    /// assert_eq!(HardwareAccel::Nvdec.name(), "nvdec");
-    /// assert_eq!(HardwareAccel::VideoToolbox.name(), "videotoolbox");
-    /// ```
-    #[must_use]
-    pub const fn name(&self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::None => "none",
-            Self::Nvdec => "nvdec",
-            Self::Qsv => "qsv",
-            Self::Amf => "amf",
-            Self::VideoToolbox => "videotoolbox",
-            Self::Vaapi => "vaapi",
-        }
-    }
-}
 
 /// Prelude module for convenient imports.
 ///
@@ -306,66 +144,6 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_seek_mode_default() {
-        let mode = SeekMode::default();
-        assert_eq!(mode, SeekMode::Keyframe);
-    }
-
-    #[test]
-    fn test_hardware_accel_default() {
-        let accel = HardwareAccel::default();
-        assert_eq!(accel, HardwareAccel::Auto);
-    }
-
-    #[test]
-    fn test_hardware_accel_is_specific() {
-        assert!(!HardwareAccel::Auto.is_specific());
-        assert!(!HardwareAccel::None.is_specific());
-        assert!(HardwareAccel::Nvdec.is_specific());
-        assert!(HardwareAccel::Qsv.is_specific());
-        assert!(HardwareAccel::Amf.is_specific());
-        assert!(HardwareAccel::VideoToolbox.is_specific());
-        assert!(HardwareAccel::Vaapi.is_specific());
-    }
-
-    #[test]
-    fn test_hardware_accel_name() {
-        assert_eq!(HardwareAccel::Auto.name(), "auto");
-        assert_eq!(HardwareAccel::None.name(), "none");
-        assert_eq!(HardwareAccel::Nvdec.name(), "nvdec");
-        assert_eq!(HardwareAccel::Qsv.name(), "qsv");
-        assert_eq!(HardwareAccel::Amf.name(), "amf");
-        assert_eq!(HardwareAccel::VideoToolbox.name(), "videotoolbox");
-        assert_eq!(HardwareAccel::Vaapi.name(), "vaapi");
-    }
-
-    #[test]
-    fn test_seek_mode_variants() {
-        let modes = [SeekMode::Keyframe, SeekMode::Exact, SeekMode::Backward];
-        for mode in modes {
-            // Ensure all variants are accessible
-            let _ = format!("{mode:?}");
-        }
-    }
-
-    #[test]
-    fn test_hardware_accel_variants() {
-        let accels = [
-            HardwareAccel::Auto,
-            HardwareAccel::None,
-            HardwareAccel::Nvdec,
-            HardwareAccel::Qsv,
-            HardwareAccel::Amf,
-            HardwareAccel::VideoToolbox,
-            HardwareAccel::Vaapi,
-        ];
-        for accel in accels {
-            // Ensure all variants are accessible
-            let _ = format!("{accel:?}");
-        }
-    }
 
     #[test]
     fn test_decode_error_display() {
