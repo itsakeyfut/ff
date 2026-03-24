@@ -13,10 +13,10 @@
 mod fixtures;
 
 use ff_encode::{
-    AudioCodec, Av1Options, Av1Usage, BitrateMode, Container, DnxhdOptions, DnxhdVariant,
-    EncodeError, H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile,
-    H265Tier, Preset, ProResOptions, ProResProfile, SvtAv1Options, VideoCodec, VideoCodecOptions,
-    VideoEncoder, Vp9Options,
+    AudioCodec, Av1Options, Av1Usage, BitrateMode, DnxhdOptions, DnxhdVariant, EncodeError,
+    H264Options, H264Preset, H264Profile, H264Tune, H265Options, H265Profile, H265Tier,
+    OutputContainer, Preset, ProResOptions, ProResProfile, SvtAv1Options, VideoCodec,
+    VideoCodecOptions, VideoEncoder, Vp9Options,
 };
 use ff_format::PixelFormat;
 use fixtures::{
@@ -2025,7 +2025,7 @@ fn attachment_builder_setter_should_not_panic() {
 }
 
 // ============================================================================
-// WebM Container Tests
+// WebM OutputContainer Tests
 // ============================================================================
 
 #[test]
@@ -2115,7 +2115,7 @@ fn webm_with_incompatible_audio_codec_should_return_error() {
 fn container_enum_webm_with_incompatible_codec_should_return_error() {
     let result = VideoEncoder::create("output.mkv")
         .video(640, 480, 30.0)
-        .container(Container::WebM)
+        .container(OutputContainer::WebM)
         .video_codec(VideoCodec::H265)
         .build();
 
@@ -2126,7 +2126,7 @@ fn container_enum_webm_with_incompatible_codec_should_return_error() {
 }
 
 // ============================================================================
-// AVI Container Tests
+// AVI OutputContainer Tests
 // ============================================================================
 
 #[test]
@@ -2213,7 +2213,7 @@ fn avi_with_incompatible_audio_codec_should_return_error() {
 }
 
 // ============================================================================
-// MOV Container Tests
+// MOV OutputContainer Tests
 // ============================================================================
 
 #[test]

@@ -4,16 +4,16 @@
 //! structs added in v0.7.0:
 //!
 //! - `OpusOptions` — application mode (`Voip` / `Audio` / `LowDelay`),
-//!   frame duration; stored in an OGG container via `Container::Ogg`
+//!   frame duration; stored in an OGG container via `OutputContainer::Ogg`
 //! - `AacOptions` — profile (`LC` / `HE` / `HEv2`), VBR quality mode
 //! - `Mp3Options` — VBR quality (`V0`–`V9`) or fixed bitrate
 //! - `FlacOptions` — compression level (`0` = fastest / largest …
 //!   `12` = slowest / smallest); stored in a FLAC container via
-//!   `Container::Flac`
+//!   `OutputContainer::Flac`
 //!
 //! Also demonstrates `AudioEncoder::create().container()` — explicit
-//! container selection for audio-only formats (`Container::Flac`,
-//! `Container::Ogg`).
+//! container selection for audio-only formats (`OutputContainer::Flac`,
+//! `OutputContainer::Ogg`).
 //!
 //! # Usage
 //!
@@ -27,8 +27,8 @@
 use std::{path::Path, process};
 
 use avio::{
-    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioDecoder, AudioEncoder, Container,
-    FlacOptions, Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
+    AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioDecoder, AudioEncoder, FlacOptions,
+    Mp3Options, Mp3Quality, OpusApplication, OpusOptions, OutputContainer,
 };
 
 fn main() {
@@ -92,8 +92,8 @@ fn main() {
 
     // Each arm returns (codec, options, bitrate, container, description).
     // container — Some(c) sets the muxer explicitly; None infers from the
-    //   output file extension.  Audio-only containers (Container::Flac,
-    //   Container::Ogg) are typically paired with their native codec.
+    //   output file extension.  Audio-only containers (OutputContainer::Flac,
+    //   OutputContainer::Ogg) are typically paired with their native codec.
     let (audio_codec, codec_options, bitrate, container, description) =
         match codec_str.to_lowercase().as_str() {
             "opus" => {
@@ -103,7 +103,7 @@ fn main() {
                 //   LowDelay — minimal algorithmic delay
                 //
                 // Opus is stored natively in an OGG container.
-                // Container::Ogg is set explicitly here so that the muxer is
+                // OutputContainer::Ogg is set explicitly here so that the muxer is
                 // always correct regardless of the output file extension.
                 let opts = OpusOptions {
                     application: OpusApplication::Audio,
@@ -113,7 +113,7 @@ fn main() {
                     AudioCodec::Opus,
                     AudioCodecOptions::Opus(opts),
                     128_000u64,
-                    Some(Container::Ogg),
+                    Some(OutputContainer::Ogg),
                     "Opus, Audio application, 128 kbps, 20 ms frames, OGG container",
                 )
             }
@@ -154,9 +154,9 @@ fn main() {
                 // through 12 (slowest encode, smallest lossless file).
                 // Default is 5 — a good balance for most use cases.
                 //
-                // FLAC has a dedicated container (Container::Flac) that wraps
+                // FLAC has a dedicated container (OutputContainer::Flac) that wraps
                 // the raw FLAC stream — the same format produced by a standalone
-                // FLAC encoder.  Container::Ogg can also hold FLAC streams in
+                // FLAC encoder.  OutputContainer::Ogg can also hold FLAC streams in
                 // an Ogg wrapper, but the native FLAC container is more common.
                 let opts = FlacOptions {
                     compression_level: 6,
@@ -165,7 +165,7 @@ fn main() {
                     AudioCodec::Flac,
                     AudioCodecOptions::Flac(opts),
                     0u64, // lossless — bitrate is determined by content
-                    Some(Container::Flac),
+                    Some(OutputContainer::Flac),
                     "FLAC, compression level 6, FLAC container",
                 )
             }

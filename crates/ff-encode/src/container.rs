@@ -1,18 +1,21 @@
 //! Container format definitions.
 
-/// Container format for output file.
+/// Output container format for encoding.
 ///
 /// The container format is usually auto-detected from the file extension,
 /// but can be explicitly specified if needed.
+///
+/// Named `OutputContainer` (rather than `Container`) to avoid confusion with
+/// `ff_format::ContainerInfo`, which describes a container *read* from a probed file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Container {
+pub enum OutputContainer {
     /// MP4 / `QuickTime`
     Mp4,
 
     /// Fragmented MP4 — CMAF-compatible streaming container.
     ///
-    /// Uses the same `mp4` `FFmpeg` muxer as [`Container::Mp4`] but with
+    /// Uses the same `mp4` `FFmpeg` muxer as [`OutputContainer::Mp4`] but with
     /// `movflags=+frag_keyframe+empty_moov+default_base_moof` applied before
     /// writing the header. Required for HTTP Live Streaming fMP4 segments
     /// (CMAF) and MPEG-DASH.
@@ -37,7 +40,7 @@ pub enum Container {
     Ogg,
 }
 
-impl Container {
+impl OutputContainer {
     /// Get `FFmpeg` format name.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -83,44 +86,44 @@ mod tests {
 
     #[test]
     fn test_container_as_str() {
-        assert_eq!(Container::Mp4.as_str(), "mp4");
-        assert_eq!(Container::WebM.as_str(), "webm");
-        assert_eq!(Container::Mkv.as_str(), "matroska");
+        assert_eq!(OutputContainer::Mp4.as_str(), "mp4");
+        assert_eq!(OutputContainer::WebM.as_str(), "webm");
+        assert_eq!(OutputContainer::Mkv.as_str(), "matroska");
     }
 
     #[test]
     fn test_container_extension() {
-        assert_eq!(Container::Mp4.default_extension(), "mp4");
-        assert_eq!(Container::WebM.default_extension(), "webm");
-        assert_eq!(Container::Mkv.default_extension(), "mkv");
-        assert_eq!(Container::Flac.default_extension(), "flac");
-        assert_eq!(Container::Ogg.default_extension(), "ogg");
+        assert_eq!(OutputContainer::Mp4.default_extension(), "mp4");
+        assert_eq!(OutputContainer::WebM.default_extension(), "webm");
+        assert_eq!(OutputContainer::Mkv.default_extension(), "mkv");
+        assert_eq!(OutputContainer::Flac.default_extension(), "flac");
+        assert_eq!(OutputContainer::Ogg.default_extension(), "ogg");
     }
 
     #[test]
     fn flac_as_str_should_return_flac() {
-        assert_eq!(Container::Flac.as_str(), "flac");
+        assert_eq!(OutputContainer::Flac.as_str(), "flac");
     }
 
     #[test]
     fn ogg_as_str_should_return_ogg() {
-        assert_eq!(Container::Ogg.as_str(), "ogg");
+        assert_eq!(OutputContainer::Ogg.as_str(), "ogg");
     }
 
     #[test]
     fn fmp4_as_str_should_return_mp4() {
-        assert_eq!(Container::FMp4.as_str(), "mp4");
+        assert_eq!(OutputContainer::FMp4.as_str(), "mp4");
     }
 
     #[test]
     fn fmp4_extension_should_return_mp4() {
-        assert_eq!(Container::FMp4.default_extension(), "mp4");
+        assert_eq!(OutputContainer::FMp4.default_extension(), "mp4");
     }
 
     #[test]
     fn fmp4_is_fragmented_should_return_true() {
-        assert!(Container::FMp4.is_fragmented());
-        assert!(!Container::Mp4.is_fragmented());
-        assert!(!Container::Mkv.is_fragmented());
+        assert!(OutputContainer::FMp4.is_fragmented());
+        assert!(!OutputContainer::Mp4.is_fragmented());
+        assert!(!OutputContainer::Mkv.is_fragmented());
     }
 }

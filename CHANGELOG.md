@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### ff-encode — breaking
+- `Container` renamed to `OutputContainer` to avoid confusion with `ff_format::ContainerInfo` ([#716](https://github.com/itsakeyfut/avio/issues/716))
+
+#### avio — breaking
+- Re-export updated: `Container` → `OutputContainer` under the `encode` feature
+
 ---
 
 ## [0.8.0] - 2026-03-24

@@ -1,11 +1,11 @@
 //! Encode video with an explicitly selected output container format.
 //!
 //! Demonstrates:
-//! - `Container` enum — full set of supported muxers:
+//! - `OutputContainer` enum — full set of supported muxers:
 //!   - **Video** containers: `Mp4`, `Mkv`, `WebM`, `Avi`, `Mov`
 //!   - **Audio** containers: `Flac` (lossless), `Ogg` (Vorbis/Opus)
-//! - `Container::as_str()` — `FFmpeg` format name
-//! - `Container::default_extension()` — canonical file extension
+//! - `OutputContainer::as_str()` — `FFmpeg` format name
+//! - `OutputContainer::default_extension()` — canonical file extension
 //! - `VideoEncoder::create().container()` — override the container inferred
 //!   from the output file extension
 //!
@@ -13,8 +13,8 @@
 //! Use `container()` when the extension does not match the desired format
 //! or when you need to guarantee a specific muxer regardless of the path.
 //!
-//! Audio-only containers (`Container::Flac`, `Container::Ogg`) are used the
-//! same way with `AudioEncoder::create().container(Container::Flac)`.
+//! Audio-only containers (`OutputContainer::Flac`, `OutputContainer::Ogg`) are used the
+//! same way with `AudioEncoder::create().container(OutputContainer::Flac)`.
 //! See the `audio_codec_options` example for a complete audio encoding
 //! workflow that demonstrates explicit container selection.
 //!
@@ -29,7 +29,7 @@
 
 use std::{path::Path, process};
 
-use avio::{Container, VideoCodec, VideoDecoder, VideoEncoder};
+use avio::{OutputContainer, VideoCodec, VideoDecoder, VideoEncoder};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -61,16 +61,16 @@ fn main() {
         process::exit(1);
     });
 
-    // ── Parse Container variant ───────────────────────────────────────────────
+    // ── Parse OutputContainer variant ───────────────────────────────────────────────
 
     let container = container_str
         .as_deref()
         .map(|s| match s.to_lowercase().as_str() {
-            "mp4" => Container::Mp4,
-            "mkv" | "matroska" => Container::Mkv,
-            "webm" => Container::WebM,
-            "avi" => Container::Avi,
-            "mov" => Container::Mov,
+            "mp4" => OutputContainer::Mp4,
+            "mkv" | "matroska" => OutputContainer::Mkv,
+            "webm" => OutputContainer::WebM,
+            "avi" => OutputContainer::Avi,
+            "mov" => OutputContainer::Mov,
             other => {
                 eprintln!("Unknown container '{other}' (try mp4, mkv, webm, avi, mov)");
                 process::exit(1);
@@ -105,11 +105,11 @@ fn main() {
 
     match container {
         Some(c) => println!(
-            "Container: {c:?} (format='{}')  default_ext='{}'",
+            "OutputContainer: {c:?} (format='{}')  default_ext='{}'",
             c.as_str(),
             c.default_extension()
         ),
-        None => println!("Container: (inferred from output extension)"),
+        None => println!("OutputContainer: (inferred from output extension)"),
     }
 
     println!("Output: {out_name}");

@@ -11,7 +11,8 @@ use ff_format::{AudioFrame, VideoFrame};
 use super::codec_options::VideoCodecOptions;
 use super::encoder_inner::{VideoEncoderConfig, VideoEncoderInner, preset_to_string};
 use crate::{
-    AudioCodec, Container, EncodeError, EncodeProgressCallback, HardwareEncoder, Preset, VideoCodec,
+    AudioCodec, EncodeError, EncodeProgressCallback, HardwareEncoder, OutputContainer, Preset,
+    VideoCodec,
 };
 
 /// Builder for constructing a [`VideoEncoder`].
@@ -32,7 +33,7 @@ use crate::{
 /// ```
 pub struct VideoEncoderBuilder {
     pub(crate) path: PathBuf,
-    pub(crate) container: Option<Container>,
+    pub(crate) container: Option<OutputContainer>,
     pub(crate) video_width: Option<u32>,
     pub(crate) video_height: Option<u32>,
     pub(crate) video_fps: Option<f64>,
@@ -196,11 +197,11 @@ impl VideoEncoderBuilder {
         self
     }
 
-    // === Container settings ===
+    // === OutputContainer settings ===
 
     /// Set container format explicitly (usually auto-detected from file extension).
     #[must_use]
-    pub fn container(mut self, container: Container) -> Self {
+    pub fn container(mut self, container: OutputContainer) -> Self {
         self.container = Some(container);
         self
     }
@@ -412,7 +413,7 @@ impl VideoEncoderBuilder {
             || self
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::WebM);
+                .is_some_and(|c| *c == OutputContainer::WebM);
 
         if is_webm {
             if !self.video_codec_explicit {
@@ -431,7 +432,7 @@ impl VideoEncoderBuilder {
             || self
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::Avi);
+                .is_some_and(|c| *c == OutputContainer::Avi);
 
         if is_avi {
             if !self.video_codec_explicit {
@@ -450,7 +451,7 @@ impl VideoEncoderBuilder {
             || self
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::Mov);
+                .is_some_and(|c| *c == OutputContainer::Mov);
 
         if is_mov {
             if !self.video_codec_explicit {
@@ -617,7 +618,7 @@ impl VideoEncoderBuilder {
             || self
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::WebM);
+                .is_some_and(|c| *c == OutputContainer::WebM);
 
         if is_webm {
             let webm_video_ok = matches!(
@@ -651,7 +652,7 @@ impl VideoEncoderBuilder {
             || self
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::Avi);
+                .is_some_and(|c| *c == OutputContainer::Avi);
 
         if is_avi {
             let avi_video_ok = matches!(self.video_codec, VideoCodec::H264 | VideoCodec::Mpeg4);
@@ -687,7 +688,7 @@ impl VideoEncoderBuilder {
             || self
                 .container
                 .as_ref()
-                .is_some_and(|c| *c == Container::Mov);
+                .is_some_and(|c| *c == OutputContainer::Mov);
 
         if is_mov {
             let mov_video_ok = matches!(
@@ -721,7 +722,7 @@ impl VideoEncoderBuilder {
         let is_fmp4 = self
             .container
             .as_ref()
-            .is_some_and(|c| *c == Container::FMp4);
+            .is_some_and(|c| *c == OutputContainer::FMp4);
 
         if is_fmp4 {
             let fmp4_video_ok = !matches!(
@@ -1123,8 +1124,8 @@ mod tests {
     fn builder_container_should_be_stored() {
         let builder = VideoEncoder::create("output.mp4")
             .video(1920, 1080, 30.0)
-            .container(Container::Mp4);
-        assert_eq!(builder.container, Some(Container::Mp4));
+            .container(OutputContainer::Mp4);
+        assert_eq!(builder.container, Some(OutputContainer::Mp4));
     }
 
     #[test]
@@ -1343,7 +1344,7 @@ mod tests {
     fn webm_container_enum_with_incompatible_codec_should_return_error() {
         let result = VideoEncoder::create("output.mkv")
             .video(640, 480, 30.0)
-            .container(Container::WebM)
+            .container(OutputContainer::WebM)
             .video_codec(VideoCodec::H264)
             .build();
         assert!(matches!(
@@ -1438,7 +1439,7 @@ mod tests {
     fn avi_container_enum_with_incompatible_codec_should_return_error() {
         let result = VideoEncoder::create("output.mp4")
             .video(640, 480, 30.0)
-            .container(Container::Avi)
+            .container(OutputContainer::Avi)
             .video_codec(VideoCodec::Vp9)
             .build();
         assert!(matches!(
@@ -1451,7 +1452,7 @@ mod tests {
     fn mov_container_enum_with_incompatible_codec_should_return_error() {
         let result = VideoEncoder::create("output.mp4")
             .video(640, 480, 30.0)
-            .container(Container::Mov)
+            .container(OutputContainer::Mov)
             .video_codec(VideoCodec::Vp9)
             .build();
         assert!(matches!(
@@ -1509,7 +1510,7 @@ mod tests {
         let result = VideoEncoder::create("output.mp4")
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H264)
-            .container(Container::FMp4)
+            .container(OutputContainer::FMp4)
             .build();
         assert!(!matches!(
             result,
@@ -1522,7 +1523,7 @@ mod tests {
         let result = VideoEncoder::create("output.mp4")
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Mpeg4)
-            .container(Container::FMp4)
+            .container(OutputContainer::FMp4)
             .build();
         assert!(matches!(
             result,
@@ -1537,7 +1538,7 @@ mod tests {
         let result = VideoEncoder::create("output.mp4")
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Mjpeg)
-            .container(Container::FMp4)
+            .container(OutputContainer::FMp4)
             .build();
         assert!(matches!(
             result,

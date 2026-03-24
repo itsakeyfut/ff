@@ -202,7 +202,7 @@ pub(super) struct VideoEncoderConfig {
     pub(super) color_primaries: Option<ff_format::ColorPrimaries>,
     /// Binary attachments: (raw data, MIME type, filename).
     pub(super) attachments: Vec<(Vec<u8>, String, String)>,
-    pub(super) container: Option<crate::Container>,
+    pub(super) container: Option<crate::OutputContainer>,
 }
 impl VideoEncoderInner {
     /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
@@ -243,7 +243,7 @@ impl VideoEncoderInner {
 
     /// Apply `movflags` for fMP4 containers before `avformat_write_header`.
     ///
-    /// When `container` is [`crate::Container::FMp4`], sets
+    /// When `container` is [`crate::OutputContainer::FMp4`], sets
     /// `movflags=+frag_keyframe+empty_moov+default_base_moof` via `av_opt_set`
     /// on the format context's `priv_data`. This enables CMAF-compatible
     /// fragmented output required for HLS fMP4 segments and MPEG-DASH.
@@ -253,7 +253,7 @@ impl VideoEncoderInner {
     /// whose `priv_data` is non-null. Must be called before `avformat_write_header`.
     unsafe fn apply_movflags(
         format_ctx: *mut ff_sys::AVFormatContext,
-        container: Option<crate::Container>,
+        container: Option<crate::OutputContainer>,
     ) {
         if container.is_some_and(|c| c.is_fragmented()) {
             // SAFETY: format_ctx and priv_data are non-null; string literals are
