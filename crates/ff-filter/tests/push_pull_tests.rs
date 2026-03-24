@@ -1,3 +1,12 @@
+//! Integration tests for ff-filter push/pull frame processing.
+//!
+//! # Temporary file cleanup
+//!
+//! These tests are read-only with respect to the filesystem: they push frames
+//! through in-memory filter graphs and inspect the resulting `VideoFrame` /
+//! `AudioFrame` values. No output files are written, so no
+//! `fixtures/mod.rs` with `FileGuard`/`DirGuard` is needed.
+
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;

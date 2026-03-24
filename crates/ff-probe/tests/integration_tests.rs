@@ -2,6 +2,12 @@
 //!
 //! These tests verify that ff-probe correctly extracts metadata from
 //! actual media files in the assets directory.
+//!
+//! # Temporary file cleanup
+//!
+//! These tests are read-only: they call `ff_probe::open()` to inspect existing
+//! media files and do not produce any temporary output files. No
+//! `fixtures/mod.rs` with `FileGuard`/`DirGuard` is needed.
 
 use std::path::PathBuf;
 use std::time::Duration;
