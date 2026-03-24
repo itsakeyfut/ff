@@ -104,6 +104,12 @@ pub(crate) enum FilterStep {
     Equalizer { band_hz: f64, gain_db: f64 },
     /// Apply a 3D LUT from a `.cube` or `.3dl` file.
     Lut3d { path: String },
+    /// Brightness/contrast/saturation adjustment via `FFmpeg` `eq` filter.
+    Eq {
+        brightness: f32,
+        contrast: f32,
+        saturation: f32,
+    },
 }
 
 impl FilterStep {
@@ -121,6 +127,7 @@ impl FilterStep {
             Self::Amix(_) => "amix",
             Self::Equalizer { .. } => "equalizer",
             Self::Lut3d { .. } => "lut3d",
+            Self::Eq { .. } => "eq",
         }
     }
 
@@ -150,6 +157,11 @@ impl FilterStep {
                 format!("f={band_hz}:width_type=o:width=2:g={gain_db}")
             }
             Self::Lut3d { path } => format!("file={path}:interp=trilinear"),
+            Self::Eq {
+                brightness,
+                contrast,
+                saturation,
+            } => format!("brightness={brightness}:contrast={contrast}:saturation={saturation}"),
         }
     }
 }
@@ -264,6 +276,27 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Adjust brightness, contrast, and saturation using `FFmpeg`'s `eq` filter.
+    ///
+    /// Valid ranges:
+    /// - `brightness`: −1.0 – 1.0 (neutral: 0.0)
+    /// - `contrast`: 0.0 – 3.0 (neutral: 1.0)
+    /// - `saturation`: 0.0 – 3.0 (neutral: 1.0; 0.0 = grayscale)
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
+    /// value is outside its valid range.
+    #[must_use]
+    pub fn eq(mut self, brightness: f32, contrast: f32, saturation: f32) -> Self {
+        self.steps.push(FilterStep::Eq {
+            brightness,
+            contrast,
+            saturation,
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -342,6 +375,28 @@ impl FilterGraphBuilder {
                 if !Path::new(path).exists() {
                     return Err(FilterError::InvalidConfig {
                         reason: format!("LUT file not found: {path}"),
+                    });
+                }
+            }
+            if let FilterStep::Eq {
+                brightness,
+                contrast,
+                saturation,
+            } = step
+            {
+                if !(-1.0..=1.0).contains(brightness) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq brightness {brightness} out of range [-1.0, 1.0]"),
+                    });
+                }
+                if !(0.0..=3.0).contains(contrast) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq contrast {contrast} out of range [0.0, 3.0]"),
+                    });
+                }
+                if !(0.0..=3.0).contains(saturation) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq saturation {saturation} out of range [0.0, 3.0]"),
                     });
                 }
             }
@@ -691,5 +746,88 @@ mod tests {
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for nonexistent .3dl file, got {result:?}"
         );
+    }
+
+    #[test]
+    fn filter_step_eq_should_produce_correct_filter_name() {
+        let step = FilterStep::Eq {
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+        };
+        assert_eq!(step.filter_name(), "eq");
+    }
+
+    #[test]
+    fn filter_step_eq_should_produce_correct_args() {
+        let step = FilterStep::Eq {
+            brightness: 0.1,
+            contrast: 1.5,
+            saturation: 0.8,
+        };
+        assert_eq!(step.args(), "brightness=0.1:contrast=1.5:saturation=0.8");
+    }
+
+    #[test]
+    fn builder_eq_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().eq(0.0, 1.0, 1.0).build();
+        assert!(
+            result.is_ok(),
+            "neutral eq params must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_eq_with_brightness_too_low_should_return_invalid_config() {
+        let result = FilterGraph::builder().eq(-1.5, 1.0, 1.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for brightness < -1.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("brightness"),
+                "reason should mention brightness: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_eq_with_brightness_too_high_should_return_invalid_config() {
+        let result = FilterGraph::builder().eq(1.5, 1.0, 1.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for brightness > 1.0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_eq_with_contrast_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder().eq(0.0, 4.0, 1.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for contrast > 3.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("contrast"),
+                "reason should mention contrast: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_eq_with_saturation_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder().eq(0.0, 1.0, -0.5).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for saturation < 0.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("saturation"),
+                "reason should mention saturation: {reason}"
+            );
+        }
     }
 }
