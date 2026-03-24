@@ -11,6 +11,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - 2026-03-24
+
+### Added
+
+#### ff-format
+- `NetworkOptions` struct: `user_agent`, `referer`, `headers`, `timeout_ms`, `reconnect_delay_ms`, `listen` for network-backed sources ([#219](https://github.com/itsakeyfut/avio/issues/219))
+
+#### ff-decode — network input
+- `VideoDecoder::open_url()` and `VideoDecoder::open()` now accept HTTP, HLS, DASH, RTMP, SRT, and UDP URLs via the existing builder API ([#220](https://github.com/itsakeyfut/avio/issues/220))
+- `AudioDecoder` network URL support with typed errors ([#221](https://github.com/itsakeyfut/avio/issues/221))
+- HLS/M3U8 input: `is_live()` detection and seek guard to prevent seeks on live streams ([#222](https://github.com/itsakeyfut/avio/issues/222))
+- DASH/MPD input support with integration tests ([#223](https://github.com/itsakeyfut/avio/issues/223))
+- UDP/MPEG-TS: buffer-size and FIFO-size options; documented live-stream behaviour ([#224](https://github.com/itsakeyfut/avio/issues/224))
+- SRT protocol input behind `srt` feature flag; `DecodeError::ProtocolUnavailable` returned when `FFmpeg` lacks libsrt ([#225](https://github.com/itsakeyfut/avio/issues/225))
+- Auto-reconnect with exponential backoff for live streams; `VideoDecoderBuilder::reconnect()` / `max_reconnect_attempts()` / `reconnect_delay_ms()` ([#226](https://github.com/itsakeyfut/avio/issues/226))
+
+#### ff-encode
+- fMP4/CMAF container: `Container::Fmp4` and `Container::Cmaf` variants for low-latency streaming output ([#678](https://github.com/itsakeyfut/avio/issues/678))
+
+#### ff-stream — live output
+- `LiveHlsOutput`: frame-push live HLS encoder; writes `index.m3u8` + `.ts` segments with sliding window ([#229](https://github.com/itsakeyfut/avio/issues/229))
+- `LiveDashOutput`: frame-push live DASH encoder; writes `manifest.mpd` + `.m4s` segments ([#230](https://github.com/itsakeyfut/avio/issues/230))
+- `RtmpOutput`: frame-push H.264/AAC encoder over RTMP/FLV ([#231](https://github.com/itsakeyfut/avio/issues/231))
+- `SrtOutput`: frame-push H.264/AAC encoder over SRT/MPEG-TS behind `srt` feature flag; `StreamError::ProtocolUnavailable` returned when `FFmpeg` lacks libsrt ([#232](https://github.com/itsakeyfut/avio/issues/232))
+- `FanoutOutput`: `StreamOutput` wrapper that fans each frame to multiple targets simultaneously; collects all errors into `StreamError::FanoutFailure` ([#233](https://github.com/itsakeyfut/avio/issues/233))
+- `LiveAbrLadder`: multi-rendition ABR output; pushes each frame to N rendition encoders, writes per-rendition HLS playlists and a master playlist or DASH manifest ([#234](https://github.com/itsakeyfut/avio/issues/234))
+
+#### avio — examples
+- `decode_from_url.rs`: open and decode HTTP/HLS/RTMP/SRT URLs
+- `live_hls_output.rs`: decode a local file and push frames to `LiveHlsOutput`
+- `live_dash_output.rs`: decode a local file and push frames to `LiveDashOutput`
+- `rtmp_output.rs`: decode and push to an RTMP ingest endpoint
+- `fanout_output.rs`: fan frames to `LiveHlsOutput` + `LiveDashOutput` via `FanoutOutput`
+- `live_abr_ladder.rs`: multi-rendition `LiveAbrLadder` with configurable ladder
+- `srt_output.rs`: decode and push to an SRT endpoint (skips gracefully when libsrt absent)
+
+### Fixed
+
+#### ff-sys
+- `docsrs_stubs`: add `open_input_url` stub, fixing docs.rs build for network-input additions
+- `docsrs_stubs`: add `AVFormatContext.priv_data` field, fixing docs.rs build for `ff-stream`
+
+### Tests
+
+- HTTP URL integration tests with in-process server; skip gracefully when `FFmpeg` lacks the HTTP protocol ([#235](https://github.com/itsakeyfut/avio/issues/235))
+- `LiveHlsOutput` integration test: synthetic frame push, playlist and segment assertions ([#236](https://github.com/itsakeyfut/avio/issues/236))
+- `LiveDashOutput`, `FanoutOutput`, `RtmpOutput`, `SrtOutput` integration tests
+
+### CI
+
+- `docsrs-stubs` job (`DOCS_RS=1 cargo build --workspace`) added to catch missing `ff-sys` stub symbols before publishing
+
+---
+
 ## [0.7.3] - 2026-03-22
 
 ### Fixed
