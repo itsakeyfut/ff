@@ -200,12 +200,6 @@ impl AvPacketGuard {
         Ok(Self(packet))
     }
 
-    /// Returns the raw pointer.
-    #[allow(dead_code)]
-    const fn as_ptr(&self) -> *mut AVPacket {
-        self.0
-    }
-
     /// Consumes the guard and returns the raw pointer without dropping.
     fn into_raw(self) -> *mut AVPacket {
         let ptr = self.0;
@@ -1657,23 +1651,6 @@ impl VideoDecoderInner {
     /// # Safety
     ///
     /// Caller must ensure that `format_ctx` and `stream_index` are valid.
-    ///
-    /// # Note
-    ///
-    /// Currently unused but kept for potential future use in more advanced seeking scenarios.
-    #[allow(dead_code)]
-    fn pts_to_duration(&self, pts: i64) -> Duration {
-        // SAFETY: Caller ensures format_ctx and stream_index are valid
-        unsafe {
-            let stream = (*self.format_ctx).streams.add(self.stream_index as usize);
-            let time_base = (*(*stream)).time_base;
-
-            // Convert PTS to duration
-            let duration_secs = pts as f64 * time_base.num as f64 / time_base.den as f64;
-            Duration::from_secs_f64(duration_secs)
-        }
-    }
-
     /// Seeks to a specified position in the video stream.
     ///
     /// This method performs efficient seeking without reopening the file.

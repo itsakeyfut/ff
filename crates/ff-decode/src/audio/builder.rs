@@ -11,19 +11,6 @@ use ff_format::{AudioFrame, AudioStreamInfo, ContainerInfo, NetworkOptions, Samp
 use crate::audio::decoder_inner::AudioDecoderInner;
 use crate::error::DecodeError;
 
-/// Internal configuration for the audio decoder.
-#[derive(Debug, Clone, Default)]
-#[allow(clippy::struct_field_names)]
-#[allow(dead_code)] // Fields will be used when SwResample is fully implemented
-pub(crate) struct AudioDecoderConfig {
-    /// Output sample format (None = use source format)
-    pub output_format: Option<SampleFormat>,
-    /// Output sample rate (None = use source sample rate)
-    pub output_sample_rate: Option<u32>,
-    /// Output channel count (None = use source channel count)
-    pub output_channels: Option<u32>,
-}
-
 /// Builder for configuring and constructing an [`AudioDecoder`].
 ///
 /// This struct provides a fluent interface for setting up decoder options
@@ -311,13 +298,6 @@ impl AudioDecoderBuilder {
             });
         }
 
-        // Build the internal configuration
-        let config = AudioDecoderConfig {
-            output_format: self.output_format,
-            output_sample_rate: self.output_sample_rate,
-            output_channels: self.output_channels,
-        };
-
         // Create the decoder inner
         let (inner, stream_info, container_info) = AudioDecoderInner::new(
             &self.path,
@@ -329,7 +309,6 @@ impl AudioDecoderBuilder {
 
         Ok(AudioDecoder {
             path: self.path,
-            config,
             inner,
             stream_info,
             container_info,
@@ -387,9 +366,6 @@ impl AudioDecoderBuilder {
 pub struct AudioDecoder {
     /// Path to the media file
     path: PathBuf,
-    /// Decoder configuration
-    #[allow(dead_code)]
-    config: AudioDecoderConfig,
     /// Internal decoder state
     inner: AudioDecoderInner,
     /// Audio stream information
@@ -822,15 +798,6 @@ mod tests {
             Err(e) => panic!("Expected FileNotFound error, got: {e:?}"),
             Ok(_) => panic!("Expected error, got Ok"),
         }
-    }
-
-    #[test]
-    fn test_decoder_config_default() {
-        let config = AudioDecoderConfig::default();
-
-        assert!(config.output_format.is_none());
-        assert!(config.output_sample_rate.is_none());
-        assert!(config.output_channels.is_none());
     }
 
     #[test]
