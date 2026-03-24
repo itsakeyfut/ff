@@ -1,5 +1,6 @@
 //! Filter graph public API: [`FilterGraph`] and [`FilterGraphBuilder`].
 
+use std::path::Path;
 use std::time::Duration;
 
 use ff_format::{AudioFrame, VideoFrame};
@@ -101,6 +102,8 @@ pub(crate) enum FilterStep {
     Amix(usize),
     /// Parametric equalizer band.
     Equalizer { band_hz: f64, gain_db: f64 },
+    /// Apply a 3D LUT from a `.cube` or `.3dl` file.
+    Lut3d { path: String },
 }
 
 impl FilterStep {
@@ -117,6 +120,7 @@ impl FilterStep {
             Self::Volume(_) => "volume",
             Self::Amix(_) => "amix",
             Self::Equalizer { .. } => "equalizer",
+            Self::Lut3d { .. } => "lut3d",
         }
     }
 
@@ -145,6 +149,7 @@ impl FilterStep {
             Self::Equalizer { band_hz, gain_db } => {
                 format!("f={band_hz}:width_type=o:width=2:g={gain_db}")
             }
+            Self::Lut3d { path } => format!("file={path}:interp=trilinear"),
         }
     }
 }
@@ -242,6 +247,23 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a 3D LUT colour grade from a `.cube` or `.3dl` file.
+    ///
+    /// Uses `FFmpeg`'s `lut3d` filter with trilinear interpolation.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if:
+    /// - the extension is not `.cube` or `.3dl`, or
+    /// - the file does not exist at build time.
+    #[must_use]
+    pub fn lut3d(mut self, path: &str) -> Self {
+        self.steps.push(FilterStep::Lut3d {
+            path: path.to_owned(),
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -306,6 +328,22 @@ impl FilterGraphBuilder {
                          ensure the watermark fits within the video dimensions"
                     ),
                 });
+            }
+            if let FilterStep::Lut3d { path } = step {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if !matches!(ext, "cube" | "3dl") {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("unsupported LUT format: .{ext}; expected .cube or .3dl"),
+                    });
+                }
+                if !Path::new(path).exists() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("LUT file not found: {path}"),
+                    });
+                }
             }
         }
 
@@ -585,5 +623,73 @@ mod tests {
     fn output_resolution_should_return_none_when_no_scale() {
         let fg = FilterGraph::builder().trim(0.0, 5.0).build().unwrap();
         assert_eq!(fg.output_resolution(), None);
+    }
+
+    #[test]
+    fn filter_step_lut3d_should_produce_correct_filter_name() {
+        let step = FilterStep::Lut3d {
+            path: "grade.cube".to_owned(),
+        };
+        assert_eq!(step.filter_name(), "lut3d");
+    }
+
+    #[test]
+    fn filter_step_lut3d_should_produce_correct_args() {
+        let step = FilterStep::Lut3d {
+            path: "grade.cube".to_owned(),
+        };
+        assert_eq!(step.args(), "file=grade.cube:interp=trilinear");
+    }
+
+    #[test]
+    fn builder_lut3d_with_unsupported_extension_should_return_invalid_config() {
+        let result = FilterGraph::builder().lut3d("color_grade.txt").build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for unsupported extension, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("unsupported LUT format"),
+                "reason should mention unsupported format: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_lut3d_with_no_extension_should_return_invalid_config() {
+        let result = FilterGraph::builder().lut3d("color_grade_no_ext").build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for missing extension, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_lut3d_with_nonexistent_cube_file_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .lut3d("/nonexistent/path/grade_ab12cd.cube")
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for nonexistent file, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("LUT file not found"),
+                "reason should mention file not found: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_lut3d_with_nonexistent_3dl_file_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .lut3d("/nonexistent/path/grade_ab12cd.3dl")
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for nonexistent .3dl file, got {result:?}"
+        );
     }
 }
