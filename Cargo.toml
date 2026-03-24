@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.7.3"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
@@ -12,16 +12,16 @@ authors = ["itsakeyfut"]
 
 [workspace.dependencies]
 # Internal ff-* dependencies
-ff-sys      = { path = "crates/ff-sys",      version = "0.7.3" }
-ff-common   = { path = "crates/ff-common",   version = "0.7.3" }
-ff-format   = { path = "crates/ff-format",   version = "0.7.3" }
-ff-probe    = { path = "crates/ff-probe",    version = "0.7.3" }
-ff-decode   = { path = "crates/ff-decode",   version = "0.7.3" }
-ff-encode   = { path = "crates/ff-encode",   version = "0.7.3" }
-ff-filter   = { path = "crates/ff-filter",   version = "0.7.3" }
-ff-pipeline = { path = "crates/ff-pipeline", version = "0.7.3" }
-ff-stream   = { path = "crates/ff-stream",   version = "0.7.3" }
-avio        = { path = "crates/avio",        version = "0.7.3" }
+ff-sys      = { path = "crates/ff-sys",      version = "0.8.0" }
+ff-common   = { path = "crates/ff-common",   version = "0.8.0" }
+ff-format   = { path = "crates/ff-format",   version = "0.8.0" }
+ff-probe    = { path = "crates/ff-probe",    version = "0.8.0" }
+ff-decode   = { path = "crates/ff-decode",   version = "0.8.0" }
+ff-encode   = { path = "crates/ff-encode",   version = "0.8.0" }
+ff-filter   = { path = "crates/ff-filter",   version = "0.8.0" }
+ff-pipeline = { path = "crates/ff-pipeline", version = "0.8.0" }
+ff-stream   = { path = "crates/ff-stream",   version = "0.8.0" }
+avio        = { path = "crates/avio",        version = "0.8.0" }
 
 # Error handling
 thiserror = "2.0.17"
