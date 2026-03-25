@@ -110,6 +110,13 @@ pub(crate) enum FilterStep {
         contrast: f32,
         saturation: f32,
     },
+    /// Per-channel RGB color curves adjustment.
+    Curves {
+        master: Vec<(f32, f32)>,
+        r: Vec<(f32, f32)>,
+        g: Vec<(f32, f32)>,
+        b: Vec<(f32, f32)>,
+    },
 }
 
 impl FilterStep {
@@ -128,6 +135,7 @@ impl FilterStep {
             Self::Equalizer { .. } => "equalizer",
             Self::Lut3d { .. } => "lut3d",
             Self::Eq { .. } => "eq",
+            Self::Curves { .. } => "curves",
         }
     }
 
@@ -162,6 +170,20 @@ impl FilterStep {
                 contrast,
                 saturation,
             } => format!("brightness={brightness}:contrast={contrast}:saturation={saturation}"),
+            Self::Curves { master, r, g, b } => {
+                let fmt = |pts: &[(f32, f32)]| -> String {
+                    pts.iter()
+                        .map(|(x, y)| format!("{x}/{y}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+                [("master", master.as_slice()), ("r", r), ("g", g), ("b", b)]
+                    .iter()
+                    .filter(|(_, pts)| !pts.is_empty())
+                    .map(|(name, pts)| format!("{name}='{}'", fmt(pts)))
+                    .collect::<Vec<_>>()
+                    .join(":")
+            }
         }
     }
 }
@@ -297,6 +319,27 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply per-channel RGB color curves using `FFmpeg`'s `curves` filter.
+    ///
+    /// Each argument is a list of `(input, output)` control points in `[0.0, 1.0]`.
+    /// Pass an empty `Vec` for any channel that needs no adjustment.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
+    /// control point coordinate is outside `[0.0, 1.0]`.
+    #[must_use]
+    pub fn curves(
+        mut self,
+        master: Vec<(f32, f32)>,
+        r: Vec<(f32, f32)>,
+        g: Vec<(f32, f32)>,
+        b: Vec<(f32, f32)>,
+    ) -> Self {
+        self.steps.push(FilterStep::Curves { master, r, g, b });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -398,6 +441,24 @@ impl FilterGraphBuilder {
                     return Err(FilterError::InvalidConfig {
                         reason: format!("eq saturation {saturation} out of range [0.0, 3.0]"),
                     });
+                }
+            }
+            if let FilterStep::Curves { master, r, g, b } = step {
+                for (channel, pts) in [
+                    ("master", master.as_slice()),
+                    ("r", r.as_slice()),
+                    ("g", g.as_slice()),
+                    ("b", b.as_slice()),
+                ] {
+                    for &(x, y) in pts {
+                        if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                            return Err(FilterError::InvalidConfig {
+                                reason: format!(
+                                    "curves {channel} control point ({x}, {y}) out of range [0.0, 1.0]"
+                                ),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -827,6 +888,106 @@ mod tests {
             assert!(
                 reason.contains("saturation"),
                 "reason should mention saturation: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_step_curves_should_produce_correct_filter_name() {
+        let step = FilterStep::Curves {
+            master: vec![],
+            r: vec![],
+            g: vec![],
+            b: vec![],
+        };
+        assert_eq!(step.filter_name(), "curves");
+    }
+
+    #[test]
+    fn filter_step_curves_should_produce_args_with_all_channels() {
+        let step = FilterStep::Curves {
+            master: vec![(0.0, 0.0), (0.5, 0.6), (1.0, 1.0)],
+            r: vec![(0.0, 0.0), (1.0, 1.0)],
+            g: vec![],
+            b: vec![(0.0, 0.0), (1.0, 0.8)],
+        };
+        let args = step.args();
+        assert!(args.contains("master='0/0 0.5/0.6 1/1'"), "args={args}");
+        assert!(args.contains("r='0/0 1/1'"), "args={args}");
+        assert!(
+            !args.contains("g="),
+            "empty g channel should be omitted: args={args}"
+        );
+        assert!(args.contains("b='0/0 1/0.8'"), "args={args}");
+    }
+
+    #[test]
+    fn filter_step_curves_with_empty_channels_should_produce_empty_args() {
+        let step = FilterStep::Curves {
+            master: vec![],
+            r: vec![],
+            g: vec![],
+            b: vec![],
+        };
+        assert_eq!(
+            step.args(),
+            "",
+            "all-empty curves should produce empty args string"
+        );
+    }
+
+    #[test]
+    fn builder_curves_with_valid_s_curve_should_succeed() {
+        let result = FilterGraph::builder()
+            .curves(
+                vec![
+                    (0.0, 0.0),
+                    (0.25, 0.15),
+                    (0.5, 0.5),
+                    (0.75, 0.85),
+                    (1.0, 1.0),
+                ],
+                vec![],
+                vec![],
+                vec![],
+            )
+            .build();
+        assert!(
+            result.is_ok(),
+            "valid S-curve master must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_curves_with_out_of_range_point_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .curves(vec![(0.0, 1.5)], vec![], vec![], vec![])
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for out-of-range point, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("curves") && reason.contains("master"),
+                "reason should mention curves master: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_curves_with_out_of_range_r_channel_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .curves(vec![], vec![(1.2, 0.5)], vec![], vec![])
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for out-of-range r channel point, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("curves") && reason.contains(" r "),
+                "reason should mention curves r: {reason}"
             );
         }
     }
