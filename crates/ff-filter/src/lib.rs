@@ -37,6 +37,6 @@ pub mod graph;
 
 pub use error::FilterError;
 pub use graph::{
-    FilterGraph, FilterGraphBuilder, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition,
-    YadifMode,
+    DrawTextOptions, FilterGraph, FilterGraphBuilder, HwAccel, Rgb, ScaleAlgorithm, ToneMap,
+    XfadeTransition, YadifMode,
 };
