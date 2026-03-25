@@ -929,3 +929,26 @@ fn push_video_through_gblur_should_return_frame_with_same_dimensions() {
     assert_eq!(out.width(), 64, "width should be unchanged after gblur");
     assert_eq!(out.height(), 64, "height should be unchanged after gblur");
 }
+
+#[test]
+fn push_video_through_unsharp_sharpen_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder().unsharp(1.0, 0.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after unsharp push");
+    assert_eq!(out.width(), 64, "width should be unchanged after unsharp");
+    assert_eq!(out.height(), 64, "height should be unchanged after unsharp");
+}
