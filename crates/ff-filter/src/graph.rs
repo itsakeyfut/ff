@@ -195,6 +195,31 @@ impl XfadeTransition {
     }
 }
 
+/// Options for the `drawtext` filter.
+///
+/// Used with [`FilterGraphBuilder::drawtext`].
+#[derive(Debug, Clone)]
+pub struct DrawTextOptions {
+    /// Text string (UTF-8). Special characters (`:`, `'`, `\`) are escaped automatically.
+    pub text: String,
+    /// X position as an `FFmpeg` expression string, e.g. `"(w-text_w)/2"` or `"10"`.
+    pub x: String,
+    /// Y position as an `FFmpeg` expression string, e.g. `"h-th-10"` or `"10"`.
+    pub y: String,
+    /// Font size in points.
+    pub font_size: u32,
+    /// Font color as an `FFmpeg` color string, e.g. `"white"` or `"0xFFFFFF"`.
+    pub font_color: String,
+    /// Optional path to a TrueType font file. Uses default font when `None`.
+    pub font_file: Option<String>,
+    /// Opacity 0.0 (transparent) to 1.0 (opaque), applied as an alpha channel on `fontcolor`.
+    pub opacity: f32,
+    /// Optional background box fill color, e.g. `"black@0.5"`. No box when `None`.
+    pub box_color: Option<String>,
+    /// Background box border width in pixels. Ignored when `box_color` is `None`.
+    pub box_border_width: u32,
+}
+
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
 /// A single step in a filter chain, constructed by the builder methods.
@@ -372,6 +397,11 @@ pub(crate) enum FilterStep {
         /// PTS offset (seconds) where clip B starts.
         offset: f64,
     },
+    /// Draw text onto the video using the `drawtext` filter.
+    DrawText {
+        /// Full set of drawtext parameters.
+        opts: DrawTextOptions,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -438,6 +468,7 @@ impl FilterStep {
             Self::Nlmeans { .. } => "nlmeans",
             Self::Yadif { .. } => "yadif",
             Self::XFade { .. } => "xfade",
+            Self::DrawText { .. } => "drawtext",
         }
     }
 
@@ -576,6 +607,30 @@ impl FilterStep {
             } => {
                 let t = transition.as_str();
                 format!("transition={t}:duration={duration}:offset={offset}")
+            }
+            Self::DrawText { opts } => {
+                // Escape special characters recognised by the drawtext filter.
+                let escaped = opts
+                    .text
+                    .replace('\\', "\\\\")
+                    .replace(':', "\\:")
+                    .replace('\'', "\\'");
+                let mut parts = vec![
+                    format!("text='{escaped}'"),
+                    format!("x={}", opts.x),
+                    format!("y={}", opts.y),
+                    format!("fontsize={}", opts.font_size),
+                    format!("fontcolor={}@{:.2}", opts.font_color, opts.opacity),
+                ];
+                if let Some(ref ff) = opts.font_file {
+                    parts.push(format!("fontfile={ff}"));
+                }
+                if let Some(ref bc) = opts.box_color {
+                    parts.push("box=1".to_string());
+                    parts.push(format!("boxcolor={bc}"));
+                    parts.push(format!("boxborderw={}", opts.box_border_width));
+                }
+                parts.join(":")
             }
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
@@ -1066,6 +1121,16 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Overlay text onto the video using the `drawtext` filter.
+    ///
+    /// See [`DrawTextOptions`] for all configurable fields including position,
+    /// font, size, color, opacity, and optional background box.
+    #[must_use]
+    pub fn drawtext(mut self, opts: DrawTextOptions) -> Self {
+        self.steps.push(FilterStep::DrawText { opts });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -1144,6 +1209,21 @@ impl FilterGraphBuilder {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("xfade duration {duration} must be > 0.0"),
                 });
+            }
+            if let FilterStep::DrawText { opts } = step {
+                if opts.text.is_empty() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: "drawtext text must not be empty".to_string(),
+                    });
+                }
+                if !(0.0..=1.0).contains(&opts.opacity) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "drawtext opacity {} out of range [0.0, 1.0]",
+                            opts.opacity
+                        ),
+                    });
+                }
             }
             if let FilterStep::Overlay { x, y } = step
                 && (*x < 0 || *y < 0)
@@ -3115,6 +3195,172 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for negative duration, got {result:?}"
+        );
+    }
+
+    fn make_drawtext_opts() -> DrawTextOptions {
+        DrawTextOptions {
+            text: "Hello".to_string(),
+            x: "10".to_string(),
+            y: "10".to_string(),
+            font_size: 24,
+            font_color: "white".to_string(),
+            font_file: None,
+            opacity: 1.0,
+            box_color: None,
+            box_border_width: 0,
+        }
+    }
+
+    #[test]
+    fn filter_step_drawtext_should_produce_correct_filter_name() {
+        let step = FilterStep::DrawText {
+            opts: make_drawtext_opts(),
+        };
+        assert_eq!(step.filter_name(), "drawtext");
+    }
+
+    #[test]
+    fn filter_step_drawtext_should_produce_correct_args_without_box() {
+        let step = FilterStep::DrawText {
+            opts: make_drawtext_opts(),
+        };
+        let args = step.args();
+        assert!(
+            args.contains("text='Hello'"),
+            "args must contain text: {args}"
+        );
+        assert!(args.contains("x=10"), "args must contain x: {args}");
+        assert!(args.contains("y=10"), "args must contain y: {args}");
+        assert!(
+            args.contains("fontsize=24"),
+            "args must contain fontsize: {args}"
+        );
+        assert!(
+            args.contains("fontcolor=white@1.00"),
+            "args must contain fontcolor with opacity: {args}"
+        );
+        assert!(
+            !args.contains("box=1"),
+            "args must not contain box when box_color is None: {args}"
+        );
+    }
+
+    #[test]
+    fn filter_step_drawtext_with_box_should_include_box_args() {
+        let opts = DrawTextOptions {
+            box_color: Some("black@0.5".to_string()),
+            box_border_width: 5,
+            ..make_drawtext_opts()
+        };
+        let step = FilterStep::DrawText { opts };
+        let args = step.args();
+        assert!(args.contains("box=1"), "args must contain box=1: {args}");
+        assert!(
+            args.contains("boxcolor=black@0.5"),
+            "args must contain boxcolor: {args}"
+        );
+        assert!(
+            args.contains("boxborderw=5"),
+            "args must contain boxborderw: {args}"
+        );
+    }
+
+    #[test]
+    fn filter_step_drawtext_with_font_file_should_include_fontfile_arg() {
+        let opts = DrawTextOptions {
+            font_file: Some("/usr/share/fonts/arial.ttf".to_string()),
+            ..make_drawtext_opts()
+        };
+        let step = FilterStep::DrawText { opts };
+        let args = step.args();
+        assert!(
+            args.contains("fontfile=/usr/share/fonts/arial.ttf"),
+            "args must contain fontfile: {args}"
+        );
+    }
+
+    #[test]
+    fn filter_step_drawtext_should_escape_colon_in_text() {
+        let opts = DrawTextOptions {
+            text: "Time: 12:00".to_string(),
+            ..make_drawtext_opts()
+        };
+        let step = FilterStep::DrawText { opts };
+        let args = step.args();
+        assert!(
+            args.contains("Time\\: 12\\:00"),
+            "colons in text must be escaped: {args}"
+        );
+    }
+
+    #[test]
+    fn filter_step_drawtext_should_escape_backslash_in_text() {
+        let opts = DrawTextOptions {
+            text: "path\\file".to_string(),
+            ..make_drawtext_opts()
+        };
+        let step = FilterStep::DrawText { opts };
+        let args = step.args();
+        assert!(
+            args.contains("path\\\\file"),
+            "backslash in text must be escaped: {args}"
+        );
+    }
+
+    #[test]
+    fn builder_drawtext_with_valid_opts_should_succeed() {
+        let result = FilterGraph::builder()
+            .drawtext(make_drawtext_opts())
+            .build();
+        assert!(
+            result.is_ok(),
+            "drawtext with valid opts must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_drawtext_with_empty_text_should_return_invalid_config() {
+        let opts = DrawTextOptions {
+            text: String::new(),
+            ..make_drawtext_opts()
+        };
+        let result = FilterGraph::builder().drawtext(opts).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for empty text, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("text"),
+                "reason should mention text: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_drawtext_with_opacity_too_high_should_return_invalid_config() {
+        let opts = DrawTextOptions {
+            opacity: 1.5,
+            ..make_drawtext_opts()
+        };
+        let result = FilterGraph::builder().drawtext(opts).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for opacity > 1.0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_drawtext_with_negative_opacity_should_return_invalid_config() {
+        let opts = DrawTextOptions {
+            opacity: -0.1,
+            ..make_drawtext_opts()
+        };
+        let result = FilterGraph::builder().drawtext(opts).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for opacity < 0.0, got {result:?}"
         );
     }
 }
