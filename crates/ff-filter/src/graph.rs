@@ -253,6 +253,20 @@ pub(crate) enum FilterStep {
         /// Chroma (colour) sharpening/blurring amount. Range: −1.5 – 1.5.
         chroma_strength: f32,
     },
+    /// High Quality 3D noise reduction (`hqdn3d`).
+    ///
+    /// Typical values: `luma_spatial=4.0`, `chroma_spatial=3.0`,
+    /// `luma_tmp=6.0`, `chroma_tmp=4.5`. All values must be ≥ 0.0.
+    Hqdn3d {
+        /// Spatial luma noise reduction strength. Must be ≥ 0.0.
+        luma_spatial: f32,
+        /// Spatial chroma noise reduction strength. Must be ≥ 0.0.
+        chroma_spatial: f32,
+        /// Temporal luma noise reduction strength. Must be ≥ 0.0.
+        luma_tmp: f32,
+        /// Temporal chroma noise reduction strength. Must be ≥ 0.0.
+        chroma_tmp: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -312,6 +326,7 @@ impl FilterStep {
             Self::FitToAspect { .. } => "scale",
             Self::GBlur { .. } => "gblur",
             Self::Unsharp { .. } => "unsharp",
+            Self::Hqdn3d { .. } => "hqdn3d",
         }
     }
 
@@ -425,6 +440,12 @@ impl FilterStep {
                 "luma_msize_x=5:luma_msize_y=5:luma_amount={luma_strength}:\
                  chroma_msize_x=5:chroma_msize_y=5:chroma_amount={chroma_strength}"
             ),
+            Self::Hqdn3d {
+                luma_spatial,
+                chroma_spatial,
+                luma_tmp,
+                chroma_tmp,
+            } => format!("{luma_spatial}:{chroma_spatial}:{luma_tmp}:{chroma_tmp}"),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by
@@ -817,6 +838,32 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply High Quality 3D (`hqdn3d`) noise reduction.
+    ///
+    /// Typical values: `luma_spatial=4.0`, `chroma_spatial=3.0`,
+    /// `luma_tmp=6.0`, `chroma_tmp=4.5`. All values must be ≥ 0.0.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
+    /// value is negative.
+    #[must_use]
+    pub fn hqdn3d(
+        mut self,
+        luma_spatial: f32,
+        chroma_spatial: f32,
+        luma_tmp: f32,
+        chroma_tmp: f32,
+    ) -> Self {
+        self.steps.push(FilterStep::Hqdn3d {
+            luma_spatial,
+            chroma_spatial,
+            luma_tmp,
+            chroma_tmp,
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -1034,6 +1081,26 @@ impl FilterGraphBuilder {
                             "unsharp chroma_strength {chroma_strength} out of range [-1.5, 1.5]"
                         ),
                     });
+                }
+            }
+            if let FilterStep::Hqdn3d {
+                luma_spatial,
+                chroma_spatial,
+                luma_tmp,
+                chroma_tmp,
+            } = step
+            {
+                for (name, val) in [
+                    ("luma_spatial", luma_spatial),
+                    ("chroma_spatial", chroma_spatial),
+                    ("luma_tmp", luma_tmp),
+                    ("chroma_tmp", chroma_tmp),
+                ] {
+                    if *val < 0.0 {
+                        return Err(FilterError::InvalidConfig {
+                            reason: format!("hqdn3d {name} {val} must be >= 0.0"),
+                        });
+                    }
                 }
             }
         }
@@ -2344,5 +2411,87 @@ mod tests {
                 "reason should mention chroma_strength: {reason}"
             );
         }
+    }
+
+    #[test]
+    fn filter_step_hqdn3d_should_produce_correct_filter_name() {
+        let step = FilterStep::Hqdn3d {
+            luma_spatial: 4.0,
+            chroma_spatial: 3.0,
+            luma_tmp: 6.0,
+            chroma_tmp: 4.5,
+        };
+        assert_eq!(step.filter_name(), "hqdn3d");
+    }
+
+    #[test]
+    fn filter_step_hqdn3d_should_produce_correct_args() {
+        let step = FilterStep::Hqdn3d {
+            luma_spatial: 4.0,
+            chroma_spatial: 3.0,
+            luma_tmp: 6.0,
+            chroma_tmp: 4.5,
+        };
+        assert_eq!(step.args(), "4:3:6:4.5");
+    }
+
+    #[test]
+    fn builder_hqdn3d_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().hqdn3d(4.0, 3.0, 6.0, 4.5).build();
+        assert!(
+            result.is_ok(),
+            "hqdn3d(4.0, 3.0, 6.0, 4.5) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_hqdn3d_with_zero_params_should_succeed() {
+        let result = FilterGraph::builder().hqdn3d(0.0, 0.0, 0.0, 0.0).build();
+        assert!(
+            result.is_ok(),
+            "hqdn3d(0.0, 0.0, 0.0, 0.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_hqdn3d_with_negative_luma_spatial_should_return_invalid_config() {
+        let result = FilterGraph::builder().hqdn3d(-1.0, 3.0, 6.0, 4.5).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for negative luma_spatial, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("luma_spatial"),
+                "reason should mention luma_spatial: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_hqdn3d_with_negative_chroma_spatial_should_return_invalid_config() {
+        let result = FilterGraph::builder().hqdn3d(4.0, -1.0, 6.0, 4.5).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for negative chroma_spatial, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_hqdn3d_with_negative_luma_tmp_should_return_invalid_config() {
+        let result = FilterGraph::builder().hqdn3d(4.0, 3.0, -1.0, 4.5).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for negative luma_tmp, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_hqdn3d_with_negative_chroma_tmp_should_return_invalid_config() {
+        let result = FilterGraph::builder().hqdn3d(4.0, 3.0, 6.0, -1.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for negative chroma_tmp, got {result:?}"
+        );
     }
 }
