@@ -170,6 +170,10 @@ pub(crate) enum FilterStep {
         /// Vertical centre of the vignette. `0.0` maps to `h/2`.
         y0: f32,
     },
+    /// Horizontal flip (mirror left-right).
+    HFlip,
+    /// Vertical flip (mirror top-bottom).
+    VFlip,
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -220,6 +224,8 @@ impl FilterStep {
             Self::Gamma { .. } => "eq",
             Self::ThreeWayCC { .. } => "curves",
             Self::Vignette { .. } => "vignette",
+            Self::HFlip => "hflip",
+            Self::VFlip => "vflip",
         }
     }
 
@@ -320,6 +326,7 @@ impl FilterStep {
                     curve(lift.b, gamma.b, gain.b),
                 )
             }
+            Self::HFlip | Self::VFlip => String::new(),
         }
     }
 }
@@ -575,6 +582,20 @@ impl FilterGraphBuilder {
     #[must_use]
     pub fn vignette(mut self, angle: f32, x0: f32, y0: f32) -> Self {
         self.steps.push(FilterStep::Vignette { angle, x0, y0 });
+        self
+    }
+
+    /// Flip the video horizontally (mirror left–right) using `FFmpeg`'s `hflip` filter.
+    #[must_use]
+    pub fn hflip(mut self) -> Self {
+        self.steps.push(FilterStep::HFlip);
+        self
+    }
+
+    /// Flip the video vertically (mirror top–bottom) using `FFmpeg`'s `vflip` filter.
+    #[must_use]
+    pub fn vflip(mut self) -> Self {
+        self.steps.push(FilterStep::VFlip);
         self
     }
 
@@ -1712,6 +1733,47 @@ mod tests {
         assert!(
             result.is_ok(),
             "crop with valid dimensions must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filter_step_hflip_should_produce_correct_filter_name_and_empty_args() {
+        let step = FilterStep::HFlip;
+        assert_eq!(step.filter_name(), "hflip");
+        assert_eq!(step.args(), "");
+    }
+
+    #[test]
+    fn filter_step_vflip_should_produce_correct_filter_name_and_empty_args() {
+        let step = FilterStep::VFlip;
+        assert_eq!(step.filter_name(), "vflip");
+        assert_eq!(step.args(), "");
+    }
+
+    #[test]
+    fn builder_hflip_should_succeed() {
+        let result = FilterGraph::builder().hflip().build();
+        assert!(
+            result.is_ok(),
+            "hflip must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_vflip_should_succeed() {
+        let result = FilterGraph::builder().vflip().build();
+        assert!(
+            result.is_ok(),
+            "vflip must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_hflip_twice_should_succeed() {
+        let result = FilterGraph::builder().hflip().hflip().build();
+        assert!(
+            result.is_ok(),
+            "double hflip (round-trip) must build successfully, got {result:?}"
         );
     }
 }
