@@ -573,3 +573,35 @@ fn push_video_through_curves_s_curve_should_return_frame_with_same_dimensions() 
     assert_eq!(out.width(), 64, "width should be unchanged after curves");
     assert_eq!(out.height(), 64, "height should be unchanged after curves");
 }
+
+#[test]
+fn push_video_through_white_balance_should_return_frame_with_same_dimensions() {
+    // Apply a warm (3200 K) white balance correction; frame dimensions must be preserved.
+    let mut graph = match FilterGraph::builder().white_balance(3200, 0.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after white_balance push");
+    assert_eq!(
+        out.width(),
+        64,
+        "width should be unchanged after white_balance"
+    );
+    assert_eq!(
+        out.height(),
+        64,
+        "height should be unchanged after white_balance"
+    );
+}

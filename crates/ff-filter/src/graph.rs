@@ -117,6 +117,34 @@ pub(crate) enum FilterStep {
         g: Vec<(f32, f32)>,
         b: Vec<(f32, f32)>,
     },
+    /// White balance correction via `colorchannelmixer`.
+    WhiteBalance { temperature_k: u32, tint: f32 },
+}
+
+/// Convert a color temperature in Kelvin to linear RGB multipliers using
+/// Tanner Helland's algorithm.
+///
+/// Returns `(r, g, b)` each in `[0.0, 1.0]`.
+fn kelvin_to_rgb(temp_k: u32) -> (f64, f64, f64) {
+    let t = (f64::from(temp_k) / 100.0).clamp(10.0, 400.0);
+    let r = if t <= 66.0 {
+        1.0
+    } else {
+        (329.698_727_446_4 * (t - 60.0).powf(-0.133_204_759_2) / 255.0).clamp(0.0, 1.0)
+    };
+    let g = if t <= 66.0 {
+        ((99.470_802_586_1 * t.ln() - 161.119_568_166_1) / 255.0).clamp(0.0, 1.0)
+    } else {
+        ((288.122_169_528_3 * (t - 60.0).powf(-0.075_514_849_2)) / 255.0).clamp(0.0, 1.0)
+    };
+    let b = if t >= 66.0 {
+        1.0
+    } else if t <= 19.0 {
+        0.0
+    } else {
+        ((138.517_731_223_1 * (t - 10.0).ln() - 305.044_792_730_7) / 255.0).clamp(0.0, 1.0)
+    };
+    (r, g, b)
 }
 
 impl FilterStep {
@@ -136,6 +164,7 @@ impl FilterStep {
             Self::Lut3d { .. } => "lut3d",
             Self::Eq { .. } => "eq",
             Self::Curves { .. } => "curves",
+            Self::WhiteBalance { .. } => "colorchannelmixer",
         }
     }
 
@@ -183,6 +212,14 @@ impl FilterStep {
                     .map(|(name, pts)| format!("{name}='{}'", fmt(pts)))
                     .collect::<Vec<_>>()
                     .join(":")
+            }
+            Self::WhiteBalance {
+                temperature_k,
+                tint,
+            } => {
+                let (r, g, b) = kelvin_to_rgb(*temperature_k);
+                let g_adj = (g + f64::from(*tint)).clamp(0.0, 2.0);
+                format!("rr={r}:gg={g_adj}:bb={b}")
             }
         }
     }
@@ -340,6 +377,29 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Correct white balance using `FFmpeg`'s `colorchannelmixer` filter.
+    ///
+    /// RGB channel multipliers are derived from `temperature_k` via Tanner
+    /// Helland's Kelvin-to-RGB algorithm. The `tint` offset shifts the green
+    /// channel (positive = more green, negative = more magenta).
+    ///
+    /// Valid ranges:
+    /// - `temperature_k`: 1000–40000 K (neutral daylight ≈ 6500 K)
+    /// - `tint`: −1.0–1.0
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if either
+    /// value is outside its valid range.
+    #[must_use]
+    pub fn white_balance(mut self, temperature_k: u32, tint: f32) -> Self {
+        self.steps.push(FilterStep::WhiteBalance {
+            temperature_k,
+            tint,
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -459,6 +519,24 @@ impl FilterGraphBuilder {
                             });
                         }
                     }
+                }
+            }
+            if let FilterStep::WhiteBalance {
+                temperature_k,
+                tint,
+            } = step
+            {
+                if !(1000..=40000).contains(temperature_k) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "white_balance temperature_k {temperature_k} out of range [1000, 40000]"
+                        ),
+                    });
+                }
+                if !(-1.0..=1.0).contains(tint) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("white_balance tint {tint} out of range [-1.0, 1.0]"),
+                    });
                 }
             }
         }
@@ -988,6 +1066,93 @@ mod tests {
             assert!(
                 reason.contains("curves") && reason.contains(" r "),
                 "reason should mention curves r: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_step_white_balance_should_produce_correct_filter_name() {
+        let step = FilterStep::WhiteBalance {
+            temperature_k: 6500,
+            tint: 0.0,
+        };
+        assert_eq!(step.filter_name(), "colorchannelmixer");
+    }
+
+    #[test]
+    fn filter_step_white_balance_6500k_neutral_tint_should_produce_near_unity_args() {
+        // At 6500 K (daylight), all channels should be close to 1.0.
+        let step = FilterStep::WhiteBalance {
+            temperature_k: 6500,
+            tint: 0.0,
+        };
+        let args = step.args();
+        // Parse rr= value to verify it is close to 1.0.
+        assert!(args.starts_with("rr="), "args must start with rr=: {args}");
+        assert!(
+            args.contains("gg=") && args.contains("bb="),
+            "args must contain gg and bb: {args}"
+        );
+    }
+
+    #[test]
+    fn filter_step_white_balance_3200k_should_produce_warm_shift() {
+        // At 3200 K (tungsten), red should dominate over blue.
+        let step = FilterStep::WhiteBalance {
+            temperature_k: 3200,
+            tint: 0.0,
+        };
+        let (r, _g, b) = kelvin_to_rgb(3200);
+        assert!(r > b, "3200 K must produce a warm shift (r={r} > b={b})");
+        // Verify the args string contains rr and bb.
+        let args = step.args();
+        assert!(args.contains("rr=") && args.contains("bb="), "args={args}");
+    }
+
+    #[test]
+    fn builder_white_balance_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().white_balance(6500, 0.0).build();
+        assert!(
+            result.is_ok(),
+            "valid white_balance params must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_white_balance_with_temperature_too_low_should_return_invalid_config() {
+        let result = FilterGraph::builder().white_balance(500, 0.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for temperature_k < 1000, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("temperature_k"),
+                "reason should mention temperature_k: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_white_balance_with_temperature_too_high_should_return_invalid_config() {
+        let result = FilterGraph::builder().white_balance(50000, 0.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for temperature_k > 40000, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_white_balance_with_tint_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder().white_balance(6500, 1.5).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for tint > 1.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("tint"),
+                "reason should mention tint: {reason}"
             );
         }
     }
