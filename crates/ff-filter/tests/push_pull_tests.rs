@@ -226,6 +226,30 @@ fn push_video_through_crop_should_return_cropped_frame() {
 }
 
 #[test]
+fn push_1080p_frame_through_crop_100_100_1720_880_should_return_cropped_frame() {
+    // Crop a 1920×1080 frame to a 1720×880 rectangle starting at (100, 100).
+    let mut graph = match FilterGraph::builder().crop(100, 100, 1720, 880).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(1920, 1080);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after crop push");
+    assert_eq!(out.width(), 1720, "width should be 1720 after crop");
+    assert_eq!(out.height(), 880, "height should be 880 after crop");
+}
+
+#[test]
 fn push_video_through_overlay_should_return_composited_frame() {
     let mut graph = match FilterGraph::builder().overlay(0, 0).build() {
         Ok(g) => g,
