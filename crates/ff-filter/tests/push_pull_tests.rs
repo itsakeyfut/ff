@@ -514,3 +514,27 @@ fn push_video_through_vaapi_scale_should_return_resized_frame_or_skip() {
     assert_eq!(out.width(), 32, "width should be scaled to 32");
     assert_eq!(out.height(), 32, "height should be scaled to 32");
 }
+
+#[test]
+fn push_video_through_eq_saturation_zero_should_return_frame_with_same_dimensions() {
+    // saturation=0.0 converts to grayscale; frame dimensions are preserved.
+    let mut graph = match FilterGraph::builder().eq(0.0, 1.0, 0.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after eq push");
+    assert_eq!(out.width(), 64, "width should be unchanged after eq");
+    assert_eq!(out.height(), 64, "height should be unchanged after eq");
+}
