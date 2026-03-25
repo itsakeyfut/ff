@@ -165,6 +165,10 @@ pub(crate) enum FilterStep {
     FadeIn { start: f64, duration: f64 },
     /// Fade-out to black starting at `start` seconds, over `duration` seconds.
     FadeOut { start: f64, duration: f64 },
+    /// Fade-in from white starting at `start` seconds, over `duration` seconds.
+    FadeInWhite { start: f64, duration: f64 },
+    /// Fade-out to white starting at `start` seconds, over `duration` seconds.
+    FadeOutWhite { start: f64, duration: f64 },
     /// Rotate clockwise by `angle_degrees`, filling exposed areas with `fill_color`.
     Rotate {
         angle_degrees: f64,
@@ -332,7 +336,10 @@ impl FilterStep {
             Self::Scale { .. } => "scale",
             Self::Crop { .. } => "crop",
             Self::Overlay { .. } => "overlay",
-            Self::FadeIn { .. } | Self::FadeOut { .. } => "fade",
+            Self::FadeIn { .. }
+            | Self::FadeOut { .. }
+            | Self::FadeInWhite { .. }
+            | Self::FadeOutWhite { .. } => "fade",
             Self::Rotate { .. } => "rotate",
             Self::ToneMap(_) => "tonemap",
             Self::Volume(_) => "volume",
@@ -384,6 +391,12 @@ impl FilterStep {
             }
             Self::FadeOut { start, duration } => {
                 format!("type=out:start_time={start}:duration={duration}")
+            }
+            Self::FadeInWhite { start, duration } => {
+                format!("type=in:start_time={start}:duration={duration}:color=white")
+            }
+            Self::FadeOutWhite { start, duration } => {
+                format!("type=out:start_time={start}:duration={duration}:color=white")
             }
             Self::Rotate {
                 angle_degrees,
@@ -603,6 +616,28 @@ impl FilterGraphBuilder {
     #[must_use]
     pub fn fade_out(mut self, start_sec: f64, duration_sec: f64) -> Self {
         self.steps.push(FilterStep::FadeOut {
+            start: start_sec,
+            duration: duration_sec,
+        });
+        self
+    }
+
+    /// Fade in from white, starting at `start_sec` seconds and reaching full
+    /// brightness after `duration_sec` seconds.
+    #[must_use]
+    pub fn fade_in_white(mut self, start_sec: f64, duration_sec: f64) -> Self {
+        self.steps.push(FilterStep::FadeInWhite {
+            start: start_sec,
+            duration: duration_sec,
+        });
+        self
+    }
+
+    /// Fade out to white, starting at `start_sec` seconds and reaching full
+    /// white after `duration_sec` seconds.
+    #[must_use]
+    pub fn fade_out_white(mut self, start_sec: f64, duration_sec: f64) -> Self {
+        self.steps.push(FilterStep::FadeOutWhite {
             start: start_sec,
             duration: duration_sec,
         });
@@ -993,7 +1028,10 @@ impl FilterGraphBuilder {
                     reason: "crop width and height must be > 0".to_string(),
                 });
             }
-            if let FilterStep::FadeIn { duration, .. } | FilterStep::FadeOut { duration, .. } = step
+            if let FilterStep::FadeIn { duration, .. }
+            | FilterStep::FadeOut { duration, .. }
+            | FilterStep::FadeInWhite { duration, .. }
+            | FilterStep::FadeOutWhite { duration, .. } = step
                 && *duration <= 0.0
             {
                 return Err(FilterError::InvalidConfig {
@@ -1467,6 +1505,87 @@ mod tests {
     #[test]
     fn builder_fade_out_with_negative_duration_should_return_invalid_config() {
         let result = FilterGraph::builder().fade_out(0.0, -1.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for negative duration, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filter_step_fade_in_white_should_produce_correct_filter_name() {
+        let step = FilterStep::FadeInWhite {
+            start: 0.0,
+            duration: 1.0,
+        };
+        assert_eq!(step.filter_name(), "fade");
+    }
+
+    #[test]
+    fn filter_step_fade_in_white_should_produce_correct_args() {
+        let step = FilterStep::FadeInWhite {
+            start: 0.0,
+            duration: 1.0,
+        };
+        assert_eq!(step.args(), "type=in:start_time=0:duration=1:color=white");
+    }
+
+    #[test]
+    fn filter_step_fade_in_white_with_nonzero_start_should_produce_correct_args() {
+        let step = FilterStep::FadeInWhite {
+            start: 2.5,
+            duration: 1.0,
+        };
+        assert_eq!(step.args(), "type=in:start_time=2.5:duration=1:color=white");
+    }
+
+    #[test]
+    fn filter_step_fade_out_white_should_produce_correct_filter_name() {
+        let step = FilterStep::FadeOutWhite {
+            start: 8.0,
+            duration: 1.0,
+        };
+        assert_eq!(step.filter_name(), "fade");
+    }
+
+    #[test]
+    fn filter_step_fade_out_white_should_produce_correct_args() {
+        let step = FilterStep::FadeOutWhite {
+            start: 8.0,
+            duration: 1.0,
+        };
+        assert_eq!(step.args(), "type=out:start_time=8:duration=1:color=white");
+    }
+
+    #[test]
+    fn builder_fade_in_white_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().fade_in_white(0.0, 1.0).build();
+        assert!(
+            result.is_ok(),
+            "fade_in_white(0.0, 1.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_fade_out_white_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().fade_out_white(8.0, 1.0).build();
+        assert!(
+            result.is_ok(),
+            "fade_out_white(8.0, 1.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_fade_in_white_with_zero_duration_should_return_invalid_config() {
+        let result = FilterGraph::builder().fade_in_white(0.0, 0.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for zero duration, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_fade_out_white_with_negative_duration_should_return_invalid_config() {
+        let result = FilterGraph::builder().fade_out_white(0.0, -1.0).build();
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for negative duration, got {result:?}"

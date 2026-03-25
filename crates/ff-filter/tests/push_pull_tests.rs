@@ -1018,3 +1018,65 @@ fn push_video_through_yadif_frame_mode_should_accept_frames_without_error() {
         assert_eq!(out.height(), 64, "height should be unchanged after yadif");
     }
 }
+
+#[test]
+fn push_video_through_fade_in_white_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder().fade_in_white(0.0, 1.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after fade_in_white push");
+    assert_eq!(
+        out.width(),
+        64,
+        "width should be unchanged after fade_in_white"
+    );
+    assert_eq!(
+        out.height(),
+        64,
+        "height should be unchanged after fade_in_white"
+    );
+}
+
+#[test]
+fn push_video_through_fade_out_white_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder().fade_out_white(0.0, 1.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after fade_out_white push");
+    assert_eq!(
+        out.width(),
+        64,
+        "width should be unchanged after fade_out_white"
+    );
+    assert_eq!(
+        out.height(),
+        64,
+        "height should be unchanged after fade_out_white"
+    );
+}
