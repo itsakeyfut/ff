@@ -806,3 +806,29 @@ fn push_video_through_vflip_should_return_frame_with_same_dimensions() {
     assert_eq!(out.width(), 64, "width should be unchanged after vflip");
     assert_eq!(out.height(), 64, "height should be unchanged after vflip");
 }
+
+#[test]
+fn push_720p_frame_through_pad_1920_1080_centred_should_return_1080p_frame() {
+    let mut graph = match FilterGraph::builder()
+        .pad(1920, 1080, -1, -1, "black")
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(1280, 720);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after pad push");
+    assert_eq!(out.width(), 1920, "width should be padded to 1920");
+    assert_eq!(out.height(), 1080, "height should be padded to 1080");
+}
