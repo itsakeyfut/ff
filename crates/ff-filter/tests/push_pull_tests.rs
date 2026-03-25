@@ -1165,3 +1165,45 @@ fn push_video_through_drawtext_should_return_frame_with_same_dimensions() {
         "height should be unchanged after drawtext"
     );
 }
+
+#[test]
+fn push_video_through_drawtext_with_box_should_return_frame_with_same_dimensions() {
+    let opts = DrawTextOptions {
+        text: "Hello".to_string(),
+        x: "10".to_string(),
+        y: "10".to_string(),
+        font_size: 24,
+        font_color: "white".to_string(),
+        font_file: None,
+        opacity: 1.0,
+        box_color: Some("black@0.5".to_string()),
+        box_border_width: 5,
+    };
+    let mut graph = match FilterGraph::builder().drawtext(opts).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after drawtext with box push");
+    assert_eq!(
+        out.width(),
+        64,
+        "width should be unchanged after drawtext with box"
+    );
+    assert_eq!(
+        out.height(),
+        64,
+        "height should be unchanged after drawtext with box"
+    );
+}
