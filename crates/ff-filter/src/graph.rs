@@ -121,6 +121,8 @@ pub(crate) enum FilterStep {
     WhiteBalance { temperature_k: u32, tint: f32 },
     /// Hue rotation by an arbitrary angle.
     Hue { degrees: f32 },
+    /// Per-channel gamma correction via `FFmpeg` `eq` filter.
+    Gamma { r: f32, g: f32, b: f32 },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -168,6 +170,7 @@ impl FilterStep {
             Self::Curves { .. } => "curves",
             Self::WhiteBalance { .. } => "colorchannelmixer",
             Self::Hue { .. } => "hue",
+            Self::Gamma { .. } => "eq",
         }
     }
 
@@ -225,6 +228,7 @@ impl FilterStep {
                 format!("rr={r}:gg={g_adj}:bb={b}")
             }
             Self::Hue { degrees } => format!("h={degrees}"),
+            Self::Gamma { r, g, b } => format!("gamma_r={r}:gamma_g={g}:gamma_b={b}"),
         }
     }
 }
@@ -418,6 +422,21 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply per-channel gamma correction using `FFmpeg`'s `eq` filter.
+    ///
+    /// Valid range per channel: 0.1–10.0. A value of `1.0` is neutral.
+    /// Values above 1.0 brighten midtones; values below 1.0 darken them.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
+    /// channel value is outside `[0.1, 10.0]`.
+    #[must_use]
+    pub fn gamma(mut self, r: f32, g: f32, b: f32) -> Self {
+        self.steps.push(FilterStep::Gamma { r, g, b });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -563,6 +582,15 @@ impl FilterGraphBuilder {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("hue degrees {degrees} out of range [-360.0, 360.0]"),
                 });
+            }
+            if let FilterStep::Gamma { r, g, b } = step {
+                for (channel, val) in [("r", r), ("g", g), ("b", b)] {
+                    if !(0.1..=10.0).contains(val) {
+                        return Err(FilterError::InvalidConfig {
+                            reason: format!("gamma {channel} {val} out of range [0.1, 10.0]"),
+                        });
+                    }
+                }
             }
         }
 
@@ -1230,6 +1258,69 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for degrees < -360.0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filter_step_gamma_should_produce_correct_filter_name() {
+        let step = FilterStep::Gamma {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+        };
+        assert_eq!(step.filter_name(), "eq");
+    }
+
+    #[test]
+    fn filter_step_gamma_should_produce_correct_args() {
+        let step = FilterStep::Gamma {
+            r: 2.2,
+            g: 2.2,
+            b: 2.2,
+        };
+        assert_eq!(step.args(), "gamma_r=2.2:gamma_g=2.2:gamma_b=2.2");
+    }
+
+    #[test]
+    fn filter_step_gamma_neutral_should_produce_unity_args() {
+        let step = FilterStep::Gamma {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+        };
+        assert_eq!(step.args(), "gamma_r=1:gamma_g=1:gamma_b=1");
+    }
+
+    #[test]
+    fn builder_gamma_with_neutral_values_should_succeed() {
+        let result = FilterGraph::builder().gamma(1.0, 1.0, 1.0).build();
+        assert!(
+            result.is_ok(),
+            "gamma(1.0, 1.0, 1.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_gamma_with_r_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder().gamma(0.0, 1.0, 1.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for r < 0.1, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("gamma") && reason.contains(" r "),
+                "reason should mention gamma r: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_gamma_with_b_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder().gamma(1.0, 1.0, 11.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for b > 10.0, got {result:?}"
         );
     }
 }

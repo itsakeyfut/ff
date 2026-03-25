@@ -637,3 +637,27 @@ fn push_video_through_hue_180_should_return_frame_with_same_dimensions() {
         "height should be unchanged after hue rotation"
     );
 }
+
+#[test]
+fn push_video_through_gamma_should_return_frame_with_same_dimensions() {
+    // Apply 2.2 gamma to all channels (brightens midtones); dimensions must be preserved.
+    let mut graph = match FilterGraph::builder().gamma(2.2, 2.2, 2.2).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after gamma push");
+    assert_eq!(out.width(), 64, "width should be unchanged after gamma");
+    assert_eq!(out.height(), 64, "height should be unchanged after gamma");
+}
