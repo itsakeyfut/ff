@@ -267,6 +267,16 @@ pub(crate) enum FilterStep {
         /// Temporal chroma noise reduction strength. Must be ≥ 0.0.
         chroma_tmp: f32,
     },
+    /// Non-local means noise reduction (`nlmeans`).
+    ///
+    /// `strength` controls the denoising intensity; range 1.0–30.0.
+    /// Higher values remove more noise but are significantly more CPU-intensive.
+    ///
+    /// NOTE: nlmeans is CPU-intensive; avoid for real-time pipelines.
+    Nlmeans {
+        /// Denoising strength. Must be in the range [1.0, 30.0].
+        strength: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -327,6 +337,7 @@ impl FilterStep {
             Self::GBlur { .. } => "gblur",
             Self::Unsharp { .. } => "unsharp",
             Self::Hqdn3d { .. } => "hqdn3d",
+            Self::Nlmeans { .. } => "nlmeans",
         }
     }
 
@@ -446,6 +457,7 @@ impl FilterStep {
                 luma_tmp,
                 chroma_tmp,
             } => format!("{luma_spatial}:{chroma_spatial}:{luma_tmp}:{chroma_tmp}"),
+            Self::Nlmeans { strength } => format!("s={strength}"),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by
@@ -864,6 +876,18 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply non-local means (`nlmeans`) noise reduction.
+    ///
+    /// `strength` controls denoising intensity; range 1.0–30.0.
+    /// Higher values remove more noise at the cost of significantly more CPU.
+    ///
+    /// NOTE: nlmeans is CPU-intensive; avoid for real-time pipelines.
+    #[must_use]
+    pub fn nlmeans(mut self, strength: f32) -> Self {
+        self.steps.push(FilterStep::Nlmeans { strength });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -1102,6 +1126,13 @@ impl FilterGraphBuilder {
                         });
                     }
                 }
+            }
+            if let FilterStep::Nlmeans { strength } = step
+                && (*strength < 1.0 || *strength > 30.0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("nlmeans strength {strength} out of range [1.0, 30.0]"),
+                });
             }
         }
 
@@ -2493,5 +2524,74 @@ mod tests {
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for negative chroma_tmp, got {result:?}"
         );
+    }
+
+    #[test]
+    fn filter_step_nlmeans_should_produce_correct_filter_name() {
+        let step = FilterStep::Nlmeans { strength: 8.0 };
+        assert_eq!(step.filter_name(), "nlmeans");
+    }
+
+    #[test]
+    fn filter_step_nlmeans_should_produce_correct_args() {
+        let step = FilterStep::Nlmeans { strength: 8.0 };
+        assert_eq!(step.args(), "s=8");
+    }
+
+    #[test]
+    fn builder_nlmeans_with_valid_strength_should_succeed() {
+        let result = FilterGraph::builder().nlmeans(8.0).build();
+        assert!(
+            result.is_ok(),
+            "nlmeans(8.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_nlmeans_with_min_strength_should_succeed() {
+        let result = FilterGraph::builder().nlmeans(1.0).build();
+        assert!(
+            result.is_ok(),
+            "nlmeans(1.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_nlmeans_with_max_strength_should_succeed() {
+        let result = FilterGraph::builder().nlmeans(30.0).build();
+        assert!(
+            result.is_ok(),
+            "nlmeans(30.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_nlmeans_with_strength_too_low_should_return_invalid_config() {
+        let result = FilterGraph::builder().nlmeans(0.5).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for strength < 1.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("strength"),
+                "reason should mention strength: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_nlmeans_with_strength_too_high_should_return_invalid_config() {
+        let result = FilterGraph::builder().nlmeans(31.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for strength > 30.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("strength"),
+                "reason should mention strength: {reason}"
+            );
+        }
     }
 }
