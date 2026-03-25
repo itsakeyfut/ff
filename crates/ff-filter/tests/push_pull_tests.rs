@@ -696,3 +696,34 @@ fn push_video_through_three_way_cc_neutral_should_return_frame_with_same_dimensi
         "height should be unchanged after three_way_cc"
     );
 }
+
+#[test]
+fn push_video_through_vignette_should_return_frame_with_same_dimensions() {
+    // Default-angle vignette centred on the frame; dimensions must be preserved.
+    let mut graph = match FilterGraph::builder()
+        .vignette(std::f32::consts::PI / 5.0, 0.0, 0.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after vignette push");
+    assert_eq!(out.width(), 64, "width should be unchanged after vignette");
+    assert_eq!(
+        out.height(),
+        64,
+        "height should be unchanged after vignette"
+    );
+}

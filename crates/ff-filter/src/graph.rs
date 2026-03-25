@@ -158,6 +158,15 @@ pub(crate) enum FilterStep {
         /// Affects highlights (whites). Neutral: `Rgb::NEUTRAL`.
         gain: Rgb,
     },
+    /// Vignette effect via `FFmpeg` `vignette` filter.
+    Vignette {
+        /// Radius angle in radians (valid range: 0.0 – π/2 ≈ 1.5708). Default: π/5 ≈ 0.628.
+        angle: f32,
+        /// Horizontal centre of the vignette. `0.0` maps to `w/2`.
+        x0: f32,
+        /// Vertical centre of the vignette. `0.0` maps to `h/2`.
+        y0: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -207,6 +216,7 @@ impl FilterStep {
             Self::Hue { .. } => "hue",
             Self::Gamma { .. } => "eq",
             Self::ThreeWayCC { .. } => "curves",
+            Self::Vignette { .. } => "vignette",
         }
     }
 
@@ -265,6 +275,19 @@ impl FilterStep {
             }
             Self::Hue { degrees } => format!("h={degrees}"),
             Self::Gamma { r, g, b } => format!("gamma_r={r}:gamma_g={g}:gamma_b={b}"),
+            Self::Vignette { angle, x0, y0 } => {
+                let cx = if *x0 == 0.0 {
+                    "w/2".to_string()
+                } else {
+                    x0.to_string()
+                };
+                let cy = if *y0 == 0.0 {
+                    "h/2".to_string()
+                } else {
+                    y0.to_string()
+                };
+                format!("angle={angle}:x0={cx}:y0={cy}")
+            }
             Self::ThreeWayCC { lift, gamma, gain } => {
                 // Convert lift/gamma/gain to a 3-point per-channel curves representation.
                 // The formula maps:
@@ -518,6 +541,26 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a vignette effect using `FFmpeg`'s `vignette` filter.
+    ///
+    /// Darkens the corners of the frame with a smooth radial falloff.
+    ///
+    /// - `angle`: radius angle in radians (`0.0` – π/2 ≈ 1.5708). Default: π/5 ≈ 0.628.
+    /// - `x0`: horizontal centre of the vignette. Pass `0.0` to use the video
+    ///   centre (`w/2`).
+    /// - `y0`: vertical centre of the vignette. Pass `0.0` to use the video
+    ///   centre (`h/2`).
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `angle` is outside `[0.0, π/2]`.
+    #[must_use]
+    pub fn vignette(mut self, angle: f32, x0: f32, y0: f32) -> Self {
+        self.steps.push(FilterStep::Vignette { angle, x0, y0 });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -681,6 +724,13 @@ impl FilterGraphBuilder {
                         });
                     }
                 }
+            }
+            if let FilterStep::Vignette { angle, .. } = step
+                && !((0.0)..=std::f32::consts::FRAC_PI_2).contains(angle)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("vignette angle {angle} out of range [0.0, π/2]"),
+                });
             }
         }
 
@@ -1513,5 +1563,78 @@ mod tests {
                 "reason should mention gamma.g: {reason}"
             );
         }
+    }
+
+    #[test]
+    fn filter_step_vignette_should_produce_correct_filter_name() {
+        let step = FilterStep::Vignette {
+            angle: 0.628,
+            x0: 0.0,
+            y0: 0.0,
+        };
+        assert_eq!(step.filter_name(), "vignette");
+    }
+
+    #[test]
+    fn filter_step_vignette_zero_centre_should_use_w2_h2_defaults() {
+        let step = FilterStep::Vignette {
+            angle: 0.628,
+            x0: 0.0,
+            y0: 0.0,
+        };
+        let args = step.args();
+        assert!(args.contains("x0=w/2"), "x0=0.0 should map to w/2: {args}");
+        assert!(args.contains("y0=h/2"), "y0=0.0 should map to h/2: {args}");
+        assert!(
+            args.contains("angle=0.628"),
+            "args must contain angle: {args}"
+        );
+    }
+
+    #[test]
+    fn filter_step_vignette_custom_centre_should_produce_numeric_coords() {
+        let step = FilterStep::Vignette {
+            angle: 0.5,
+            x0: 320.0,
+            y0: 240.0,
+        };
+        let args = step.args();
+        assert!(args.contains("x0=320"), "custom x0 should appear: {args}");
+        assert!(args.contains("y0=240"), "custom y0 should appear: {args}");
+    }
+
+    #[test]
+    fn builder_vignette_with_valid_angle_should_succeed() {
+        let result = FilterGraph::builder()
+            .vignette(std::f32::consts::PI / 5.0, 0.0, 0.0)
+            .build();
+        assert!(
+            result.is_ok(),
+            "default vignette angle must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_vignette_with_angle_too_large_should_return_invalid_config() {
+        let result = FilterGraph::builder().vignette(2.0, 0.0, 0.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for angle > π/2, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("angle"),
+                "reason should mention angle: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_vignette_with_negative_angle_should_return_invalid_config() {
+        let result = FilterGraph::builder().vignette(-0.1, 0.0, 0.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for angle < 0.0, got {result:?}"
+        );
     }
 }
