@@ -222,6 +222,19 @@ pub(crate) enum FilterStep {
         /// Fill color (any `FFmpeg` color string, e.g. `"black"`, `"0x000000"`).
         color: String,
     },
+    /// Scale (preserving aspect ratio) then centre-pad to fill target dimensions
+    /// (letterbox or pillarbox as required).
+    ///
+    /// Implemented as a `scale` filter with `force_original_aspect_ratio=decrease`
+    /// followed by a `pad` filter that centres the scaled frame on the canvas.
+    FitToAspect {
+        /// Target canvas width in pixels.
+        width: u32,
+        /// Target canvas height in pixels.
+        height: u32,
+        /// Fill color for the bars (any `FFmpeg` color string, e.g. `"black"`).
+        color: String,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -275,6 +288,10 @@ impl FilterStep {
             Self::HFlip => "hflip",
             Self::VFlip => "vflip",
             Self::Pad { .. } => "pad",
+            // FitToAspect is implemented as scale + pad; "scale" is validated at
+            // build time.  The pad filter is inserted by filter_inner at graph
+            // construction time.
+            Self::FitToAspect { .. } => "scale",
         }
     }
 
@@ -380,6 +397,13 @@ impl FilterStep {
                 )
             }
             Self::HFlip | Self::VFlip => String::new(),
+            Self::FitToAspect { width, height, .. } => {
+                // Scale to fit within the target dimensions, preserving the source
+                // aspect ratio.  The accompanying pad filter (inserted by
+                // filter_inner after this scale filter) centres the result on the
+                // target canvas.
+                format!("w={width}:h={height}:force_original_aspect_ratio=decrease")
+            }
             Self::Pad {
                 width,
                 height,
@@ -705,6 +729,30 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Scale the source frame to fit within `width × height` while preserving its
+    /// aspect ratio, then centre it on a `width × height` canvas filled with
+    /// `color` (letterbox / pillarbox).
+    ///
+    /// Wide sources (wider aspect ratio than the target) get horizontal black bars
+    /// (*letterbox*); tall sources get vertical bars (*pillarbox*).
+    ///
+    /// `color` accepts any color string understood by `FFmpeg` — for example
+    /// `"black"`, `"white"`, `"0x000000"`.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `width` or `height` is zero.
+    #[must_use]
+    pub fn fit_to_aspect(mut self, width: u32, height: u32, color: &str) -> Self {
+        self.steps.push(FilterStep::FitToAspect {
+            width,
+            height,
+            color: color.to_owned(),
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -888,6 +936,13 @@ impl FilterGraphBuilder {
             {
                 return Err(FilterError::InvalidConfig {
                     reason: "pad width and height must be > 0".to_string(),
+                });
+            }
+            if let FilterStep::FitToAspect { width, height, .. } = step
+                && (*width == 0 || *height == 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "fit_to_aspect width and height must be > 0".to_string(),
                 });
             }
         }
@@ -1989,6 +2044,73 @@ mod tests {
     #[test]
     fn builder_pad_with_zero_height_should_return_invalid_config() {
         let result = FilterGraph::builder().pad(1920, 0, -1, -1, "black").build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for height=0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filter_step_fit_to_aspect_should_produce_correct_filter_name() {
+        let step = FilterStep::FitToAspect {
+            width: 1920,
+            height: 1080,
+            color: "black".to_owned(),
+        };
+        assert_eq!(step.filter_name(), "scale");
+    }
+
+    #[test]
+    fn filter_step_fit_to_aspect_should_produce_scale_args_with_force_original_aspect_ratio() {
+        let step = FilterStep::FitToAspect {
+            width: 1920,
+            height: 1080,
+            color: "black".to_owned(),
+        };
+        let args = step.args();
+        assert!(
+            args.contains("w=1920") && args.contains("h=1080"),
+            "args must contain target dimensions: {args}"
+        );
+        assert!(
+            args.contains("force_original_aspect_ratio=decrease"),
+            "args must request aspect-ratio-preserving scale: {args}"
+        );
+    }
+
+    #[test]
+    fn builder_fit_to_aspect_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder()
+            .fit_to_aspect(1920, 1080, "black")
+            .build();
+        assert!(
+            result.is_ok(),
+            "fit_to_aspect with valid params must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_fit_to_aspect_with_zero_width_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .fit_to_aspect(0, 1080, "black")
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for width=0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("fit_to_aspect width and height must be > 0"),
+                "reason should mention fit_to_aspect dimensions: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_fit_to_aspect_with_zero_height_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .fit_to_aspect(1920, 0, "black")
+            .build();
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for height=0, got {result:?}"

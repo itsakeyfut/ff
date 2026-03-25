@@ -354,6 +354,21 @@ impl FilterGraphInner {
                 };
             }
 
+            // FitToAspect is a compound step: the scale filter (added by
+            // add_and_link_step above) preserves the source aspect ratio; the
+            // pad filter added here centres the scaled frame on the target canvas.
+            if let FilterStep::FitToAspect {
+                width,
+                height,
+                color,
+            } = step
+            {
+                prev_ctx = match add_fit_to_aspect_pad(graph, prev_ctx, *width, *height, color, i) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+            }
+
             // Overlay consumes a second input on pad 1.
             if matches!(step, FilterStep::Overlay { .. })
                 && let Some(Some(extra_src)) = src_ctxs.get(1)
@@ -992,6 +1007,54 @@ unsafe fn add_setpts_after_trim(
         return Err(FilterError::BuildFailed);
     }
     log::debug!("filter added name=setpts args=PTS-STARTPTS");
+
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    Ok(ctx)
+}
+
+/// Add a `pad` filter that centres the scaled frame on the target `width × height`
+/// canvas, completing the scale-then-pad compound step for [`FilterStep::FitToAspect`].
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+unsafe fn add_fit_to_aspect_pad(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    width: u32,
+    height: u32,
+    color: &str,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let pad_filter = ff_sys::avfilter_get_by_name(c"pad".as_ptr());
+    if pad_filter.is_null() {
+        log::warn!("filter not found name=pad (fit_to_aspect)");
+        return Err(FilterError::BuildFailed);
+    }
+
+    let name =
+        std::ffi::CString::new(format!("fitpad{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let args_str = format!("width={width}:height={height}:x=(ow-iw)/2:y=(oh-ih)/2:color={color}");
+    let args = std::ffi::CString::new(args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+
+    let mut ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut ctx,
+        pad_filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=pad args={args_str}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=pad args={args_str} index={index}");
 
     let ret = ff_sys::avfilter_link(prev_ctx, 0, ctx, 0);
     if ret < 0 {
