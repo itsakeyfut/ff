@@ -538,3 +538,38 @@ fn push_video_through_eq_saturation_zero_should_return_frame_with_same_dimension
     assert_eq!(out.width(), 64, "width should be unchanged after eq");
     assert_eq!(out.height(), 64, "height should be unchanged after eq");
 }
+
+#[test]
+fn push_video_through_curves_s_curve_should_return_frame_with_same_dimensions() {
+    // Apply an S-curve to the master channel to boost midtone contrast;
+    // frame dimensions must be preserved.
+    let s_curve = vec![
+        (0.0, 0.0),
+        (0.25, 0.15),
+        (0.5, 0.5),
+        (0.75, 0.85),
+        (1.0, 1.0),
+    ];
+    let mut graph = match FilterGraph::builder()
+        .curves(s_curve, vec![], vec![], vec![])
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after curves push");
+    assert_eq!(out.width(), 64, "width should be unchanged after curves");
+    assert_eq!(out.height(), 64, "height should be unchanged after curves");
+}
