@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use ff_filter::{FilterError, FilterGraph, HwAccel, Rgb, ToneMap};
+use ff_filter::{FilterError, FilterGraph, HwAccel, Rgb, ScaleAlgorithm, ToneMap};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -42,7 +42,10 @@ fn make_audio_frame() -> AudioFrame {
 
 #[test]
 fn pull_video_before_push_should_return_none() {
-    let mut graph = match FilterGraph::builder().scale(32, 32).build() {
+    let mut graph = match FilterGraph::builder()
+        .scale(32, 32, ScaleAlgorithm::Fast)
+        .build()
+    {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: {e}");
@@ -60,7 +63,10 @@ fn pull_video_before_push_should_return_none() {
 
 #[test]
 fn push_video_and_pull_through_scale_should_return_resized_frame() {
-    let mut graph = match FilterGraph::builder().scale(32, 32).build() {
+    let mut graph = match FilterGraph::builder()
+        .scale(32, 32, ScaleAlgorithm::Fast)
+        .build()
+    {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: {e}");
@@ -83,7 +89,10 @@ fn push_video_and_pull_through_scale_should_return_resized_frame() {
 
 #[test]
 fn push_video_to_invalid_slot_should_return_error() {
-    let mut graph = match FilterGraph::builder().scale(32, 32).build() {
+    let mut graph = match FilterGraph::builder()
+        .scale(32, 32, ScaleAlgorithm::Fast)
+        .build()
+    {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: {e}");
@@ -448,7 +457,7 @@ fn push_video_through_cuda_scale_should_return_resized_frame_or_skip() {
     // error paths are treated as graceful skips.
     let mut graph = match FilterGraph::builder()
         .hardware(HwAccel::Cuda)
-        .scale(32, 32)
+        .scale(32, 32, ScaleAlgorithm::Fast)
         .build()
     {
         Ok(g) => g,
@@ -481,7 +490,7 @@ fn push_video_through_videotoolbox_scale_should_return_resized_frame_or_skip() {
     // back; avfilter_graph_config failure is also treated as a skip.
     let mut graph = match FilterGraph::builder()
         .hardware(HwAccel::VideoToolbox)
-        .scale(32, 32)
+        .scale(32, 32, ScaleAlgorithm::Fast)
         .build()
     {
         Ok(g) => g,
@@ -514,7 +523,7 @@ fn push_video_through_vaapi_scale_should_return_resized_frame_or_skip() {
     // the VAAPI device and hwdownload brings them back.
     let mut graph = match FilterGraph::builder()
         .hardware(HwAccel::Vaapi)
-        .scale(32, 32)
+        .scale(32, 32, ScaleAlgorithm::Fast)
         .build()
     {
         Ok(g) => g,

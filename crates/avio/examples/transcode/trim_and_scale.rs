@@ -169,7 +169,7 @@ fn main() {
     // Build filter graph: trim → scale (if requested)
     let mut builder = FilterGraphBuilder::new().trim(start, end);
     if let (Some(w), Some(h)) = (width, height) {
-        builder = builder.scale(w, h);
+        builder = builder.scale(w, h, avio::ScaleAlgorithm::Fast);
     }
     let filter = match builder.build() {
         Ok(fg) => fg,
