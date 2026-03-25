@@ -751,3 +751,49 @@ fn push_video_through_vignette_should_return_frame_with_same_dimensions() {
         "height should be unchanged after vignette"
     );
 }
+
+#[test]
+fn push_video_through_hflip_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder().hflip().build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after hflip push");
+    assert_eq!(out.width(), 64, "width should be unchanged after hflip");
+    assert_eq!(out.height(), 64, "height should be unchanged after hflip");
+}
+
+#[test]
+fn push_video_through_vflip_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder().vflip().build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after vflip push");
+    assert_eq!(out.width(), 64, "width should be unchanged after vflip");
+    assert_eq!(out.height(), 64, "height should be unchanged after vflip");
+}

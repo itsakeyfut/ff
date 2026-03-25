@@ -1278,13 +1278,27 @@ unsafe fn av_frame_to_video_frame(raw_frame: *const AVFrame) -> Result<VideoFram
         if src_ptr.is_null() {
             return Err(());
         }
-        let stride = (*raw_frame).linesize[i] as usize;
+        let linesize_raw = (*raw_frame).linesize[i];
+        // Some filters (e.g. `vflip`) produce frames with a negative linesize to
+        // indicate a bottom-up scan order. `data[i]` then points to the last row,
+        // and each successive row is at a lower address. We take the absolute
+        // stride, seek back to the first row, and copy the contiguous data block.
+        let stride = linesize_raw.unsigned_abs() as usize;
         let rows = plane_height(format, i, height as usize);
         let byte_count = stride * rows;
+        let data_ptr = if linesize_raw < 0 {
+            // SAFETY: The full plane is `stride * rows` bytes.  With a negative
+            // linesize `data[i]` sits at the start of the *last* row; offsetting
+            // by `linesize_raw * (rows - 1)` steps back to the first row so we
+            // can read the whole block in one contiguous slice.
+            src_ptr.offset(linesize_raw as isize * (rows as isize - 1))
+        } else {
+            src_ptr
+        };
 
         // SAFETY: `av_frame_get_buffer` / `av_buffersink_get_frame` guarantees
-        // at least `linesize[i] * rows` bytes per plane pointer.
-        let data = std::slice::from_raw_parts(src_ptr, byte_count).to_vec();
+        // at least `stride * rows` bytes starting at `data_ptr`.
+        let data = std::slice::from_raw_parts(data_ptr, byte_count).to_vec();
         planes.push(PooledBuffer::standalone(data));
         strides.push(stride);
     }
