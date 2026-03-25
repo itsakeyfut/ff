@@ -340,7 +340,7 @@ fn push_video_through_fade_out_should_return_frame_with_same_dimensions() {
 
 #[test]
 fn push_video_through_rotate_should_return_frame() {
-    let mut graph = match FilterGraph::builder().rotate(90.0).build() {
+    let mut graph = match FilterGraph::builder().rotate(90.0, "black").build() {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: {e}");
