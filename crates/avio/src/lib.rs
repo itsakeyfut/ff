@@ -253,7 +253,8 @@ pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 // ── filter feature ────────────────────────────────────────────────────────────
 #[cfg(feature = "filter")]
 pub use ff_filter::{
-    FilterError, FilterGraph, FilterGraphBuilder, HwAccel, Rgb, ScaleAlgorithm, ToneMap, YadifMode,
+    FilterError, FilterGraph, FilterGraphBuilder, HwAccel, Rgb, ScaleAlgorithm, ToneMap,
+    XfadeTransition, YadifMode,
 };
 
 // ── pipeline feature ──────────────────────────────────────────────────────────

@@ -9,7 +9,9 @@
 
 #![allow(clippy::unwrap_used)]
 
-use ff_filter::{FilterError, FilterGraph, HwAccel, Rgb, ScaleAlgorithm, ToneMap, YadifMode};
+use ff_filter::{
+    FilterError, FilterGraph, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -1078,5 +1080,49 @@ fn push_video_through_fade_out_white_should_return_frame_with_same_dimensions() 
         out.height(),
         64,
         "height should be unchanged after fade_out_white"
+    );
+}
+
+#[test]
+fn push_two_clips_through_xfade_dissolve_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder()
+        .xfade(XfadeTransition::Dissolve, 1.0, 4.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let clip_a = make_yuv420p_frame(64, 64);
+    let clip_b = make_yuv420p_frame(64, 64);
+    // Push clip A to slot 0 first; this initialises the graph.
+    match graph.push_video(0, &clip_a) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    // Push clip B to slot 1.
+    match graph.push_video(1, &clip_b) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after xfade push");
+    assert_eq!(
+        out.width(),
+        64,
+        "output width should match input after xfade"
+    );
+    assert_eq!(
+        out.height(),
+        64,
+        "output height should match input after xfade"
     );
 }

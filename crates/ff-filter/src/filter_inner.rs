@@ -369,15 +369,15 @@ impl FilterGraphInner {
                 };
             }
 
-            // Overlay consumes a second input on pad 1.
-            if matches!(step, FilterStep::Overlay { .. })
+            // Overlay and xfade both consume a second input on pad 1.
+            if matches!(step, FilterStep::Overlay { .. } | FilterStep::XFade { .. })
                 && let Some(Some(extra_src)) = src_ctxs.get(1)
             {
                 let ret = ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, 1);
                 if ret < 0 {
                     bail!(FilterError::BuildFailed);
                 }
-                log::debug!("filter linked extra_input=in1 to overlay pad=1");
+                log::debug!("filter linked extra_input=in1 to two-input filter pad=1");
             }
         }
 
@@ -526,7 +526,7 @@ impl FilterGraphInner {
     /// on slot 0 and a secondary stream on slot 1), 1 otherwise.
     fn video_input_count(&self) -> usize {
         for step in &self.steps {
-            if matches!(step, FilterStep::Overlay { .. }) {
+            if matches!(step, FilterStep::Overlay { .. } | FilterStep::XFade { .. }) {
                 return 2;
             }
         }
