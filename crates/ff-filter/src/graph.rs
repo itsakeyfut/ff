@@ -67,6 +67,32 @@ pub enum HwAccel {
     Vaapi,
 }
 
+/// An RGB colour value used by the three-way colour corrector.
+///
+/// Each channel is a multiplicative factor (neutral = `1.0`).
+/// Values above `1.0` push the channel warmer/brighter; values below `1.0`
+/// pull it cooler/darker.  Negative values are clamped at the `FFmpeg` layer.
+///
+/// See [`FilterGraphBuilder::three_way_cc`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rgb {
+    /// Red channel multiplier (neutral: `1.0`).
+    pub r: f32,
+    /// Green channel multiplier (neutral: `1.0`).
+    pub g: f32,
+    /// Blue channel multiplier (neutral: `1.0`).
+    pub b: f32,
+}
+
+impl Rgb {
+    /// Neutral value — no colour shift on any channel.
+    pub const NEUTRAL: Rgb = Rgb {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+    };
+}
+
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
 /// A single step in a filter chain, constructed by the builder methods.
@@ -123,6 +149,15 @@ pub(crate) enum FilterStep {
     Hue { degrees: f32 },
     /// Per-channel gamma correction via `FFmpeg` `eq` filter.
     Gamma { r: f32, g: f32, b: f32 },
+    /// Three-way colour corrector (lift / gamma / gain) via `FFmpeg` `curves` filter.
+    ThreeWayCC {
+        /// Affects shadows (blacks). Neutral: `Rgb::NEUTRAL`.
+        lift: Rgb,
+        /// Affects midtones. Neutral: `Rgb::NEUTRAL`. All components must be > 0.0.
+        gamma: Rgb,
+        /// Affects highlights (whites). Neutral: `Rgb::NEUTRAL`.
+        gain: Rgb,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -171,6 +206,7 @@ impl FilterStep {
             Self::WhiteBalance { .. } => "colorchannelmixer",
             Self::Hue { .. } => "hue",
             Self::Gamma { .. } => "eq",
+            Self::ThreeWayCC { .. } => "curves",
         }
     }
 
@@ -229,6 +265,29 @@ impl FilterStep {
             }
             Self::Hue { degrees } => format!("h={degrees}"),
             Self::Gamma { r, g, b } => format!("gamma_r={r}:gamma_g={g}:gamma_b={b}"),
+            Self::ThreeWayCC { lift, gamma, gain } => {
+                // Convert lift/gamma/gain to a 3-point per-channel curves representation.
+                // The formula maps:
+                //   input 0.0 → (lift - 1.0) * gain  (black point)
+                //   input 0.5 → (0.5 * lift)^(1/gamma) * gain  (midtone)
+                //   input 1.0 → gain  (white point)
+                // All neutral (1.0) produces the identity curve 0/0 0.5/0.5 1/1.
+                let curve = |l: f32, gm: f32, gn: f32| -> String {
+                    let l = f64::from(l);
+                    let gm = f64::from(gm);
+                    let gn = f64::from(gn);
+                    let black = ((l - 1.0) * gn).clamp(0.0, 1.0);
+                    let mid = ((0.5 * l).powf(1.0 / gm) * gn).clamp(0.0, 1.0);
+                    let white = gn.clamp(0.0, 1.0);
+                    format!("0/{black} 0.5/{mid} 1/{white}")
+                };
+                format!(
+                    "r='{}':g='{}':b='{}'",
+                    curve(lift.r, gamma.r, gain.r),
+                    curve(lift.g, gamma.g, gain.g),
+                    curve(lift.b, gamma.b, gain.b),
+                )
+            }
         }
     }
 }
@@ -437,6 +496,28 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a three-way colour corrector (lift / gamma / gain) using `FFmpeg`'s
+    /// `curves` filter.
+    ///
+    /// Each parameter is an [`Rgb`] triplet; neutral for all three is
+    /// [`Rgb::NEUTRAL`] (`r=1.0, g=1.0, b=1.0`).
+    ///
+    /// - **lift**: shifts shadows (blacks). Values below `1.0` darken shadows.
+    /// - **gamma**: shapes midtones via a power curve. Values above `1.0`
+    ///   brighten midtones; values below `1.0` darken them.
+    /// - **gain**: scales highlights (whites). Values above `1.0` boost whites.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
+    /// `gamma` component is `≤ 0.0` (division by zero in the power curve).
+    #[must_use]
+    pub fn three_way_cc(mut self, lift: Rgb, gamma: Rgb, gain: Rgb) -> Self {
+        self.steps
+            .push(FilterStep::ThreeWayCC { lift, gamma, gain });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -588,6 +669,15 @@ impl FilterGraphBuilder {
                     if !(0.1..=10.0).contains(val) {
                         return Err(FilterError::InvalidConfig {
                             reason: format!("gamma {channel} {val} out of range [0.1, 10.0]"),
+                        });
+                    }
+                }
+            }
+            if let FilterStep::ThreeWayCC { gamma, .. } = step {
+                for (channel, val) in [("r", gamma.r), ("g", gamma.g), ("b", gamma.b)] {
+                    if val <= 0.0 {
+                        return Err(FilterError::InvalidConfig {
+                            reason: format!("three_way_cc gamma.{channel} {val} must be > 0.0"),
                         });
                     }
                 }
@@ -1322,5 +1412,106 @@ mod tests {
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for b > 10.0, got {result:?}"
         );
+    }
+
+    #[test]
+    fn rgb_neutral_constant_should_have_all_channels_one() {
+        assert_eq!(Rgb::NEUTRAL.r, 1.0);
+        assert_eq!(Rgb::NEUTRAL.g, 1.0);
+        assert_eq!(Rgb::NEUTRAL.b, 1.0);
+    }
+
+    #[test]
+    fn filter_step_three_way_cc_should_produce_correct_filter_name() {
+        let step = FilterStep::ThreeWayCC {
+            lift: Rgb::NEUTRAL,
+            gamma: Rgb::NEUTRAL,
+            gain: Rgb::NEUTRAL,
+        };
+        assert_eq!(step.filter_name(), "curves");
+    }
+
+    #[test]
+    fn filter_step_three_way_cc_neutral_should_produce_identity_curves() {
+        let step = FilterStep::ThreeWayCC {
+            lift: Rgb::NEUTRAL,
+            gamma: Rgb::NEUTRAL,
+            gain: Rgb::NEUTRAL,
+        };
+        let args = step.args();
+        // Neutral: 0/0, 0.5/0.5, 1/1 for all channels.
+        assert!(
+            args.contains("r='0/0 0.5/0.5 1/1'"),
+            "neutral r channel must be identity: {args}"
+        );
+        assert!(
+            args.contains("g='0/0 0.5/0.5 1/1'"),
+            "neutral g channel must be identity: {args}"
+        );
+        assert!(
+            args.contains("b='0/0 0.5/0.5 1/1'"),
+            "neutral b channel must be identity: {args}"
+        );
+    }
+
+    #[test]
+    fn builder_three_way_cc_with_neutral_values_should_succeed() {
+        let result = FilterGraph::builder()
+            .three_way_cc(Rgb::NEUTRAL, Rgb::NEUTRAL, Rgb::NEUTRAL)
+            .build();
+        assert!(
+            result.is_ok(),
+            "neutral three_way_cc must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_three_way_cc_with_gamma_zero_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .three_way_cc(
+                Rgb::NEUTRAL,
+                Rgb {
+                    r: 0.0,
+                    g: 1.0,
+                    b: 1.0,
+                },
+                Rgb::NEUTRAL,
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for gamma.r = 0.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("gamma.r"),
+                "reason should mention gamma.r: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_three_way_cc_with_negative_gamma_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .three_way_cc(
+                Rgb::NEUTRAL,
+                Rgb {
+                    r: 1.0,
+                    g: -0.5,
+                    b: 1.0,
+                },
+                Rgb::NEUTRAL,
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for gamma.g < 0.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("gamma.g"),
+                "reason should mention gamma.g: {reason}"
+            );
+        }
     }
 }

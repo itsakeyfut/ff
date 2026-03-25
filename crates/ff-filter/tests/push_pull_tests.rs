@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use ff_filter::{FilterError, FilterGraph, HwAccel, ToneMap};
+use ff_filter::{FilterError, FilterGraph, HwAccel, Rgb, ToneMap};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -660,4 +660,39 @@ fn push_video_through_gamma_should_return_frame_with_same_dimensions() {
     let out = result.expect("expected Some(frame) after gamma push");
     assert_eq!(out.width(), 64, "width should be unchanged after gamma");
     assert_eq!(out.height(), 64, "height should be unchanged after gamma");
+}
+
+#[test]
+fn push_video_through_three_way_cc_neutral_should_return_frame_with_same_dimensions() {
+    // Neutral lift/gamma/gain (all 1.0) is an identity operation; dimensions must be preserved.
+    let mut graph = match FilterGraph::builder()
+        .three_way_cc(Rgb::NEUTRAL, Rgb::NEUTRAL, Rgb::NEUTRAL)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after three_way_cc push");
+    assert_eq!(
+        out.width(),
+        64,
+        "width should be unchanged after three_way_cc"
+    );
+    assert_eq!(
+        out.height(),
+        64,
+        "height should be unchanged after three_way_cc"
+    );
 }
