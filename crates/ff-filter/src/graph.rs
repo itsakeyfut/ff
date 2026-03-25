@@ -136,6 +136,65 @@ pub enum YadifMode {
     FieldNospatial = 3,
 }
 
+/// Transition type for the `xfade` cross-dissolve filter.
+///
+/// Used with [`FilterGraphBuilder::xfade`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XfadeTransition {
+    /// Blend frames (cross-dissolve).
+    Dissolve,
+    /// Fade through black.
+    Fade,
+    /// Wipe from right to left.
+    WipeLeft,
+    /// Wipe from left to right.
+    WipeRight,
+    /// Wipe upward.
+    WipeUp,
+    /// Wipe downward.
+    WipeDown,
+    /// Slide from right.
+    SlideLeft,
+    /// Slide from left.
+    SlideRight,
+    /// Slide upward.
+    SlideUp,
+    /// Slide downward.
+    SlideDown,
+    /// Circular iris open.
+    CircleOpen,
+    /// Circular iris close.
+    CircleClose,
+    /// Fade through gray.
+    FadeGrays,
+    /// Pixelize transition.
+    Pixelize,
+}
+
+impl XfadeTransition {
+    /// Returns the `FFmpeg` `xfade` transition name string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dissolve => "dissolve",
+            Self::Fade => "fade",
+            Self::WipeLeft => "wipeleft",
+            Self::WipeRight => "wiperight",
+            Self::WipeUp => "wipeup",
+            Self::WipeDown => "wipedown",
+            Self::SlideLeft => "slideleft",
+            Self::SlideRight => "slideright",
+            Self::SlideUp => "slideup",
+            Self::SlideDown => "slidedown",
+            Self::CircleOpen => "circleopen",
+            Self::CircleClose => "circleclose",
+            Self::FadeGrays => "fadegrays",
+            Self::Pixelize => "pixelize",
+        }
+    }
+}
+
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
 /// A single step in a filter chain, constructed by the builder methods.
@@ -300,6 +359,19 @@ pub(crate) enum FilterStep {
         /// Deinterlacing mode controlling output frame rate and spatial checks.
         mode: YadifMode,
     },
+    /// Cross-dissolve transition between two video streams (`xfade`).
+    ///
+    /// Requires two input slots: slot 0 is clip A, slot 1 is clip B.
+    /// `duration` is the overlap length in seconds; `offset` is the PTS
+    /// offset (in seconds) at which clip B begins.
+    XFade {
+        /// Transition style.
+        transition: XfadeTransition,
+        /// Overlap duration in seconds. Must be > 0.0.
+        duration: f64,
+        /// PTS offset (seconds) where clip B starts.
+        offset: f64,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -365,6 +437,7 @@ impl FilterStep {
             Self::Hqdn3d { .. } => "hqdn3d",
             Self::Nlmeans { .. } => "nlmeans",
             Self::Yadif { .. } => "yadif",
+            Self::XFade { .. } => "xfade",
         }
     }
 
@@ -496,6 +569,14 @@ impl FilterStep {
             } => format!("{luma_spatial}:{chroma_spatial}:{luma_tmp}:{chroma_tmp}"),
             Self::Nlmeans { strength } => format!("s={strength}"),
             Self::Yadif { mode } => format!("mode={}", *mode as i32),
+            Self::XFade {
+                transition,
+                duration,
+                offset,
+            } => {
+                let t = transition.as_str();
+                format!("transition={t}:duration={duration}:offset={offset}")
+            }
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by
@@ -966,6 +1047,25 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a cross-dissolve transition between two video streams using `xfade`.
+    ///
+    /// Requires two input slots: slot 0 is clip A (first clip), slot 1 is clip B
+    /// (second clip). Call [`FilterGraph::push_video`] with slot 0 for clip A
+    /// frames and slot 1 for clip B frames.
+    ///
+    /// - `transition`: the visual transition style.
+    /// - `duration`: length of the overlap in seconds. Must be > 0.0.
+    /// - `offset`: PTS offset (seconds) at which clip B starts playing.
+    #[must_use]
+    pub fn xfade(mut self, transition: XfadeTransition, duration: f64, offset: f64) -> Self {
+        self.steps.push(FilterStep::XFade {
+            transition,
+            duration,
+            offset,
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -1036,6 +1136,13 @@ impl FilterGraphBuilder {
             {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("fade duration {duration} must be > 0.0"),
+                });
+            }
+            if let FilterStep::XFade { duration, .. } = step
+                && *duration <= 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("xfade duration {duration} must be > 0.0"),
                 });
             }
             if let FilterStep::Overlay { x, y } = step
@@ -2908,5 +3015,106 @@ mod tests {
                 "yadif({mode:?}) must build successfully, got {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn xfade_transition_dissolve_should_produce_correct_str() {
+        assert_eq!(XfadeTransition::Dissolve.as_str(), "dissolve");
+    }
+
+    #[test]
+    fn xfade_transition_all_variants_should_produce_unique_strings() {
+        let variants = [
+            (XfadeTransition::Dissolve, "dissolve"),
+            (XfadeTransition::Fade, "fade"),
+            (XfadeTransition::WipeLeft, "wipeleft"),
+            (XfadeTransition::WipeRight, "wiperight"),
+            (XfadeTransition::WipeUp, "wipeup"),
+            (XfadeTransition::WipeDown, "wipedown"),
+            (XfadeTransition::SlideLeft, "slideleft"),
+            (XfadeTransition::SlideRight, "slideright"),
+            (XfadeTransition::SlideUp, "slideup"),
+            (XfadeTransition::SlideDown, "slidedown"),
+            (XfadeTransition::CircleOpen, "circleopen"),
+            (XfadeTransition::CircleClose, "circleclose"),
+            (XfadeTransition::FadeGrays, "fadegrays"),
+            (XfadeTransition::Pixelize, "pixelize"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(
+                variant.as_str(),
+                expected,
+                "XfadeTransition::{variant:?} should produce \"{expected}\""
+            );
+        }
+    }
+
+    #[test]
+    fn filter_step_xfade_should_produce_correct_filter_name() {
+        let step = FilterStep::XFade {
+            transition: XfadeTransition::Dissolve,
+            duration: 1.0,
+            offset: 4.0,
+        };
+        assert_eq!(step.filter_name(), "xfade");
+    }
+
+    #[test]
+    fn filter_step_xfade_should_produce_correct_args() {
+        let step = FilterStep::XFade {
+            transition: XfadeTransition::Dissolve,
+            duration: 1.0,
+            offset: 4.0,
+        };
+        assert_eq!(step.args(), "transition=dissolve:duration=1:offset=4");
+    }
+
+    #[test]
+    fn filter_step_xfade_wipe_right_should_produce_correct_args() {
+        let step = FilterStep::XFade {
+            transition: XfadeTransition::WipeRight,
+            duration: 0.5,
+            offset: 9.5,
+        };
+        assert_eq!(step.args(), "transition=wiperight:duration=0.5:offset=9.5");
+    }
+
+    #[test]
+    fn builder_xfade_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder()
+            .xfade(XfadeTransition::Dissolve, 1.0, 4.0)
+            .build();
+        assert!(
+            result.is_ok(),
+            "xfade(Dissolve, 1.0, 4.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_xfade_with_zero_duration_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .xfade(XfadeTransition::Dissolve, 0.0, 4.0)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for zero duration, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("duration"),
+                "reason should mention duration: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_xfade_with_negative_duration_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .xfade(XfadeTransition::Fade, -1.0, 0.0)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for negative duration, got {result:?}"
+        );
     }
 }
