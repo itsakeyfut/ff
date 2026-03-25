@@ -9,8 +9,6 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::time::Duration;
-
 use ff_filter::{FilterError, FilterGraph, HwAccel, Rgb, ScaleAlgorithm, ToneMap, YadifMode};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
@@ -293,10 +291,7 @@ fn push_video_through_overlay_should_return_composited_frame() {
 
 #[test]
 fn push_video_through_fade_in_should_return_frame_with_same_dimensions() {
-    let mut graph = match FilterGraph::builder()
-        .fade_in(Duration::from_secs(1))
-        .build()
-    {
+    let mut graph = match FilterGraph::builder().fade_in(0.0, 1.0).build() {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: {e}");
@@ -319,10 +314,7 @@ fn push_video_through_fade_in_should_return_frame_with_same_dimensions() {
 
 #[test]
 fn push_video_through_fade_out_should_return_frame_with_same_dimensions() {
-    let mut graph = match FilterGraph::builder()
-        .fade_out(Duration::from_secs(1))
-        .build()
-    {
+    let mut graph = match FilterGraph::builder().fade_out(0.0, 1.0).build() {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: {e}");
