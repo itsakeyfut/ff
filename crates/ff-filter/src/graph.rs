@@ -118,8 +118,11 @@ pub(crate) enum FilterStep {
     FadeIn(Duration),
     /// Fade-out to black over `duration`.
     FadeOut(Duration),
-    /// Rotate clockwise by `degrees`.
-    Rotate(f64),
+    /// Rotate clockwise by `angle_degrees`, filling exposed areas with `fill_color`.
+    Rotate {
+        angle_degrees: f64,
+        fill_color: String,
+    },
     /// HDR-to-SDR tone mapping.
     ToneMap(ToneMap),
     /// Adjust audio volume (in dB; negative = quieter).
@@ -204,7 +207,7 @@ impl FilterStep {
             Self::Crop { .. } => "crop",
             Self::Overlay { .. } => "overlay",
             Self::FadeIn(_) | Self::FadeOut(_) => "fade",
-            Self::Rotate(_) => "rotate",
+            Self::Rotate { .. } => "rotate",
             Self::ToneMap(_) => "tonemap",
             Self::Volume(_) => "volume",
             Self::Amix(_) => "amix",
@@ -236,8 +239,14 @@ impl FilterStep {
             Self::Overlay { x, y } => format!("x={x}:y={y}"),
             Self::FadeIn(d) => format!("type=in:duration={}", d.as_secs_f64()),
             Self::FadeOut(d) => format!("type=out:duration={}", d.as_secs_f64()),
-            Self::Rotate(degrees) => {
-                format!("angle={}", degrees.to_radians())
+            Self::Rotate {
+                angle_degrees,
+                fill_color,
+            } => {
+                format!(
+                    "angle={}:fillcolor={fill_color}",
+                    angle_degrees.to_radians()
+                )
             }
             Self::ToneMap(algorithm) => format!("tonemap={}", algorithm.as_str()),
             Self::Volume(db) => format!("volume={db}dB"),
@@ -394,10 +403,18 @@ impl FilterGraphBuilder {
         self
     }
 
-    /// Rotate the video clockwise by `degrees`.
+    /// Rotate the video clockwise by `angle_degrees`, filling exposed corners
+    /// with `fill_color`.
+    ///
+    /// `fill_color` accepts any color string understood by `FFmpeg` — for example
+    /// `"black"`, `"white"`, `"0x00000000"` (transparent), or `"gray"`.
+    /// Pass `"black"` to reproduce the classic solid-background rotation.
     #[must_use]
-    pub fn rotate(mut self, degrees: f64) -> Self {
-        self.steps.push(FilterStep::Rotate(degrees));
+    pub fn rotate(mut self, angle_degrees: f64, fill_color: &str) -> Self {
+        self.steps.push(FilterStep::Rotate {
+            angle_degrees,
+            fill_color: fill_color.to_owned(),
+        });
         self
     }
 
@@ -946,9 +963,29 @@ mod tests {
 
     #[test]
     fn filter_step_rotate_should_produce_correct_args() {
-        let step = FilterStep::Rotate(90.0);
+        let step = FilterStep::Rotate {
+            angle_degrees: 90.0,
+            fill_color: "black".to_owned(),
+        };
         assert_eq!(step.filter_name(), "rotate");
-        assert_eq!(step.args(), format!("angle={}", 90_f64.to_radians()));
+        assert_eq!(
+            step.args(),
+            format!("angle={}:fillcolor=black", 90_f64.to_radians())
+        );
+    }
+
+    #[test]
+    fn filter_step_rotate_transparent_fill_should_produce_correct_args() {
+        let step = FilterStep::Rotate {
+            angle_degrees: 45.0,
+            fill_color: "0x00000000".to_owned(),
+        };
+        assert_eq!(step.filter_name(), "rotate");
+        let args = step.args();
+        assert!(
+            args.contains("fillcolor=0x00000000"),
+            "args should contain transparent fill: {args}"
+        );
     }
 
     #[test]

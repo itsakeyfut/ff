@@ -144,7 +144,7 @@ fn main() {
             println!("Input:   {in_name}");
             println!("Effect:  rotate  (angle={angle}°)");
             println!("Output:  {out_name}");
-            FilterGraphBuilder::new().rotate(angle).build()
+            FilterGraphBuilder::new().rotate(angle, "black").build()
         }
         "crop" => {
             let w = crop_w.unwrap_or_else(|| {
