@@ -36,4 +36,6 @@ mod filter_inner;
 pub mod graph;
 
 pub use error::FilterError;
-pub use graph::{FilterGraph, FilterGraphBuilder, HwAccel, Rgb, ScaleAlgorithm, ToneMap};
+pub use graph::{
+    FilterGraph, FilterGraphBuilder, HwAccel, Rgb, ScaleAlgorithm, ToneMap, YadifMode,
+};

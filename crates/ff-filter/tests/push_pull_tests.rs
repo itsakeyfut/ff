@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use ff_filter::{FilterError, FilterGraph, HwAccel, Rgb, ScaleAlgorithm, ToneMap};
+use ff_filter::{FilterError, FilterGraph, HwAccel, Rgb, ScaleAlgorithm, ToneMap, YadifMode};
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
 /// 64×64 Yuv420p frame filled with grey (Y=128, U=128, V=128).
@@ -997,4 +997,32 @@ fn push_video_through_nlmeans_should_return_frame_with_same_dimensions() {
     let out = result.expect("expected Some(frame) after nlmeans push");
     assert_eq!(out.width(), 64, "width should be unchanged after nlmeans");
     assert_eq!(out.height(), 64, "height should be unchanged after nlmeans");
+}
+
+#[test]
+fn push_video_through_yadif_frame_mode_should_accept_frames_without_error() {
+    // yadif is a temporal filter; it buffers frames before emitting output.
+    // This test verifies that frames are accepted and pull_video does not error.
+    // A single progressive frame may not produce output (None is acceptable).
+    let mut graph = match FilterGraph::builder().yadif(YadifMode::Frame).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    // pull_video must not error; None is acceptable (frame buffered by yadif).
+    let result = graph.pull_video().expect("pull_video must not fail");
+    if let Some(out) = result {
+        assert_eq!(out.width(), 64, "width should be unchanged after yadif");
+        assert_eq!(out.height(), 64, "height should be unchanged after yadif");
+    }
 }
