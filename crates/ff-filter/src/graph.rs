@@ -122,6 +122,21 @@ impl ScaleAlgorithm {
     }
 }
 
+/// Deinterlacing mode for the `yadif` filter.
+///
+/// Used with [`FilterGraphBuilder::yadif`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YadifMode {
+    /// Output one frame per frame (progressive output).
+    Frame = 0,
+    /// Output one frame per field (doubles the frame rate).
+    Field = 1,
+    /// Frame mode without spatial interlacing check.
+    FrameNospatial = 2,
+    /// Field mode without spatial interlacing check.
+    FieldNospatial = 3,
+}
+
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
 /// A single step in a filter chain, constructed by the builder methods.
@@ -277,6 +292,11 @@ pub(crate) enum FilterStep {
         /// Denoising strength. Must be in the range [1.0, 30.0].
         strength: f32,
     },
+    /// Deinterlace using the `yadif` filter.
+    Yadif {
+        /// Deinterlacing mode controlling output frame rate and spatial checks.
+        mode: YadifMode,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -338,6 +358,7 @@ impl FilterStep {
             Self::Unsharp { .. } => "unsharp",
             Self::Hqdn3d { .. } => "hqdn3d",
             Self::Nlmeans { .. } => "nlmeans",
+            Self::Yadif { .. } => "yadif",
         }
     }
 
@@ -458,6 +479,7 @@ impl FilterStep {
                 chroma_tmp,
             } => format!("{luma_spatial}:{chroma_spatial}:{luma_tmp}:{chroma_tmp}"),
             Self::Nlmeans { strength } => format!("s={strength}"),
+            Self::Yadif { mode } => format!("mode={}", *mode as i32),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by
@@ -885,6 +907,16 @@ impl FilterGraphBuilder {
     #[must_use]
     pub fn nlmeans(mut self, strength: f32) -> Self {
         self.steps.push(FilterStep::Nlmeans { strength });
+        self
+    }
+
+    /// Deinterlace using the `yadif` (Yet Another Deinterlacing Filter).
+    ///
+    /// `mode` controls whether one frame or two fields are emitted per input
+    /// frame and whether the spatial interlacing check is enabled.
+    #[must_use]
+    pub fn yadif(mut self, mode: YadifMode) -> Self {
+        self.steps.push(FilterStep::Yadif { mode });
         self
     }
 
@@ -2591,6 +2623,79 @@ mod tests {
             assert!(
                 reason.contains("strength"),
                 "reason should mention strength: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn yadif_mode_variants_should_have_correct_discriminants() {
+        assert_eq!(YadifMode::Frame as i32, 0);
+        assert_eq!(YadifMode::Field as i32, 1);
+        assert_eq!(YadifMode::FrameNospatial as i32, 2);
+        assert_eq!(YadifMode::FieldNospatial as i32, 3);
+    }
+
+    #[test]
+    fn filter_step_yadif_should_produce_correct_filter_name() {
+        let step = FilterStep::Yadif {
+            mode: YadifMode::Frame,
+        };
+        assert_eq!(step.filter_name(), "yadif");
+    }
+
+    #[test]
+    fn filter_step_yadif_frame_should_produce_mode_0_args() {
+        let step = FilterStep::Yadif {
+            mode: YadifMode::Frame,
+        };
+        assert_eq!(step.args(), "mode=0");
+    }
+
+    #[test]
+    fn filter_step_yadif_field_should_produce_mode_1_args() {
+        let step = FilterStep::Yadif {
+            mode: YadifMode::Field,
+        };
+        assert_eq!(step.args(), "mode=1");
+    }
+
+    #[test]
+    fn filter_step_yadif_frame_nospatial_should_produce_mode_2_args() {
+        let step = FilterStep::Yadif {
+            mode: YadifMode::FrameNospatial,
+        };
+        assert_eq!(step.args(), "mode=2");
+    }
+
+    #[test]
+    fn filter_step_yadif_field_nospatial_should_produce_mode_3_args() {
+        let step = FilterStep::Yadif {
+            mode: YadifMode::FieldNospatial,
+        };
+        assert_eq!(step.args(), "mode=3");
+    }
+
+    #[test]
+    fn builder_yadif_with_frame_mode_should_succeed() {
+        let result = FilterGraph::builder().yadif(YadifMode::Frame).build();
+        assert!(
+            result.is_ok(),
+            "yadif(Frame) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_yadif_with_all_modes_should_succeed() {
+        for mode in [
+            YadifMode::Frame,
+            YadifMode::Field,
+            YadifMode::FrameNospatial,
+            YadifMode::FieldNospatial,
+        ] {
+            let result = FilterGraph::builder().yadif(mode).build();
+            assert!(
+                result.is_ok(),
+                "yadif({mode:?}) must build successfully, got {result:?}"
             );
         }
     }
