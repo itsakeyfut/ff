@@ -235,6 +235,14 @@ pub(crate) enum FilterStep {
         /// Fill color for the bars (any `FFmpeg` color string, e.g. `"black"`).
         color: String,
     },
+    /// Gaussian blur with configurable radius.
+    ///
+    /// `sigma` is the blur radius. Valid range: 0.0 – 10.0 (values near 0.0 are
+    /// nearly a no-op; higher values produce a stronger blur).
+    GBlur {
+        /// Blur radius (standard deviation). Must be ≥ 0.0.
+        sigma: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -292,6 +300,7 @@ impl FilterStep {
             // build time.  The pad filter is inserted by filter_inner at graph
             // construction time.
             Self::FitToAspect { .. } => "scale",
+            Self::GBlur { .. } => "gblur",
         }
     }
 
@@ -397,6 +406,7 @@ impl FilterStep {
                 )
             }
             Self::HFlip | Self::VFlip => String::new(),
+            Self::GBlur { sigma } => format!("sigma={sigma}"),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by
@@ -753,6 +763,22 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a Gaussian blur with the given `sigma` (blur radius).
+    ///
+    /// `sigma` controls the standard deviation of the Gaussian kernel.
+    /// Values near `0.0` are nearly a no-op; values up to `10.0` produce
+    /// progressively stronger blur.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `sigma` is negative.
+    #[must_use]
+    pub fn gblur(mut self, sigma: f32) -> Self {
+        self.steps.push(FilterStep::GBlur { sigma });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -943,6 +969,13 @@ impl FilterGraphBuilder {
             {
                 return Err(FilterError::InvalidConfig {
                     reason: "fit_to_aspect width and height must be > 0".to_string(),
+                });
+            }
+            if let FilterStep::GBlur { sigma } = step
+                && *sigma < 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("gblur sigma {sigma} must be >= 0.0"),
                 });
             }
         }
@@ -2115,5 +2148,56 @@ mod tests {
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for height=0, got {result:?}"
         );
+    }
+
+    #[test]
+    fn filter_step_gblur_should_produce_correct_filter_name() {
+        let step = FilterStep::GBlur { sigma: 5.0 };
+        assert_eq!(step.filter_name(), "gblur");
+    }
+
+    #[test]
+    fn filter_step_gblur_should_produce_correct_args() {
+        let step = FilterStep::GBlur { sigma: 5.0 };
+        assert_eq!(step.args(), "sigma=5");
+    }
+
+    #[test]
+    fn filter_step_gblur_small_sigma_should_produce_correct_args() {
+        let step = FilterStep::GBlur { sigma: 0.1 };
+        assert_eq!(step.args(), "sigma=0.1");
+    }
+
+    #[test]
+    fn builder_gblur_with_valid_sigma_should_succeed() {
+        let result = FilterGraph::builder().gblur(5.0).build();
+        assert!(
+            result.is_ok(),
+            "gblur(5.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_gblur_with_zero_sigma_should_succeed() {
+        let result = FilterGraph::builder().gblur(0.0).build();
+        assert!(
+            result.is_ok(),
+            "gblur(0.0) must build successfully (no-op), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_gblur_with_negative_sigma_should_return_invalid_config() {
+        let result = FilterGraph::builder().gblur(-1.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for sigma < 0.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("sigma"),
+                "reason should mention sigma: {reason}"
+            );
+        }
     }
 }
