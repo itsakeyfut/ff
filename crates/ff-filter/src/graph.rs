@@ -243,6 +243,16 @@ pub(crate) enum FilterStep {
         /// Blur radius (standard deviation). Must be ≥ 0.0.
         sigma: f32,
     },
+    /// Sharpen or blur via unsharp mask (luma + chroma strength).
+    ///
+    /// Positive values sharpen; negative values blur. Valid range for each
+    /// component: −1.5 – 1.5.
+    Unsharp {
+        /// Luma (brightness) sharpening/blurring amount. Range: −1.5 – 1.5.
+        luma_strength: f32,
+        /// Chroma (colour) sharpening/blurring amount. Range: −1.5 – 1.5.
+        chroma_strength: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -301,6 +311,7 @@ impl FilterStep {
             // construction time.
             Self::FitToAspect { .. } => "scale",
             Self::GBlur { .. } => "gblur",
+            Self::Unsharp { .. } => "unsharp",
         }
     }
 
@@ -407,6 +418,13 @@ impl FilterStep {
             }
             Self::HFlip | Self::VFlip => String::new(),
             Self::GBlur { sigma } => format!("sigma={sigma}"),
+            Self::Unsharp {
+                luma_strength,
+                chroma_strength,
+            } => format!(
+                "luma_msize_x=5:luma_msize_y=5:luma_amount={luma_strength}:\
+                 chroma_msize_x=5:chroma_msize_y=5:chroma_amount={chroma_strength}"
+            ),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by
@@ -779,6 +797,26 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Sharpen or blur the image using an unsharp mask on luma and chroma.
+    ///
+    /// Positive values sharpen; negative values blur. Pass `0.0` for either
+    /// channel to leave it unchanged.
+    ///
+    /// Valid ranges: `luma_strength` and `chroma_strength` each −1.5 – 1.5.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if either
+    /// value is outside `[−1.5, 1.5]`.
+    #[must_use]
+    pub fn unsharp(mut self, luma_strength: f32, chroma_strength: f32) -> Self {
+        self.steps.push(FilterStep::Unsharp {
+            luma_strength,
+            chroma_strength,
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -977,6 +1015,26 @@ impl FilterGraphBuilder {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("gblur sigma {sigma} must be >= 0.0"),
                 });
+            }
+            if let FilterStep::Unsharp {
+                luma_strength,
+                chroma_strength,
+            } = step
+            {
+                if !(-1.5..=1.5).contains(luma_strength) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "unsharp luma_strength {luma_strength} out of range [-1.5, 1.5]"
+                        ),
+                    });
+                }
+                if !(-1.5..=1.5).contains(chroma_strength) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "unsharp chroma_strength {chroma_strength} out of range [-1.5, 1.5]"
+                        ),
+                    });
+                }
             }
         }
 
@@ -2197,6 +2255,93 @@ mod tests {
             assert!(
                 reason.contains("sigma"),
                 "reason should mention sigma: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_step_unsharp_should_produce_correct_filter_name() {
+        let step = FilterStep::Unsharp {
+            luma_strength: 1.0,
+            chroma_strength: 0.0,
+        };
+        assert_eq!(step.filter_name(), "unsharp");
+    }
+
+    #[test]
+    fn filter_step_unsharp_should_produce_correct_args() {
+        let step = FilterStep::Unsharp {
+            luma_strength: 1.0,
+            chroma_strength: 0.5,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("luma_amount=1") && args.contains("chroma_amount=0.5"),
+            "args must contain luma and chroma amounts: {args}"
+        );
+        assert!(
+            args.contains("luma_msize_x=5") && args.contains("luma_msize_y=5"),
+            "args must contain luma matrix size: {args}"
+        );
+        assert!(
+            args.contains("chroma_msize_x=5") && args.contains("chroma_msize_y=5"),
+            "args must contain chroma matrix size: {args}"
+        );
+    }
+
+    #[test]
+    fn builder_unsharp_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().unsharp(1.0, 0.0).build();
+        assert!(
+            result.is_ok(),
+            "unsharp(1.0, 0.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_unsharp_with_negative_luma_should_succeed() {
+        let result = FilterGraph::builder().unsharp(-1.0, 0.0).build();
+        assert!(
+            result.is_ok(),
+            "unsharp(-1.0, 0.0) (blur) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_unsharp_with_luma_too_high_should_return_invalid_config() {
+        let result = FilterGraph::builder().unsharp(2.0, 0.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for luma_strength > 1.5, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("luma_strength"),
+                "reason should mention luma_strength: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_unsharp_with_luma_too_low_should_return_invalid_config() {
+        let result = FilterGraph::builder().unsharp(-2.0, 0.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for luma_strength < -1.5, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_unsharp_with_chroma_too_high_should_return_invalid_config() {
+        let result = FilterGraph::builder().unsharp(0.0, 2.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for chroma_strength > 1.5, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("chroma_strength"),
+                "reason should mention chroma_strength: {reason}"
             );
         }
     }
