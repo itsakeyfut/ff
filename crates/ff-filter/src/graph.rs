@@ -119,6 +119,8 @@ pub(crate) enum FilterStep {
     },
     /// White balance correction via `colorchannelmixer`.
     WhiteBalance { temperature_k: u32, tint: f32 },
+    /// Hue rotation by an arbitrary angle.
+    Hue { degrees: f32 },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -165,6 +167,7 @@ impl FilterStep {
             Self::Eq { .. } => "eq",
             Self::Curves { .. } => "curves",
             Self::WhiteBalance { .. } => "colorchannelmixer",
+            Self::Hue { .. } => "hue",
         }
     }
 
@@ -221,6 +224,7 @@ impl FilterStep {
                 let g_adj = (g + f64::from(*tint)).clamp(0.0, 2.0);
                 format!("rr={r}:gg={g_adj}:bb={b}")
             }
+            Self::Hue { degrees } => format!("h={degrees}"),
         }
     }
 }
@@ -400,6 +404,20 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Rotate hue by `degrees` using `FFmpeg`'s `hue` filter.
+    ///
+    /// Valid range: −360.0–360.0. A value of `0.0` is a no-op.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `degrees` is outside `[−360.0, 360.0]`.
+    #[must_use]
+    pub fn hue(mut self, degrees: f32) -> Self {
+        self.steps.push(FilterStep::Hue { degrees });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -538,6 +556,13 @@ impl FilterGraphBuilder {
                         reason: format!("white_balance tint {tint} out of range [-1.0, 1.0]"),
                     });
                 }
+            }
+            if let FilterStep::Hue { degrees } = step
+                && !(-360.0..=360.0).contains(degrees)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("hue degrees {degrees} out of range [-360.0, 360.0]"),
+                });
             }
         }
 
@@ -1155,5 +1180,56 @@ mod tests {
                 "reason should mention tint: {reason}"
             );
         }
+    }
+
+    #[test]
+    fn filter_step_hue_should_produce_correct_filter_name() {
+        let step = FilterStep::Hue { degrees: 90.0 };
+        assert_eq!(step.filter_name(), "hue");
+    }
+
+    #[test]
+    fn filter_step_hue_should_produce_correct_args() {
+        let step = FilterStep::Hue { degrees: 180.0 };
+        assert_eq!(step.args(), "h=180");
+    }
+
+    #[test]
+    fn filter_step_hue_zero_should_produce_no_op_args() {
+        let step = FilterStep::Hue { degrees: 0.0 };
+        assert_eq!(step.args(), "h=0");
+    }
+
+    #[test]
+    fn builder_hue_with_valid_degrees_should_succeed() {
+        let result = FilterGraph::builder().hue(0.0).build();
+        assert!(
+            result.is_ok(),
+            "hue(0.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_hue_with_degrees_too_high_should_return_invalid_config() {
+        let result = FilterGraph::builder().hue(400.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for degrees > 360.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("degrees"),
+                "reason should mention degrees: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_hue_with_degrees_too_low_should_return_invalid_config() {
+        let result = FilterGraph::builder().hue(-400.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for degrees < -360.0, got {result:?}"
+        );
     }
 }
