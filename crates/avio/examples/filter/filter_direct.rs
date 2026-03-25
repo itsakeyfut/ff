@@ -89,7 +89,7 @@ fn main() {
     // for the audio path on the same graph object.
 
     let mut filter = match FilterGraphBuilder::new()
-        .scale(out_w, out_h)
+        .scale(out_w, out_h, avio::ScaleAlgorithm::Fast)
         .volume(0.8)
         .build()
     {

@@ -231,7 +231,10 @@ fn main() {
     // ── Build optional scale filter ───────────────────────────────────────────
 
     let filter = match (args.width, args.height) {
-        (Some(w), Some(h)) => match FilterGraphBuilder::new().scale(w, h).build() {
+        (Some(w), Some(h)) => match FilterGraphBuilder::new()
+            .scale(w, h, avio::ScaleAlgorithm::Fast)
+            .build()
+        {
             Ok(fg) => Some(fg),
             Err(e) => {
                 eprintln!("Error: failed to build filter graph: {e}");

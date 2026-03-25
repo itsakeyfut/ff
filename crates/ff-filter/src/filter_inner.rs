@@ -1342,6 +1342,7 @@ mod tests {
             vec![FilterStep::Scale {
                 width: 1280,
                 height: 720,
+                algorithm: crate::graph::ScaleAlgorithm::Fast,
             }],
             None,
         );
@@ -1371,6 +1372,7 @@ mod tests {
             vec![FilterStep::Scale {
                 width: 640,
                 height: 360,
+                algorithm: crate::graph::ScaleAlgorithm::Fast,
             }],
             None,
         );
@@ -1450,6 +1452,7 @@ mod tests {
             vec![FilterStep::Scale {
                 width: 1280,
                 height: 720,
+                algorithm: crate::graph::ScaleAlgorithm::Fast,
             }],
             None,
         );
@@ -1475,6 +1478,7 @@ mod tests {
                 FilterStep::Scale {
                     width: 640,
                     height: 360,
+                    algorithm: crate::graph::ScaleAlgorithm::Fast,
                 },
             ],
             None,
@@ -1523,6 +1527,7 @@ mod tests {
         let steps = vec![FilterStep::Scale {
             width: 640,
             height: 360,
+            algorithm: crate::graph::ScaleAlgorithm::Fast,
         }];
         assert!(
             validate_filter_steps(&steps).is_ok(),

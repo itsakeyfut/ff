@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
-use ff_filter::FilterGraph;
+use ff_filter::{FilterGraph, ScaleAlgorithm};
 use ff_pipeline::{EncoderConfig, Pipeline, PipelineError};
 use fixtures::{FileGuard, assets_dir, test_output_path, test_video_path};
 
@@ -190,7 +190,10 @@ fn transcode_with_scale_filter_should_produce_valid_output() {
     let output = test_output_path("pipeline_run_filter.mp4");
     let _guard = FileGuard::new(output.clone());
 
-    let filter = match FilterGraph::builder().scale(160, 120).build() {
+    let filter = match FilterGraph::builder()
+        .scale(160, 120, ScaleAlgorithm::Fast)
+        .build()
+    {
         Ok(f) => f,
         Err(e) => {
             println!("Skipping: filter build failed: {e}");

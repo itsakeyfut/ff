@@ -93,6 +93,35 @@ impl Rgb {
     };
 }
 
+/// Resampling algorithm for the `scale` filter.
+///
+/// Used with [`FilterGraphBuilder::scale`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScaleAlgorithm {
+    /// Fast bilinear interpolation (default). Good balance of speed and quality.
+    Fast,
+    /// Bilinear interpolation. Slightly slower than [`Fast`](Self::Fast) but
+    /// produces smoother results.
+    Bilinear,
+    /// Bicubic interpolation. Higher quality than bilinear with moderate overhead.
+    Bicubic,
+    /// Lanczos interpolation — sharpest output, highest CPU cost.
+    Lanczos,
+}
+
+impl ScaleAlgorithm {
+    /// Returns the `sws_flags` string passed to the `scale` filter.
+    #[must_use]
+    pub const fn as_flags_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast_bilinear",
+            Self::Bilinear => "bilinear",
+            Self::Bicubic => "bicubic",
+            Self::Lanczos => "lanczos",
+        }
+    }
+}
+
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
 /// A single step in a filter chain, constructed by the builder methods.
@@ -103,8 +132,12 @@ impl Rgb {
 pub(crate) enum FilterStep {
     /// Trim: keep only frames in `[start, end)` seconds.
     Trim { start: f64, end: f64 },
-    /// Scale to a new resolution.
-    Scale { width: u32, height: u32 },
+    /// Scale to a new resolution using the given resampling algorithm.
+    Scale {
+        width: u32,
+        height: u32,
+        algorithm: ScaleAlgorithm,
+    },
     /// Crop a rectangular region.
     Crop {
         x: u32,
@@ -233,7 +266,11 @@ impl FilterStep {
     pub(crate) fn args(&self) -> String {
         match self {
             Self::Trim { start, end } => format!("start={start}:end={end}"),
-            Self::Scale { width, height } => format!("w={width}:h={height}"),
+            Self::Scale {
+                width,
+                height,
+                algorithm,
+            } => format!("w={width}:h={height}:flags={}", algorithm.as_flags_str()),
             Self::Crop {
                 x,
                 y,
@@ -370,10 +407,19 @@ impl FilterGraphBuilder {
         self
     }
 
-    /// Scale the video to `width × height` pixels.
+    /// Scale the video to `width × height` pixels using the given resampling
+    /// `algorithm`.
+    ///
+    /// Use [`ScaleAlgorithm::Fast`] for the best speed/quality trade-off.
+    /// For highest quality use [`ScaleAlgorithm::Lanczos`] at the cost of
+    /// additional CPU time.
     #[must_use]
-    pub fn scale(mut self, width: u32, height: u32) -> Self {
-        self.steps.push(FilterStep::Scale { width, height });
+    pub fn scale(mut self, width: u32, height: u32, algorithm: ScaleAlgorithm) -> Self {
+        self.steps.push(FilterStep::Scale {
+            width,
+            height,
+            algorithm,
+        });
         self
     }
 
@@ -781,7 +827,7 @@ impl FilterGraphBuilder {
 
         crate::filter_inner::validate_filter_steps(&self.steps)?;
         let output_resolution = self.steps.iter().rev().find_map(|s| {
-            if let FilterStep::Scale { width, height } = s {
+            if let FilterStep::Scale { width, height, .. } = s {
                 Some((*width, *height))
             } else {
                 None
@@ -911,9 +957,20 @@ mod tests {
         let step = FilterStep::Scale {
             width: 1280,
             height: 720,
+            algorithm: ScaleAlgorithm::Fast,
         };
         assert_eq!(step.filter_name(), "scale");
-        assert_eq!(step.args(), "w=1280:h=720");
+        assert_eq!(step.args(), "w=1280:h=720:flags=fast_bilinear");
+    }
+
+    #[test]
+    fn filter_step_scale_lanczos_should_produce_lanczos_flags() {
+        let step = FilterStep::Scale {
+            width: 1920,
+            height: 1080,
+            algorithm: ScaleAlgorithm::Lanczos,
+        };
+        assert_eq!(step.args(), "w=1920:h=1080:flags=lanczos");
     }
 
     #[test]
@@ -1037,7 +1094,7 @@ mod tests {
     fn builder_steps_should_accumulate_in_order() {
         let result = FilterGraph::builder()
             .trim(0.0, 5.0)
-            .scale(1280, 720)
+            .scale(1280, 720, ScaleAlgorithm::Fast)
             .volume(-3.0)
             .build();
         assert!(
@@ -1048,7 +1105,9 @@ mod tests {
 
     #[test]
     fn builder_with_valid_steps_should_succeed() {
-        let result = FilterGraph::builder().scale(1280, 720).build();
+        let result = FilterGraph::builder()
+            .scale(1280, 720, ScaleAlgorithm::Fast)
+            .build();
         assert!(
             result.is_ok(),
             "builder with a known filter step must succeed, got {result:?}"
@@ -1057,15 +1116,18 @@ mod tests {
 
     #[test]
     fn output_resolution_should_return_scale_dimensions() {
-        let fg = FilterGraph::builder().scale(1280, 720).build().unwrap();
+        let fg = FilterGraph::builder()
+            .scale(1280, 720, ScaleAlgorithm::Fast)
+            .build()
+            .unwrap();
         assert_eq!(fg.output_resolution(), Some((1280, 720)));
     }
 
     #[test]
     fn output_resolution_should_return_last_scale_when_chained() {
         let fg = FilterGraph::builder()
-            .scale(1920, 1080)
-            .scale(1280, 720)
+            .scale(1920, 1080, ScaleAlgorithm::Fast)
+            .scale(1280, 720, ScaleAlgorithm::Bicubic)
             .build()
             .unwrap();
         assert_eq!(fg.output_resolution(), Some((1280, 720)));
