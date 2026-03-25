@@ -22,7 +22,6 @@ use std::{
     io::{self, Write as _},
     path::Path,
     process,
-    time::Duration,
 };
 
 use avio::{AudioCodec, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
@@ -129,7 +128,7 @@ fn main() {
             println!("Effect:  fade-in  (duration={duration_secs} s)");
             println!("Output:  {out_name}");
             FilterGraphBuilder::new()
-                .fade_in(Duration::from_secs_f64(duration_secs))
+                .fade_in(0.0, duration_secs)
                 .build()
         }
         "fade-out" => {
@@ -137,7 +136,7 @@ fn main() {
             println!("Effect:  fade-out  (duration={duration_secs} s)");
             println!("Output:  {out_name}");
             FilterGraphBuilder::new()
-                .fade_out(Duration::from_secs_f64(duration_secs))
+                .fade_out(0.0, duration_secs)
                 .build()
         }
         "rotate" => {
