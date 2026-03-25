@@ -952,3 +952,26 @@ fn push_video_through_unsharp_sharpen_should_return_frame_with_same_dimensions()
     assert_eq!(out.width(), 64, "width should be unchanged after unsharp");
     assert_eq!(out.height(), 64, "height should be unchanged after unsharp");
 }
+
+#[test]
+fn push_video_through_hqdn3d_should_return_frame_with_same_dimensions() {
+    let mut graph = match FilterGraph::builder().hqdn3d(4.0, 3.0, 6.0, 4.5).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after hqdn3d push");
+    assert_eq!(out.width(), 64, "width should be unchanged after hqdn3d");
+    assert_eq!(out.height(), 64, "height should be unchanged after hqdn3d");
+}
