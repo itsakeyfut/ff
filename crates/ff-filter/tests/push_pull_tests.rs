@@ -832,3 +832,77 @@ fn push_720p_frame_through_pad_1920_1080_centred_should_return_1080p_frame() {
     assert_eq!(out.width(), 1920, "width should be padded to 1920");
     assert_eq!(out.height(), 1080, "height should be padded to 1080");
 }
+
+#[test]
+fn push_4x3_frame_through_fit_to_aspect_16x9_should_return_target_dimensions() {
+    // 64×48 is 4:3; fitting into 128×72 (16:9) should produce pillarbox bars.
+    // Scale factor = min(128/64, 72/48) = min(2.0, 1.5) = 1.5
+    // Scaled: 64×1.5=96, 48×1.5=72 → pad to 128×72 with (128-96)/2=16px bars each side.
+    let mut graph = match FilterGraph::builder()
+        .fit_to_aspect(128, 72, "black")
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 48);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after fit_to_aspect push");
+    assert_eq!(
+        out.width(),
+        128,
+        "width should match target after fit_to_aspect"
+    );
+    assert_eq!(
+        out.height(),
+        72,
+        "height should match target after fit_to_aspect"
+    );
+}
+
+#[test]
+fn push_wide_frame_through_fit_to_aspect_should_produce_letterbox() {
+    // 128×54 is ~2.37:1; fitting into 128×72 (16:9) should produce letterbox bars.
+    // Scale factor = min(128/128, 72/54) = min(1.0, 1.33) = 1.0 (no scale needed)
+    // Pad 128×72 with (72-54)/2=9px bars top and bottom.
+    let mut graph = match FilterGraph::builder()
+        .fit_to_aspect(128, 72, "black")
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(128, 54);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after fit_to_aspect letterbox push");
+    assert_eq!(
+        out.width(),
+        128,
+        "width should match target after letterbox fit"
+    );
+    assert_eq!(
+        out.height(),
+        72,
+        "height should match target after letterbox fit"
+    );
+}
