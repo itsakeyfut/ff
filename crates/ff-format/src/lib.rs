@@ -66,6 +66,7 @@ pub mod network;
 pub mod pixel;
 pub mod sample;
 pub mod stream;
+pub mod subtitle;
 pub mod time;
 
 pub use channel::ChannelLayout;
