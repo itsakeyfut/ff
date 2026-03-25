@@ -605,3 +605,35 @@ fn push_video_through_white_balance_should_return_frame_with_same_dimensions() {
         "height should be unchanged after white_balance"
     );
 }
+
+#[test]
+fn push_video_through_hue_180_should_return_frame_with_same_dimensions() {
+    // Rotating hue by 180° inverts the hue; frame dimensions must be preserved.
+    let mut graph = match FilterGraph::builder().hue(180.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after hue push");
+    assert_eq!(
+        out.width(),
+        64,
+        "width should be unchanged after hue rotation"
+    );
+    assert_eq!(
+        out.height(),
+        64,
+        "height should be unchanged after hue rotation"
+    );
+}
