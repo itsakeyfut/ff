@@ -207,6 +207,21 @@ pub(crate) enum FilterStep {
     HFlip,
     /// Vertical flip (mirror top-bottom).
     VFlip,
+    /// Pad to a target resolution with a fill color (letterbox / pillarbox).
+    Pad {
+        /// Target canvas width in pixels.
+        width: u32,
+        /// Target canvas height in pixels.
+        height: u32,
+        /// Horizontal offset of the source frame within the canvas.
+        /// Negative values are replaced with `(ow-iw)/2` (centred).
+        x: i32,
+        /// Vertical offset of the source frame within the canvas.
+        /// Negative values are replaced with `(oh-ih)/2` (centred).
+        y: i32,
+        /// Fill color (any `FFmpeg` color string, e.g. `"black"`, `"0x000000"`).
+        color: String,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -259,6 +274,7 @@ impl FilterStep {
             Self::Vignette { .. } => "vignette",
             Self::HFlip => "hflip",
             Self::VFlip => "vflip",
+            Self::Pad { .. } => "pad",
         }
     }
 
@@ -364,6 +380,25 @@ impl FilterStep {
                 )
             }
             Self::HFlip | Self::VFlip => String::new(),
+            Self::Pad {
+                width,
+                height,
+                x,
+                y,
+                color,
+            } => {
+                let px = if *x < 0 {
+                    "(ow-iw)/2".to_string()
+                } else {
+                    x.to_string()
+                };
+                let py = if *y < 0 {
+                    "(oh-ih)/2".to_string()
+                } else {
+                    y.to_string()
+                };
+                format!("width={width}:height={height}:x={px}:y={py}:color={color}")
+            }
         }
     }
 }
@@ -645,6 +680,31 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Pad the frame to `width × height` pixels, placing the source at `(x, y)`
+    /// and filling the exposed borders with `color`.
+    ///
+    /// Pass a negative value for `x` or `y` to centre the source on that axis
+    /// (`x = -1` → `(width − source_w) / 2`).
+    ///
+    /// `color` accepts any color string understood by `FFmpeg` — for example
+    /// `"black"`, `"white"`, `"0x000000"`.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `width` or `height` is zero.
+    #[must_use]
+    pub fn pad(mut self, width: u32, height: u32, x: i32, y: i32, color: &str) -> Self {
+        self.steps.push(FilterStep::Pad {
+            width,
+            height,
+            x,
+            y,
+            color: color.to_owned(),
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -821,6 +881,13 @@ impl FilterGraphBuilder {
             {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("vignette angle {angle} out of range [0.0, π/2]"),
+                });
+            }
+            if let FilterStep::Pad { width, height, .. } = step
+                && (*width == 0 || *height == 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "pad width and height must be > 0".to_string(),
                 });
             }
         }
@@ -1836,6 +1903,95 @@ mod tests {
         assert!(
             result.is_ok(),
             "double hflip (round-trip) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filter_step_pad_should_produce_correct_filter_name() {
+        let step = FilterStep::Pad {
+            width: 1920,
+            height: 1080,
+            x: -1,
+            y: -1,
+            color: "black".to_owned(),
+        };
+        assert_eq!(step.filter_name(), "pad");
+    }
+
+    #[test]
+    fn filter_step_pad_negative_xy_should_produce_centred_args() {
+        let step = FilterStep::Pad {
+            width: 1920,
+            height: 1080,
+            x: -1,
+            y: -1,
+            color: "black".to_owned(),
+        };
+        assert_eq!(
+            step.args(),
+            "width=1920:height=1080:x=(ow-iw)/2:y=(oh-ih)/2:color=black"
+        );
+    }
+
+    #[test]
+    fn filter_step_pad_explicit_xy_should_produce_numeric_args() {
+        let step = FilterStep::Pad {
+            width: 1920,
+            height: 1080,
+            x: 320,
+            y: 180,
+            color: "0x000000".to_owned(),
+        };
+        assert_eq!(
+            step.args(),
+            "width=1920:height=1080:x=320:y=180:color=0x000000"
+        );
+    }
+
+    #[test]
+    fn filter_step_pad_zero_xy_should_produce_zero_offset_args() {
+        let step = FilterStep::Pad {
+            width: 1280,
+            height: 720,
+            x: 0,
+            y: 0,
+            color: "black".to_owned(),
+        };
+        assert_eq!(step.args(), "width=1280:height=720:x=0:y=0:color=black");
+    }
+
+    #[test]
+    fn builder_pad_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder()
+            .pad(1920, 1080, -1, -1, "black")
+            .build();
+        assert!(
+            result.is_ok(),
+            "pad with valid params must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_pad_with_zero_width_should_return_invalid_config() {
+        let result = FilterGraph::builder().pad(0, 1080, -1, -1, "black").build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for width=0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("pad width and height must be > 0"),
+                "reason should mention pad dimensions: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_pad_with_zero_height_should_return_invalid_config() {
+        let result = FilterGraph::builder().pad(1920, 0, -1, -1, "black").build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for height=0, got {result:?}"
         );
     }
 }
