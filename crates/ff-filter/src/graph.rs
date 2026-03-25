@@ -1,7 +1,6 @@
 //! Filter graph public API: [`FilterGraph`] and [`FilterGraphBuilder`].
 
 use std::path::Path;
-use std::time::Duration;
 
 use ff_format::{AudioFrame, VideoFrame};
 
@@ -162,10 +161,10 @@ pub(crate) enum FilterStep {
     },
     /// Overlay a second stream at position `(x, y)`.
     Overlay { x: i32, y: i32 },
-    /// Fade-in from black over `duration`.
-    FadeIn(Duration),
-    /// Fade-out to black over `duration`.
-    FadeOut(Duration),
+    /// Fade-in from black starting at `start` seconds, over `duration` seconds.
+    FadeIn { start: f64, duration: f64 },
+    /// Fade-out to black starting at `start` seconds, over `duration` seconds.
+    FadeOut { start: f64, duration: f64 },
     /// Rotate clockwise by `angle_degrees`, filling exposed areas with `fill_color`.
     Rotate {
         angle_degrees: f64,
@@ -333,7 +332,7 @@ impl FilterStep {
             Self::Scale { .. } => "scale",
             Self::Crop { .. } => "crop",
             Self::Overlay { .. } => "overlay",
-            Self::FadeIn(_) | Self::FadeOut(_) => "fade",
+            Self::FadeIn { .. } | Self::FadeOut { .. } => "fade",
             Self::Rotate { .. } => "rotate",
             Self::ToneMap(_) => "tonemap",
             Self::Volume(_) => "volume",
@@ -380,8 +379,12 @@ impl FilterStep {
                 format!("x={x}:y={y}:w={width}:h={height}")
             }
             Self::Overlay { x, y } => format!("x={x}:y={y}"),
-            Self::FadeIn(d) => format!("type=in:duration={}", d.as_secs_f64()),
-            Self::FadeOut(d) => format!("type=out:duration={}", d.as_secs_f64()),
+            Self::FadeIn { start, duration } => {
+                format!("type=in:start_time={start}:duration={duration}")
+            }
+            Self::FadeOut { start, duration } => {
+                format!("type=out:start_time={start}:duration={duration}")
+            }
             Self::Rotate {
                 angle_degrees,
                 fill_color,
@@ -584,17 +587,25 @@ impl FilterGraphBuilder {
         self
     }
 
-    /// Fade in from black over the given `duration`.
+    /// Fade in from black, starting at `start_sec` seconds and reaching full
+    /// brightness after `duration_sec` seconds.
     #[must_use]
-    pub fn fade_in(mut self, duration: Duration) -> Self {
-        self.steps.push(FilterStep::FadeIn(duration));
+    pub fn fade_in(mut self, start_sec: f64, duration_sec: f64) -> Self {
+        self.steps.push(FilterStep::FadeIn {
+            start: start_sec,
+            duration: duration_sec,
+        });
         self
     }
 
-    /// Fade out to black over the given `duration`.
+    /// Fade out to black, starting at `start_sec` seconds and reaching full
+    /// black after `duration_sec` seconds.
     #[must_use]
-    pub fn fade_out(mut self, duration: Duration) -> Self {
-        self.steps.push(FilterStep::FadeOut(duration));
+    pub fn fade_out(mut self, start_sec: f64, duration_sec: f64) -> Self {
+        self.steps.push(FilterStep::FadeOut {
+            start: start_sec,
+            duration: duration_sec,
+        });
         self
     }
 
@@ -980,6 +991,13 @@ impl FilterGraphBuilder {
             {
                 return Err(FilterError::InvalidConfig {
                     reason: "crop width and height must be > 0".to_string(),
+                });
+            }
+            if let FilterStep::FadeIn { duration, .. } | FilterStep::FadeOut { duration, .. } = step
+                && *duration <= 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("fade duration {duration} must be > 0.0"),
                 });
             }
             if let FilterStep::Overlay { x, y } = step
@@ -1369,17 +1387,90 @@ mod tests {
     }
 
     #[test]
-    fn filter_step_fade_in_should_produce_correct_args() {
-        let step = FilterStep::FadeIn(Duration::from_secs(1));
+    fn filter_step_fade_in_should_produce_correct_filter_name() {
+        let step = FilterStep::FadeIn {
+            start: 0.0,
+            duration: 1.5,
+        };
         assert_eq!(step.filter_name(), "fade");
-        assert_eq!(step.args(), "type=in:duration=1");
+    }
+
+    #[test]
+    fn filter_step_fade_in_should_produce_correct_args() {
+        let step = FilterStep::FadeIn {
+            start: 0.0,
+            duration: 1.5,
+        };
+        assert_eq!(step.args(), "type=in:start_time=0:duration=1.5");
+    }
+
+    #[test]
+    fn filter_step_fade_in_with_nonzero_start_should_produce_correct_args() {
+        let step = FilterStep::FadeIn {
+            start: 2.0,
+            duration: 1.0,
+        };
+        assert_eq!(step.args(), "type=in:start_time=2:duration=1");
+    }
+
+    #[test]
+    fn filter_step_fade_out_should_produce_correct_filter_name() {
+        let step = FilterStep::FadeOut {
+            start: 8.5,
+            duration: 1.5,
+        };
+        assert_eq!(step.filter_name(), "fade");
     }
 
     #[test]
     fn filter_step_fade_out_should_produce_correct_args() {
-        let step = FilterStep::FadeOut(Duration::from_secs(2));
-        assert_eq!(step.filter_name(), "fade");
-        assert_eq!(step.args(), "type=out:duration=2");
+        let step = FilterStep::FadeOut {
+            start: 8.5,
+            duration: 1.5,
+        };
+        assert_eq!(step.args(), "type=out:start_time=8.5:duration=1.5");
+    }
+
+    #[test]
+    fn builder_fade_in_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().fade_in(0.0, 1.5).build();
+        assert!(
+            result.is_ok(),
+            "fade_in(0.0, 1.5) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_fade_out_with_valid_params_should_succeed() {
+        let result = FilterGraph::builder().fade_out(8.5, 1.5).build();
+        assert!(
+            result.is_ok(),
+            "fade_out(8.5, 1.5) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_fade_in_with_zero_duration_should_return_invalid_config() {
+        let result = FilterGraph::builder().fade_in(0.0, 0.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for zero duration, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("duration"),
+                "reason should mention duration: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_fade_out_with_negative_duration_should_return_invalid_config() {
+        let result = FilterGraph::builder().fade_out(0.0, -1.0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for negative duration, got {result:?}"
+        );
     }
 
     #[test]
