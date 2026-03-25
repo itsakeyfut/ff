@@ -196,6 +196,7 @@
 // duplicate-symbol problem that would arise from re-exporting VideoCodec /
 // AudioCodec separately from ff-probe *and* ff-encode (both of which pull them
 // in from ff-format anyway).
+pub use ff_format::subtitle::{SubtitleError, SubtitleEvent, SubtitleTrack};
 pub use ff_format::{
     AudioCodec, AudioFrame, AudioStreamInfo, ChannelLayout, ChapterInfo, ChapterInfoBuilder,
     ColorPrimaries, ColorRange, ColorSpace, ColorTransfer, ContainerInfo, Hdr10Metadata,
