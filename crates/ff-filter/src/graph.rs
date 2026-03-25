@@ -616,6 +616,13 @@ impl FilterGraphBuilder {
         // (e.g. a watermark larger than the video). Catch it early with a
         // descriptive error rather than silently producing invisible output.
         for step in &self.steps {
+            if let FilterStep::Crop { width, height, .. } = step
+                && (*width == 0 || *height == 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "crop width and height must be > 0".to_string(),
+                });
+            }
             if let FilterStep::Overlay { x, y } = step
                 && (*x < 0 || *y < 0)
             {
@@ -1635,6 +1642,39 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for angle < 0.0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_crop_with_zero_width_should_return_invalid_config() {
+        let result = FilterGraph::builder().crop(0, 0, 0, 100).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for width=0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("crop width and height must be > 0"),
+                "reason should mention crop dimensions: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn builder_crop_with_zero_height_should_return_invalid_config() {
+        let result = FilterGraph::builder().crop(0, 0, 100, 0).build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for height=0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_crop_with_valid_dimensions_should_succeed() {
+        let result = FilterGraph::builder().crop(0, 0, 64, 64).build();
+        assert!(
+            result.is_ok(),
+            "crop with valid dimensions must build successfully, got {result:?}"
         );
     }
 }

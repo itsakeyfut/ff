@@ -386,6 +386,21 @@ impl FilterGraphInner {
         let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
         if ret < 0 {
             log::warn!("avfilter_graph_config failed code={ret}");
+            // If there is a crop step the most likely cause is the rectangle
+            // extending beyond the source frame dimensions.
+            if let Some(FilterStep::Crop {
+                x,
+                y,
+                width,
+                height,
+            }) = steps.iter().find(|s| matches!(s, FilterStep::Crop { .. }))
+            {
+                bail!(FilterError::InvalidConfig {
+                    reason: format!(
+                        "crop rect {x},{y}+{width}x{height} exceeds source frame dimensions"
+                    ),
+                });
+            }
             bail!(ffmpeg_err(ret));
         }
 
