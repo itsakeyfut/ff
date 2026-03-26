@@ -2243,3 +2243,35 @@ fn builder_speed_at_boundary_values_should_succeed() {
     let high = FilterGraph::builder().speed(100.0).build();
     assert!(high.is_ok(), "speed(100.0) should succeed, got {high:?}");
 }
+
+#[test]
+fn filter_step_reverse_should_produce_correct_filter_name_and_empty_args() {
+    let step = FilterStep::Reverse;
+    assert_eq!(step.filter_name(), "reverse");
+    assert_eq!(step.args(), "");
+}
+
+#[test]
+fn filter_step_areverse_should_produce_correct_filter_name_and_empty_args() {
+    let step = FilterStep::AReverse;
+    assert_eq!(step.filter_name(), "areverse");
+    assert_eq!(step.args(), "");
+}
+
+#[test]
+fn builder_reverse_should_succeed() {
+    let result = FilterGraph::builder().reverse().build();
+    assert!(
+        result.is_ok(),
+        "reverse must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_areverse_should_succeed() {
+    let result = FilterGraph::builder().areverse().build();
+    assert!(
+        result.is_ok(),
+        "areverse must build successfully, got {result:?}"
+    );
+}

@@ -347,6 +347,11 @@ impl FilterGraphInner {
         // 4-5. Add each `FilterStep`, link the main chain (in0 → step[0] → …),
         // and wire extra input pads for multi-input filters.
         for (i, step) in steps.iter().enumerate() {
+            // AReverse is audio-only; skip it in the video graph.
+            if matches!(step, FilterStep::AReverse) {
+                continue;
+            }
+
             // OverlayImage is a compound step (movie → lut → overlay).  It
             // creates its own internal source node via the `movie` filter and
             // does not consume a buffersrc slot, so it must bypass the standard
@@ -714,6 +719,11 @@ impl FilterGraphInner {
         // 3-5. Add each `FilterStep` (audio-relevant steps) and link.
         let mut prev_ctx = first_src_ctx.as_ptr();
         for (i, step) in steps.iter().enumerate() {
+            // Reverse is video-only; skip it in the audio graph.
+            if matches!(step, FilterStep::Reverse) {
+                continue;
+            }
+
             // Speed uses `setpts` for video but `atempo` for audio.  Bypass the
             // standard `add_and_link_step` path and insert the atempo chain here.
             if let FilterStep::Speed { factor } = step {

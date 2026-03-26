@@ -91,6 +91,10 @@ pub(crate) enum FilterStep {
     HFlip,
     /// Vertical flip (mirror top-bottom).
     VFlip,
+    /// Reverse video playback (buffers entire clip in memory — use only on short clips).
+    Reverse,
+    /// Reverse audio playback (buffers entire clip in memory — use only on short clips).
+    AReverse,
     /// Pad to a target resolution with a fill color (letterbox / pillarbox).
     Pad {
         /// Target canvas width in pixels.
@@ -293,6 +297,8 @@ impl FilterStep {
             Self::Vignette { .. } => "vignette",
             Self::HFlip => "hflip",
             Self::VFlip => "vflip",
+            Self::Reverse => "reverse",
+            Self::AReverse => "areverse",
             Self::Pad { .. } => "pad",
             // FitToAspect is implemented as scale + pad; "scale" is validated at
             // build time.  The pad filter is inserted by filter_inner at graph
@@ -429,7 +435,7 @@ impl FilterStep {
                     curve(lift.b, gamma.b, gain.b),
                 )
             }
-            Self::HFlip | Self::VFlip => String::new(),
+            Self::HFlip | Self::VFlip | Self::Reverse | Self::AReverse => String::new(),
             Self::GBlur { sigma } => format!("sigma={sigma}"),
             Self::Unsharp {
                 luma_strength,
