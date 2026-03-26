@@ -2074,3 +2074,113 @@ fn builder_overlay_image_with_negative_opacity_should_return_invalid_config() {
         "expected InvalidConfig for opacity < 0.0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_ticker_should_produce_correct_filter_name() {
+    let step = FilterStep::Ticker {
+        text: "Breaking news".to_owned(),
+        y: "h-50".to_owned(),
+        speed_px_per_sec: 100.0,
+        font_size: 24,
+        font_color: "white".to_owned(),
+    };
+    assert_eq!(step.filter_name(), "drawtext");
+}
+
+#[test]
+fn filter_step_ticker_should_produce_correct_args() {
+    let step = FilterStep::Ticker {
+        text: "Breaking news".to_owned(),
+        y: "h-50".to_owned(),
+        speed_px_per_sec: 100.0,
+        font_size: 24,
+        font_color: "white".to_owned(),
+    };
+    let args = step.args();
+    assert!(
+        args.contains("text='Breaking news'"),
+        "args should contain escaped text: {args}"
+    );
+    assert!(
+        args.contains("x=w-t*100"),
+        "args should contain scrolling x expression: {args}"
+    );
+    assert!(args.contains("y=h-50"), "args should contain y: {args}");
+    assert!(
+        args.contains("fontsize=24"),
+        "args should contain fontsize: {args}"
+    );
+    assert!(
+        args.contains("fontcolor=white"),
+        "args should contain fontcolor: {args}"
+    );
+}
+
+#[test]
+fn filter_step_ticker_should_escape_special_characters_in_text() {
+    let step = FilterStep::Ticker {
+        text: "colon:backslash\\apostrophe'".to_owned(),
+        y: "10".to_owned(),
+        speed_px_per_sec: 50.0,
+        font_size: 20,
+        font_color: "red".to_owned(),
+    };
+    let args = step.args();
+    assert!(
+        args.contains("\\:"),
+        "colon should be escaped in args: {args}"
+    );
+    assert!(
+        args.contains("\\'"),
+        "apostrophe should be escaped in args: {args}"
+    );
+    assert!(
+        args.contains("\\\\"),
+        "backslash should be escaped in args: {args}"
+    );
+}
+
+#[test]
+fn builder_ticker_with_empty_text_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .ticker("", "h-50", 100.0, 24, "white")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for empty text, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("ticker text must not be empty"),
+            "reason should mention empty text: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_ticker_with_zero_speed_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .ticker("Breaking news", "h-50", 0.0, 24, "white")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for speed = 0.0, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("speed_px_per_sec"),
+            "reason should mention speed_px_per_sec: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_ticker_with_negative_speed_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .ticker("Breaking news", "h-50", -50.0, 24, "white")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for negative speed, got {result:?}"
+    );
+}

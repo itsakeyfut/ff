@@ -194,6 +194,23 @@ pub(crate) enum FilterStep {
         /// Absolute or relative path to the `.ass` or `.ssa` file.
         path: String,
     },
+    /// Scrolling text ticker (right-to-left) using the `drawtext` filter.
+    ///
+    /// The text starts off-screen to the right and scrolls left at
+    /// `speed_px_per_sec` pixels per second using the expression
+    /// `x = w - t * speed`.
+    Ticker {
+        /// Text to display. Special characters (`\`, `:`, `'`) are escaped.
+        text: String,
+        /// Y position as an `FFmpeg` expression, e.g. `"h-50"` or `"10"`.
+        y: String,
+        /// Horizontal scroll speed in pixels per second (must be > 0.0).
+        speed_px_per_sec: f32,
+        /// Font size in points.
+        font_size: u32,
+        /// Font color as an `FFmpeg` color string, e.g. `"white"` or `"0xFFFFFF"`.
+        font_color: String,
+    },
     /// Composite a PNG image (watermark / logo) over video with optional opacity.
     ///
     /// This is a compound step: internally it creates a `movie` source,
@@ -275,7 +292,7 @@ impl FilterStep {
             Self::Nlmeans { .. } => "nlmeans",
             Self::Yadif { .. } => "yadif",
             Self::XFade { .. } => "xfade",
-            Self::DrawText { .. } => "drawtext",
+            Self::DrawText { .. } | Self::Ticker { .. } => "drawtext",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -445,6 +462,25 @@ impl FilterStep {
                     parts.push(format!("boxborderw={}", opts.box_border_width));
                 }
                 parts.join(":")
+            }
+            Self::Ticker {
+                text,
+                y,
+                speed_px_per_sec,
+                font_size,
+                font_color,
+            } => {
+                // Use the same escaping as DrawText.
+                let escaped = text
+                    .replace('\\', "\\\\")
+                    .replace(':', "\\:")
+                    .replace('\'', "\\'");
+                // x = w - t * speed: at t=0 the text starts fully off the right
+                // edge (x = w) and scrolls left by `speed` pixels per second.
+                format!(
+                    "text='{escaped}':x=w-t*{speed_px_per_sec}:y={y}:\
+                     fontsize={font_size}:fontcolor={font_color}"
+                )
             }
             Self::SubtitlesSrt { path } | Self::SubtitlesAss { path } => {
                 format!("filename={path}")
