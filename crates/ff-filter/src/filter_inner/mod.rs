@@ -16,8 +16,8 @@ mod build;
 mod convert;
 
 use build::{
-    add_and_link_step, add_fit_to_aspect_pad, add_setpts_after_trim, audio_buffersrc_args,
-    create_hw_filter, hw_accel_to_device_type, video_buffersrc_args,
+    add_and_link_step, add_fit_to_aspect_pad, add_overlay_image_step, add_setpts_after_trim,
+    audio_buffersrc_args, create_hw_filter, hw_accel_to_device_type, video_buffersrc_args,
 };
 use convert::{
     audio_pts_ticks, av_frame_to_audio_frame, av_frame_to_video_frame, copy_audio_planes_to_av,
@@ -346,6 +346,24 @@ impl FilterGraphInner {
         // 4-5. Add each `FilterStep`, link the main chain (in0 → step[0] → …),
         // and wire extra input pads for multi-input filters.
         for (i, step) in steps.iter().enumerate() {
+            // OverlayImage is a compound step (movie → lut → overlay).  It
+            // creates its own internal source node via the `movie` filter and
+            // does not consume a buffersrc slot, so it must bypass the standard
+            // `add_and_link_step` path which assumes a single filter per step.
+            if let FilterStep::OverlayImage {
+                path,
+                x,
+                y,
+                opacity,
+            } = step
+            {
+                prev_ctx = match add_overlay_image_step(graph, prev_ctx, path, x, y, *opacity, i) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
             prev_ctx = match add_and_link_step(graph, prev_ctx, step, i, "step") {
                 Ok(ctx) => ctx,
                 Err(e) => bail!(e),

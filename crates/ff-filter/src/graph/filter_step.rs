@@ -194,6 +194,21 @@ pub(crate) enum FilterStep {
         /// Absolute or relative path to the `.ass` or `.ssa` file.
         path: String,
     },
+    /// Composite a PNG image (watermark / logo) over video with optional opacity.
+    ///
+    /// This is a compound step: internally it creates a `movie` source,
+    /// a `lut` alpha-scaling filter, and an `overlay` compositing filter.
+    /// The image file is loaded once at graph construction time.
+    OverlayImage {
+        /// Absolute or relative path to the `.png` file.
+        path: String,
+        /// Horizontal position as an `FFmpeg` expression, e.g. `"10"` or `"W-w-10"`.
+        x: String,
+        /// Vertical position as an `FFmpeg` expression, e.g. `"10"` or `"H-h-10"`.
+        y: String,
+        /// Opacity 0.0 (fully transparent) to 1.0 (fully opaque).
+        opacity: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -263,6 +278,11 @@ impl FilterStep {
             Self::DrawText { .. } => "drawtext",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
+            // OverlayImage is a compound step (movie → lut → overlay); "overlay"
+            // is used only by validate_filter_steps as a best-effort existence
+            // check.  The actual graph construction is handled by
+            // `filter_inner::build::add_overlay_image_step`.
+            Self::OverlayImage { .. } => "overlay",
         }
     }
 
@@ -429,6 +449,10 @@ impl FilterStep {
             Self::SubtitlesSrt { path } | Self::SubtitlesAss { path } => {
                 format!("filename={path}")
             }
+            // args() for OverlayImage returns the overlay positional args (x:y).
+            // These are not consumed by add_and_link_step (which is bypassed for
+            // this compound step); they exist here only for completeness.
+            Self::OverlayImage { x, y, .. } => format!("{x}:{y}"),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by

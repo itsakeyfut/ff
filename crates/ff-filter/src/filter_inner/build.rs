@@ -233,6 +233,132 @@ pub(super) unsafe fn add_fit_to_aspect_pad(
     Ok(ctx)
 }
 
+// ── Overlay image compound step ───────────────────────────────────────────────
+
+/// Insert the compound `movie → lut → overlay` filter chain for an
+/// [`FilterStep::OverlayImage`] step.
+///
+/// Unlike standard steps (which go through [`add_and_link_step`]), this step
+/// creates three filter contexts internally:
+///
+/// 1. `movie` — loads the PNG from `path` as a self-contained video source
+///    (no buffersrc input slot is consumed).
+/// 2. `lut` — scales the alpha channel by `opacity` (`a = val * opacity`).
+/// 3. `overlay` — composites the main stream (pad 0) with the image (pad 1)
+///    at position `(x, y)`.
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_overlay_image_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    path: &str,
+    x: &str,
+    y: &str,
+    opacity: f32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    // 1. movie filter — self-contained PNG source, no buffersrc slot needed.
+    let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
+    if movie_filter.is_null() {
+        log::warn!("filter not found name=movie (overlay_image)");
+        return Err(FilterError::BuildFailed);
+    }
+    let movie_name = CString::new(format!("movie{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let movie_args =
+        CString::new(format!("filename={path}")).map_err(|_| FilterError::BuildFailed)?;
+    let mut movie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut movie_ctx,
+        movie_filter,
+        movie_name.as_ptr(),
+        movie_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=movie args=filename={path}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=movie args=filename={path} index={index}");
+
+    // 2. lut filter — scale the alpha channel: a = val * opacity.
+    //    For 8-bit RGBA the `lut` filter operates per-channel; `val` is the
+    //    current pixel value (0–255) and the expression is evaluated per sample.
+    let lut_filter = ff_sys::avfilter_get_by_name(c"lut".as_ptr());
+    if lut_filter.is_null() {
+        log::warn!("filter not found name=lut (overlay_image)");
+        return Err(FilterError::BuildFailed);
+    }
+    let lut_name = CString::new(format!("lut{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let lut_args_str = format!("a=val*{opacity}");
+    let lut_args = CString::new(lut_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut lut_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut lut_ctx,
+        lut_filter,
+        lut_name.as_ptr(),
+        lut_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=lut args={lut_args_str}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=lut args={lut_args_str} index={index}");
+
+    // Link: movie → lut (alpha scaling).
+    let ret = ff_sys::avfilter_link(movie_ctx, 0, lut_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 3. overlay filter — composite main stream (pad 0) with image (pad 1).
+    let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
+    if overlay_filter.is_null() {
+        log::warn!("filter not found name=overlay (overlay_image)");
+        return Err(FilterError::BuildFailed);
+    }
+    let overlay_name =
+        CString::new(format!("step{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let overlay_args_str = format!("{x}:{y}");
+    let overlay_args =
+        CString::new(overlay_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut overlay_ctx,
+        overlay_filter,
+        overlay_name.as_ptr(),
+        overlay_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=overlay args={overlay_args_str}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=overlay args={overlay_args_str} index={index}");
+
+    // Link: prev_ctx → overlay pad 0 (main video stream).
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, overlay_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Link: lut → overlay pad 1 (image stream).
+    let ret = ff_sys::avfilter_link(lut_ctx, 0, overlay_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    Ok(overlay_ctx)
+}
+
 // ── buffersrc / buffersink arg-string helpers ──────────────────────────────────
 
 /// Build the `args` string passed to `avfilter_graph_create_filter` when

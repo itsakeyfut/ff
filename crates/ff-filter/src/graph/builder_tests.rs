@@ -1979,3 +1979,98 @@ fn builder_subtitles_ssa_with_nonexistent_file_should_return_invalid_config() {
         "expected InvalidConfig for nonexistent .ssa file, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_overlay_image_should_produce_correct_filter_name() {
+    let step = FilterStep::OverlayImage {
+        path: "logo.png".to_owned(),
+        x: "10".to_owned(),
+        y: "10".to_owned(),
+        opacity: 1.0,
+    };
+    assert_eq!(step.filter_name(), "overlay");
+}
+
+#[test]
+fn filter_step_overlay_image_should_produce_correct_args() {
+    let step = FilterStep::OverlayImage {
+        path: "logo.png".to_owned(),
+        x: "W-w-10".to_owned(),
+        y: "H-h-10".to_owned(),
+        opacity: 0.7,
+    };
+    assert_eq!(step.args(), "W-w-10:H-h-10");
+}
+
+#[test]
+fn builder_overlay_image_with_wrong_extension_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .overlay_image("logo.jpg", "10", "10", 1.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for wrong extension, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("unsupported image format"),
+            "reason should mention unsupported format: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_overlay_image_with_no_extension_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .overlay_image("logo_no_ext", "10", "10", 1.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for missing extension, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_overlay_image_with_nonexistent_file_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .overlay_image("/nonexistent/path/logo_ab12cd.png", "10", "10", 1.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for nonexistent file, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("overlay image not found"),
+            "reason should mention file not found: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_overlay_image_with_opacity_above_1_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .overlay_image("/nonexistent/logo.png", "10", "10", 1.1)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for opacity > 1.0, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("opacity"),
+            "reason should mention opacity: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_overlay_image_with_negative_opacity_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .overlay_image("/nonexistent/logo.png", "10", "10", -0.1)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for opacity < 0.0, got {result:?}"
+    );
+}

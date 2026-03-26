@@ -513,6 +513,30 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Composite a PNG image (watermark / logo) over video.
+    ///
+    /// The image at `path` is loaded once at graph construction time via
+    /// `FFmpeg`'s `movie` source filter. Its alpha channel is scaled by
+    /// `opacity` using a `lut` filter, then composited onto the main stream
+    /// with the `overlay` filter at position `(x, y)`.
+    ///
+    /// `x` and `y` are `FFmpeg` expression strings, e.g. `"10"`, `"W-w-10"`.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if:
+    /// - the extension is not `.png`,
+    /// - the file does not exist at build time, or
+    /// - `opacity` is outside `[0.0, 1.0]`.
+    #[must_use]
+    pub fn overlay_image(mut self, path: &str, x: &str, y: &str, opacity: f32) -> Self {
+        self.steps.push(FilterStep::OverlayImage {
+            path: path.to_owned(),
+            x: x.to_owned(),
+            y: y.to_owned(),
+            opacity,
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -664,6 +688,27 @@ impl FilterGraphBuilder {
                 if !Path::new(path).exists() {
                     return Err(FilterError::InvalidConfig {
                         reason: format!("subtitle file not found: {path}"),
+                    });
+                }
+            }
+            if let FilterStep::OverlayImage { path, opacity, .. } = step {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if ext != "png" {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("unsupported image format: .{ext}; expected .png"),
+                    });
+                }
+                if !(0.0..=1.0).contains(opacity) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("overlay_image opacity {opacity} out of range [0.0, 1.0]"),
+                    });
+                }
+                if !Path::new(path).exists() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("overlay image not found: {path}"),
                     });
                 }
             }
