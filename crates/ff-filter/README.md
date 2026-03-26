@@ -2,6 +2,8 @@
 
 Apply video and audio transformations without writing FFmpeg filter-graph strings. Build a chain with method calls; the graph description is generated and validated internally.
 
+> **Project status (as of 2026-03-26):** This crate is in an early phase. The high-level API is designed and reviewed by hand; AI is used as an accelerator to implement FFmpeg bindings efficiently. Code contributions are not expected at this time — questions, bug reports, and feature requests are welcome. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+
 ## Installation
 
 ```toml

@@ -2,6 +2,8 @@
 
 Shared data types for the ff-* crate family. No FFmpeg dependency — these types exist so crates can exchange frames and stream metadata without coupling to FFmpeg's internal structs.
 
+> **Project status (as of 2026-03-26):** This crate is in an early phase. The high-level API is designed and reviewed by hand; AI is used as an accelerator to implement FFmpeg bindings efficiently. Code contributions are not expected at this time — questions, bug reports, and feature requests are welcome. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+
 ## Key Types
 
 | Type              | Description                                                          |

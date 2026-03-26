@@ -2,6 +2,8 @@
 
 Encode video and audio to any format with a builder chain. The encoder validates your codec, resolution, and bitrate settings before allocating any FFmpeg context — invalid configurations are caught as `Err`, not discovered at the first `push_video` call.
 
+> **Project status (as of 2026-03-26):** This crate is in an early phase. The high-level API is designed and reviewed by hand; AI is used as an accelerator to implement FFmpeg bindings efficiently. Code contributions are not expected at this time — questions, bug reports, and feature requests are welcome. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+
 ## Installation
 
 ```toml

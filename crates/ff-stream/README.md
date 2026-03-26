@@ -3,6 +3,8 @@
 Produce HLS and DASH adaptive bitrate output from any video source. Define a rendition ladder,
 point it at an input file, and receive a standards-compliant package ready for CDN delivery.
 
+> **Project status (as of 2026-03-26):** This crate is in an early phase. The high-level API is designed and reviewed by hand; AI is used as an accelerator to implement FFmpeg bindings efficiently. Code contributions are not expected at this time — questions, bug reports, and feature requests are welcome. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+
 ## Installation
 
 ```toml

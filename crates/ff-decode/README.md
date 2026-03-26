@@ -2,6 +2,8 @@
 
 Decode video and audio frames without managing codec contexts, packet queues, or timestamp conversions. Open a file, call `decode_one` in a loop, and receive `VideoFrame` objects with their position already expressed as a `Timestamp`.
 
+> **Project status (as of 2026-03-26):** This crate is in an early phase. The high-level API is designed and reviewed by hand; AI is used as an accelerator to implement FFmpeg bindings efficiently. Code contributions are not expected at this time — questions, bug reports, and feature requests are welcome. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+
 ## Installation
 
 ```toml
