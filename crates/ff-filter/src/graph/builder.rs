@@ -479,6 +479,37 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Scroll text from right to left as a news ticker.
+    ///
+    /// Uses `FFmpeg`'s `drawtext` filter with the expression `x = w - t * speed`
+    /// so the text enters from the right edge at playback start and advances
+    /// left by `speed_px_per_sec` pixels per second.
+    ///
+    /// `y` is an `FFmpeg` expression string for the vertical position,
+    /// e.g. `"h-50"` for 50 pixels above the bottom.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if:
+    /// - `text` is empty, or
+    /// - `speed_px_per_sec` is ≤ 0.0.
+    #[must_use]
+    pub fn ticker(
+        mut self,
+        text: &str,
+        y: &str,
+        speed_px_per_sec: f32,
+        font_size: u32,
+        font_color: &str,
+    ) -> Self {
+        self.steps.push(FilterStep::Ticker {
+            text: text.to_owned(),
+            y: y.to_owned(),
+            speed_px_per_sec,
+            font_size,
+            font_color: font_color.to_owned(),
+        });
+        self
+    }
+
     /// Burn SRT subtitles into the video (hard subtitles).
     ///
     /// Subtitles are read from the `.srt` file at `srt_path` and rendered
@@ -628,6 +659,23 @@ impl FilterGraphBuilder {
                             "drawtext opacity {} out of range [0.0, 1.0]",
                             opts.opacity
                         ),
+                    });
+                }
+            }
+            if let FilterStep::Ticker {
+                text,
+                speed_px_per_sec,
+                ..
+            } = step
+            {
+                if text.is_empty() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: "ticker text must not be empty".to_string(),
+                    });
+                }
+                if *speed_px_per_sec <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("ticker speed_px_per_sec {speed_px_per_sec} must be > 0.0"),
                     });
                 }
             }
