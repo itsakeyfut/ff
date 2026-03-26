@@ -115,6 +115,135 @@ impl SubtitleTrack {
         parse_vtt(input)
     }
 
+    /// Serialize this track to a `SubRip` (`.srt`) string.
+    ///
+    /// Events are numbered sequentially starting at `1`. The `raw` field is
+    /// written as the cue body so that style tags round-trip intact.
+    /// Events with empty text produce a blank-line body so that the sequential
+    /// index is preserved.
+    ///
+    /// Timestamp format: `HH:MM:SS,mmm --> HH:MM:SS,mmm`.
+    #[must_use]
+    pub fn to_srt(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        for (seq, ev) in self.events.iter().enumerate() {
+            let _ = writeln!(out, "{}", seq + 1);
+            let _ = writeln!(
+                out,
+                "{} --> {}",
+                duration_to_srt_timestamp(ev.start),
+                duration_to_srt_timestamp(ev.end),
+            );
+            out.push_str(&ev.raw);
+            out.push('\n');
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Serialize this track to an ASS/SSA string.
+    ///
+    /// Writes a minimal but valid file containing `[Script Info]`,
+    /// `[V4+ Styles]` (one default style), and `[Events]`. The `raw` field
+    /// is written as the `Text` column so that override tags round-trip intact.
+    /// `Style` and `Name` metadata fields are restored from
+    /// [`SubtitleEvent::metadata`] when present.
+    ///
+    /// Timestamp format: `H:MM:SS.cc` (centiseconds).
+    #[must_use]
+    pub fn to_ass(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        out.push_str("[Script Info]\n");
+        out.push_str("ScriptType: v4.00+\n");
+        out.push_str("PlayResX: 384\n");
+        out.push_str("PlayResY: 288\n");
+        out.push('\n');
+        out.push_str("[V4+ Styles]\n");
+        out.push_str(
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, \
+             OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, \
+             ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, \
+             Alignment, MarginL, MarginR, MarginV, Encoding\n",
+        );
+        out.push_str(
+            "Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,\
+             &H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1\n",
+        );
+        out.push('\n');
+        out.push_str("[Events]\n");
+        out.push_str(
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        );
+        for ev in &self.events {
+            let style = ev.metadata.get("Style").map_or("Default", String::as_str);
+            let name = ev.metadata.get("Name").map_or("", String::as_str);
+            let _ = writeln!(
+                out,
+                "Dialogue: 0,{},{},{},{},0,0,0,,{}",
+                duration_to_ass_timestamp(ev.start),
+                duration_to_ass_timestamp(ev.end),
+                style,
+                name,
+                ev.raw,
+            );
+        }
+        out
+    }
+
+    /// Serialize this track to a `WebVTT` (`.vtt`) string.
+    ///
+    /// Writes the mandatory `WEBVTT` header followed by one cue per event.
+    /// The `raw` field is written as the cue body so that voice span tags
+    /// round-trip intact.
+    ///
+    /// Timestamp format: `HH:MM:SS.mmm --> HH:MM:SS.mmm`.
+    #[must_use]
+    pub fn to_vtt(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::from("WEBVTT\n");
+        for ev in &self.events {
+            out.push('\n');
+            let _ = writeln!(
+                out,
+                "{} --> {}",
+                duration_to_vtt_timestamp(ev.start),
+                duration_to_vtt_timestamp(ev.end),
+            );
+            out.push_str(&ev.raw);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Write this track to `path`, choosing the serializer by file extension.
+    ///
+    /// Supported extensions: `.srt`, `.ass`, `.ssa`, `.vtt`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubtitleError::UnsupportedFormat`] for unrecognized extensions,
+    /// or [`SubtitleError::Io`] when the file cannot be written.
+    pub fn write_to_file(&self, path: impl AsRef<Path>) -> Result<(), SubtitleError> {
+        let path = path.as_ref();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        let content = match ext.as_str() {
+            "srt" => self.to_srt(),
+            "ass" | "ssa" => self.to_ass(),
+            "vtt" => self.to_vtt(),
+            _ => return Err(SubtitleError::UnsupportedFormat { extension: ext }),
+        };
+
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
     /// Load and parse a subtitle file, auto-detecting the format by extension.
     ///
     /// Supported extensions: `.srt`, `.ass`, `.ssa`, `.vtt`.
@@ -187,7 +316,10 @@ fn parse_srt(input: &str) -> Result<SubtitleTrack, SubtitleError> {
 }
 
 fn parse_srt_block(block: &[String], index: usize) -> Option<SubtitleEvent> {
-    if block.len() < 3 {
+    // A valid block needs at least an index line and a timestamp line.
+    // A missing text line produces an empty-text event (intentional for
+    // round-trip preservation of sequential indices).
+    if block.len() < 2 {
         log::warn!(
             "srt block has too few lines, skipping count={}",
             block.len()
@@ -485,6 +617,44 @@ fn parse_vtt_timestamp(s: &str) -> Option<Duration> {
     Some(Duration::from_millis(total_ms))
 }
 
+// ── Timestamp serialisation helpers ───────────────────────────────────────────
+
+/// Format a [`Duration`] as `HH:MM:SS,mmm` (SRT / `SubRip` style).
+#[allow(clippy::cast_possible_truncation)]
+fn duration_to_srt_timestamp(d: Duration) -> String {
+    let total_ms = d.as_millis() as u64;
+    let ms = total_ms % 1_000;
+    let secs = total_ms / 1_000;
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = secs / 3_600;
+    format!("{h:02}:{m:02}:{s:02},{ms:03}")
+}
+
+/// Format a [`Duration`] as `H:MM:SS.cc` (ASS centisecond style).
+#[allow(clippy::cast_possible_truncation)]
+fn duration_to_ass_timestamp(d: Duration) -> String {
+    let total_ms = d.as_millis() as u64;
+    let cs = (total_ms / 10) % 100;
+    let secs = total_ms / 1_000;
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = secs / 3_600;
+    format!("{h}:{m:02}:{s:02}.{cs:02}")
+}
+
+/// Format a [`Duration`] as `HH:MM:SS.mmm` (`WebVTT` style).
+#[allow(clippy::cast_possible_truncation)]
+fn duration_to_vtt_timestamp(d: Duration) -> String {
+    let total_ms = d.as_millis() as u64;
+    let ms = total_ms % 1_000;
+    let secs = total_ms / 1_000;
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = secs / 3_600;
+    format!("{h:02}:{m:02}:{s:02}.{ms:03}")
+}
+
 // ── Tag stripping helpers ──────────────────────────────────────────────────────
 
 /// Strip HTML-style tags (`<tag>`, `</tag>`) from `s`.
@@ -767,5 +937,189 @@ Hello world
     fn strip_ass_tags_should_convert_soft_line_breaks() {
         assert_eq!(strip_ass_tags("line1\\Nline2"), "line1\nline2");
         assert_eq!(strip_ass_tags("line1\\nline2"), "line1\nline2");
+    }
+
+    // ── timestamp serialisation helpers ───────────────────────────────────────
+
+    #[test]
+    fn duration_to_srt_timestamp_should_format_correctly() {
+        let d = Duration::from_millis(1 * 3_600_000 + 23 * 60_000 + 45 * 1_000 + 678);
+        assert_eq!(duration_to_srt_timestamp(d), "01:23:45,678");
+    }
+
+    #[test]
+    fn duration_to_ass_timestamp_should_use_centiseconds() {
+        let d = Duration::from_millis(1 * 3_600_000 + 23 * 60_000 + 45 * 1_000 + 670);
+        assert_eq!(duration_to_ass_timestamp(d), "1:23:45.67");
+    }
+
+    #[test]
+    fn duration_to_vtt_timestamp_should_format_correctly() {
+        let d = Duration::from_millis(1 * 3_600_000 + 2 * 60_000 + 3 * 1_000 + 456);
+        assert_eq!(duration_to_vtt_timestamp(d), "01:02:03.456");
+    }
+
+    // ── to_srt ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_srt_should_produce_1_based_sequential_indices() {
+        let track = SubtitleTrack {
+            events: vec![
+                make_event(0, 1_000, 4_000, "First"),
+                make_event(1, 5_000, 7_000, "Second"),
+            ],
+            language: None,
+        };
+        let srt = track.to_srt();
+        let lines: Vec<&str> = srt.lines().collect();
+        assert_eq!(lines[0], "1");
+        assert_eq!(lines[4], "2");
+    }
+
+    #[test]
+    fn to_srt_should_use_comma_separated_timestamps() {
+        let track = SubtitleTrack {
+            events: vec![make_event(0, 1_000, 4_000, "Hello")],
+            language: None,
+        };
+        let srt = track.to_srt();
+        assert!(srt.contains("00:00:01,000 --> 00:00:04,000"));
+    }
+
+    #[test]
+    fn to_srt_should_write_empty_text_event_preserving_index_sequence() {
+        let empty = SubtitleEvent {
+            index: 1,
+            start: Duration::from_millis(5_000),
+            end: Duration::from_millis(7_000),
+            text: String::new(),
+            raw: String::new(),
+            metadata: HashMap::new(),
+        };
+        let track = SubtitleTrack {
+            events: vec![make_event(0, 1_000, 4_000, "First"), empty],
+            language: None,
+        };
+        let srt = track.to_srt();
+        let reparsed = SubtitleTrack::from_srt(&srt).unwrap();
+        // Empty-text event must survive the round-trip and keep the index intact.
+        assert_eq!(reparsed.events.len(), 2);
+        assert_eq!(reparsed.events[1].start, Duration::from_millis(5_000));
+    }
+
+    #[test]
+    fn srt_round_trip_should_preserve_start_end_and_text() {
+        let srt_in = "1\n00:00:01,000 --> 00:00:04,000\nHello world\n\n2\n00:00:05,500 --> 00:00:07,250\nSecond\n\n";
+        let track = SubtitleTrack::from_srt(srt_in).unwrap();
+        let written = track.to_srt();
+        let reparsed = SubtitleTrack::from_srt(&written).unwrap();
+        assert_eq!(reparsed.events.len(), track.events.len());
+        for (a, b) in track.events.iter().zip(reparsed.events.iter()) {
+            assert_eq!(a.start, b.start);
+            assert_eq!(a.end, b.end);
+            assert_eq!(a.text, b.text);
+        }
+    }
+
+    // ── to_ass ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_ass_should_contain_required_sections() {
+        let track = SubtitleTrack {
+            events: vec![make_event(0, 1_000, 4_000, "Hello")],
+            language: None,
+        };
+        let ass = track.to_ass();
+        assert!(ass.contains("[Script Info]"));
+        assert!(ass.contains("[V4+ Styles]"));
+        assert!(ass.contains("[Events]"));
+        assert!(ass.contains("Format: Layer, Start, End,"));
+        assert!(ass.contains("Dialogue:"));
+    }
+
+    #[test]
+    fn to_ass_should_use_centisecond_timestamps() {
+        let track = SubtitleTrack {
+            events: vec![make_event(0, 1_000, 4_000, "Hello")],
+            language: None,
+        };
+        let ass = track.to_ass();
+        assert!(ass.contains("0:00:01.00,0:00:04.00"));
+    }
+
+    #[test]
+    fn ass_round_trip_should_preserve_start_end_and_text() {
+        let track = SubtitleTrack::from_ass(ASS_SAMPLE).unwrap();
+        let written = track.to_ass();
+        let reparsed = SubtitleTrack::from_ass(&written).unwrap();
+        assert_eq!(reparsed.events.len(), track.events.len());
+        for (a, b) in track.events.iter().zip(reparsed.events.iter()) {
+            assert_eq!(a.start, b.start, "start mismatch");
+            assert_eq!(a.end, b.end, "end mismatch");
+            assert_eq!(a.text, b.text, "text mismatch");
+        }
+    }
+
+    // ── to_vtt ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_vtt_should_start_with_webvtt_header() {
+        let track = SubtitleTrack {
+            events: vec![make_event(0, 1_000, 4_000, "Hello")],
+            language: None,
+        };
+        let vtt = track.to_vtt();
+        assert!(vtt.starts_with("WEBVTT\n"));
+    }
+
+    #[test]
+    fn to_vtt_should_use_dot_separated_timestamps() {
+        let track = SubtitleTrack {
+            events: vec![make_event(0, 1_000, 4_000, "Hello")],
+            language: None,
+        };
+        let vtt = track.to_vtt();
+        assert!(vtt.contains("00:00:01.000 --> 00:00:04.000"));
+    }
+
+    #[test]
+    fn vtt_round_trip_should_preserve_start_end_and_text() {
+        let track = SubtitleTrack::from_vtt(VTT_SAMPLE).unwrap();
+        let written = track.to_vtt();
+        let reparsed = SubtitleTrack::from_vtt(&written).unwrap();
+        assert_eq!(reparsed.events.len(), track.events.len());
+        for (a, b) in track.events.iter().zip(reparsed.events.iter()) {
+            assert_eq!(a.start, b.start, "start mismatch");
+            assert_eq!(a.end, b.end, "end mismatch");
+            assert_eq!(a.text, b.text, "text mismatch");
+        }
+    }
+
+    // ── write_to_file ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn write_to_file_should_return_unsupported_for_unknown_extension() {
+        let track = SubtitleTrack {
+            events: vec![make_event(0, 1_000, 4_000, "Hello")],
+            language: None,
+        };
+        let result = track.write_to_file("output.xyz");
+        assert!(matches!(
+            result,
+            Err(SubtitleError::UnsupportedFormat { .. })
+        ));
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn make_event(index: usize, start_ms: u64, end_ms: u64, text: &str) -> SubtitleEvent {
+        SubtitleEvent {
+            index,
+            start: Duration::from_millis(start_ms),
+            end: Duration::from_millis(end_ms),
+            text: text.to_string(),
+            raw: text.to_string(),
+            metadata: HashMap::new(),
+        }
     }
 }
