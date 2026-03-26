@@ -233,6 +233,148 @@ pub(super) unsafe fn add_fit_to_aspect_pad(
     Ok(ctx)
 }
 
+// ── Speed (atempo chain) ──────────────────────────────────────────────────────
+
+/// Decompose a speed `factor` into a chain of `atempo` values, each in [0.5, 2.0].
+///
+/// The `atempo` filter only accepts values in [0.5, 2.0] per instance.
+/// Chaining multiple instances multiplies the effective speed factor:
+///
+/// - `factor = 4.0`  → `[2.0, 2.0]`       (2.0 × 2.0 = 4.0)
+/// - `factor = 0.25` → `[0.5, 0.5]`       (0.5 × 0.5 = 0.25)
+/// - `factor = 8.0`  → `[2.0, 2.0, 2.0]`  (2.0³ = 8.0)
+/// - `factor = 1.5`  → `[1.5]`            (within range directly)
+pub(super) fn decompose_atempo(factor: f64) -> Vec<f64> {
+    let mut remaining = factor;
+    let mut chain = Vec::new();
+    while remaining > 2.0 {
+        chain.push(2.0);
+        remaining /= 2.0;
+    }
+    while remaining < 0.5 {
+        chain.push(0.5);
+        remaining /= 0.5;
+    }
+    chain.push(remaining);
+    chain
+}
+
+/// Insert a chain of `atempo` filters for the audio path of a `Speed` step.
+///
+/// Creates as many `atempo` instances as needed (see [`decompose_atempo`]) and
+/// links them in series after `prev_ctx`.
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_atempo_chain(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    factor: f64,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let atempo_filter = ff_sys::avfilter_get_by_name(c"atempo".as_ptr());
+    if atempo_filter.is_null() {
+        log::warn!("filter not found name=atempo (speed)");
+        return Err(FilterError::BuildFailed);
+    }
+
+    let chain = decompose_atempo(factor);
+    let mut ctx = prev_ctx;
+    for (j, &val) in chain.iter().enumerate() {
+        let name = std::ffi::CString::new(format!("atempo{index}_{j}"))
+            .map_err(|_| FilterError::BuildFailed)?;
+        let args_str = format!("{val}");
+        let args =
+            std::ffi::CString::new(args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+        let mut atempo_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut atempo_ctx,
+            atempo_filter,
+            name.as_ptr(),
+            args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            log::warn!("filter creation failed name=atempo args={val}");
+            return Err(FilterError::BuildFailed);
+        }
+        log::debug!("filter added name=atempo args={val} index={index}_{j}");
+
+        let ret = ff_sys::avfilter_link(ctx, 0, atempo_ctx, 0);
+        if ret < 0 {
+            return Err(FilterError::BuildFailed);
+        }
+        ctx = atempo_ctx;
+    }
+    Ok(ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decompose_atempo;
+
+    #[test]
+    fn decompose_atempo_should_return_single_value_for_factor_within_range() {
+        assert_eq!(decompose_atempo(1.5), vec![1.5]);
+    }
+
+    #[test]
+    fn decompose_atempo_should_return_single_value_for_factor_1() {
+        assert_eq!(decompose_atempo(1.0), vec![1.0]);
+    }
+
+    #[test]
+    fn decompose_atempo_should_chain_two_instances_for_factor_4() {
+        assert_eq!(decompose_atempo(4.0), vec![2.0, 2.0]);
+    }
+
+    #[test]
+    fn decompose_atempo_should_chain_three_instances_for_factor_8() {
+        assert_eq!(decompose_atempo(8.0), vec![2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn decompose_atempo_should_chain_two_instances_for_factor_0_25() {
+        let chain = decompose_atempo(0.25);
+        let product: f64 = chain.iter().product();
+        assert!(
+            (product - 0.25).abs() < 1e-9,
+            "product should be ~0.25, got {product}, chain={chain:?}"
+        );
+        for &v in &chain {
+            assert!(
+                (0.5..=2.0).contains(&v),
+                "each value must be in [0.5, 2.0], got {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn decompose_atempo_should_produce_values_all_within_valid_range() {
+        for factor in [0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 8.0, 16.0, 100.0] {
+            let chain = decompose_atempo(factor);
+            assert!(
+                !chain.is_empty(),
+                "chain must not be empty for factor={factor}"
+            );
+            let product: f64 = chain.iter().product();
+            assert!(
+                (product - factor).abs() < 1e-6,
+                "product {product} must equal factor {factor}, chain={chain:?}"
+            );
+            for &v in &chain {
+                assert!(
+                    (0.5..=2.0).contains(&v),
+                    "each value must be in [0.5, 2.0], got {v} for factor={factor}"
+                );
+            }
+        }
+    }
+}
+
 // ── Overlay image compound step ───────────────────────────────────────────────
 
 /// Insert the compound `movie → lut → overlay` filter chain for an

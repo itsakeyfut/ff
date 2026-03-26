@@ -16,8 +16,9 @@ mod build;
 mod convert;
 
 use build::{
-    add_and_link_step, add_fit_to_aspect_pad, add_overlay_image_step, add_setpts_after_trim,
-    audio_buffersrc_args, create_hw_filter, hw_accel_to_device_type, video_buffersrc_args,
+    add_and_link_step, add_atempo_chain, add_fit_to_aspect_pad, add_overlay_image_step,
+    add_setpts_after_trim, audio_buffersrc_args, create_hw_filter, hw_accel_to_device_type,
+    video_buffersrc_args,
 };
 use convert::{
     audio_pts_ticks, av_frame_to_audio_frame, av_frame_to_video_frame, copy_audio_planes_to_av,
@@ -713,6 +714,12 @@ impl FilterGraphInner {
         // 3-5. Add each `FilterStep` (audio-relevant steps) and link.
         let mut prev_ctx = first_src_ctx.as_ptr();
         for (i, step) in steps.iter().enumerate() {
+            // Speed uses `setpts` for video but `atempo` for audio.  Bypass the
+            // standard `add_and_link_step` path and insert the atempo chain here.
+            if let FilterStep::Speed { factor } = step {
+                prev_ctx = add_atempo_chain(graph, prev_ctx, *factor, i)?;
+                continue;
+            }
             prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "astep")?;
         }
 
