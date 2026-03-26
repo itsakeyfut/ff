@@ -317,6 +317,26 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Reverse video playback using `FFmpeg`'s `reverse` filter.
+    ///
+    /// **Warning**: `reverse` buffers the entire clip in memory before producing
+    /// any output. Only use this on short clips to avoid excessive memory usage.
+    #[must_use]
+    pub fn reverse(mut self) -> Self {
+        self.steps.push(FilterStep::Reverse);
+        self
+    }
+
+    /// Reverse audio playback using `FFmpeg`'s `areverse` filter.
+    ///
+    /// **Warning**: `areverse` buffers the entire clip in memory before producing
+    /// any output. Only use this on short clips to avoid excessive memory usage.
+    #[must_use]
+    pub fn areverse(mut self) -> Self {
+        self.steps.push(FilterStep::AReverse);
+        self
+    }
+
     /// Pad the frame to `width × height` pixels, placing the source at `(x, y)`
     /// and filling the exposed borders with `color`.
     ///
