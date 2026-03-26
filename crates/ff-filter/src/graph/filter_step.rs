@@ -184,6 +184,11 @@ pub(crate) enum FilterStep {
         /// Full set of drawtext parameters.
         opts: DrawTextOptions,
     },
+    /// Burn-in SRT subtitles (hard subtitles) using the `subtitles` filter.
+    SubtitlesSrt {
+        /// Absolute or relative path to the `.srt` file.
+        path: String,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -251,6 +256,7 @@ impl FilterStep {
             Self::Yadif { .. } => "yadif",
             Self::XFade { .. } => "xfade",
             Self::DrawText { .. } => "drawtext",
+            Self::SubtitlesSrt { .. } => "subtitles",
         }
     }
 
@@ -414,6 +420,7 @@ impl FilterStep {
                 }
                 parts.join(":")
             }
+            Self::SubtitlesSrt { path } => format!("filename={path}"),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by

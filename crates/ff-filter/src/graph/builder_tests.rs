@@ -1838,3 +1838,64 @@ fn builder_drawtext_with_negative_opacity_should_return_invalid_config() {
         "expected InvalidConfig for opacity < 0.0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_subtitles_srt_should_produce_correct_filter_name() {
+    let step = FilterStep::SubtitlesSrt {
+        path: "subs.srt".to_owned(),
+    };
+    assert_eq!(step.filter_name(), "subtitles");
+}
+
+#[test]
+fn filter_step_subtitles_srt_should_produce_correct_args() {
+    let step = FilterStep::SubtitlesSrt {
+        path: "subs.srt".to_owned(),
+    };
+    assert_eq!(step.args(), "filename=subs.srt");
+}
+
+#[test]
+fn builder_subtitles_srt_with_wrong_extension_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .subtitles_srt("subtitles.vtt")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for wrong extension, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("unsupported subtitle format"),
+            "reason should mention unsupported format: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_subtitles_srt_with_no_extension_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .subtitles_srt("subtitles_no_ext")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for missing extension, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_subtitles_srt_with_nonexistent_file_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .subtitles_srt("/nonexistent/path/subs_ab12cd.srt")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for nonexistent file, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("subtitle file not found"),
+            "reason should mention file not found: {reason}"
+        );
+    }
+}

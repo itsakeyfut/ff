@@ -479,6 +479,22 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Burn SRT subtitles into the video (hard subtitles).
+    ///
+    /// Subtitles are read from the `.srt` file at `srt_path` and rendered
+    /// at the timecodes defined in the file using `FFmpeg`'s `subtitles` filter.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if:
+    /// - the extension is not `.srt`, or
+    /// - the file does not exist at build time.
+    #[must_use]
+    pub fn subtitles_srt(mut self, srt_path: &str) -> Self {
+        self.steps.push(FilterStep::SubtitlesSrt {
+            path: srt_path.to_owned(),
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -596,6 +612,22 @@ impl FilterGraphBuilder {
                 if !Path::new(path).exists() {
                     return Err(FilterError::InvalidConfig {
                         reason: format!("LUT file not found: {path}"),
+                    });
+                }
+            }
+            if let FilterStep::SubtitlesSrt { path } = step {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if ext != "srt" {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("unsupported subtitle format: .{ext}; expected .srt"),
+                    });
+                }
+                if !Path::new(path).exists() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("subtitle file not found: {path}"),
                     });
                 }
             }
