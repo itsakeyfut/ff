@@ -2184,3 +2184,62 @@ fn builder_ticker_with_negative_speed_should_return_invalid_config() {
         "expected InvalidConfig for negative speed, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_speed_should_produce_correct_filter_name() {
+    let step = FilterStep::Speed { factor: 2.0 };
+    assert_eq!(step.filter_name(), "setpts");
+}
+
+#[test]
+fn filter_step_speed_should_produce_correct_args_for_double_speed() {
+    let step = FilterStep::Speed { factor: 2.0 };
+    assert_eq!(step.args(), "PTS/2");
+}
+
+#[test]
+fn filter_step_speed_should_produce_correct_args_for_half_speed() {
+    let step = FilterStep::Speed { factor: 0.5 };
+    assert_eq!(step.args(), "PTS/0.5");
+}
+
+#[test]
+fn builder_speed_with_factor_below_minimum_should_return_invalid_config() {
+    let result = FilterGraph::builder().speed(0.09).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for factor below 0.1, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("speed factor"),
+            "reason should mention speed factor: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_speed_with_factor_above_maximum_should_return_invalid_config() {
+    let result = FilterGraph::builder().speed(100.1).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for factor above 100.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_speed_with_zero_factor_should_return_invalid_config() {
+    let result = FilterGraph::builder().speed(0.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for factor 0.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_speed_at_boundary_values_should_succeed() {
+    let low = FilterGraph::builder().speed(0.1).build();
+    assert!(low.is_ok(), "speed(0.1) should succeed, got {low:?}");
+    let high = FilterGraph::builder().speed(100.0).build();
+    assert!(high.is_ok(), "speed(100.0) should succeed, got {high:?}");
+}

@@ -194,6 +194,18 @@ pub(crate) enum FilterStep {
         /// Absolute or relative path to the `.ass` or `.ssa` file.
         path: String,
     },
+    /// Playback speed change using `setpts` (video) and chained `atempo` (audio).
+    ///
+    /// `factor > 1.0` = fast motion; `factor < 1.0` = slow motion.
+    /// Valid range: 0.1–100.0.
+    ///
+    /// Video path: `setpts=PTS/{factor}`.
+    /// Audio path: the `atempo` filter only accepts [0.5, 2.0] per instance;
+    /// `filter_inner` chains multiple instances to cover the full range.
+    Speed {
+        /// Speed multiplier. Must be in [0.1, 100.0].
+        factor: f64,
+    },
     /// Scrolling text ticker (right-to-left) using the `drawtext` filter.
     ///
     /// The text starts off-screen to the right and scrolls left at
@@ -293,6 +305,9 @@ impl FilterStep {
             Self::Yadif { .. } => "yadif",
             Self::XFade { .. } => "xfade",
             Self::DrawText { .. } | Self::Ticker { .. } => "drawtext",
+            // "setpts" is checked at build-time; the audio path uses "atempo"
+            // which is verified at graph-construction time in filter_inner.
+            Self::Speed { .. } => "setpts",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -482,6 +497,9 @@ impl FilterStep {
                      fontsize={font_size}:fontcolor={font_color}"
                 )
             }
+            // Video path: divide PTS by factor to change playback speed.
+            // Audio path args are built by filter_inner (chained atempo).
+            Self::Speed { factor } => format!("PTS/{factor}"),
             Self::SubtitlesSrt { path } | Self::SubtitlesAss { path } => {
                 format!("filename={path}")
             }

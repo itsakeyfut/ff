@@ -469,6 +469,23 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Change playback speed by `factor`.
+    ///
+    /// `factor > 1.0` = fast motion (e.g. `2.0` = double speed).
+    /// `factor < 1.0` = slow motion (e.g. `0.5` = half speed).
+    ///
+    /// **Video**: uses `setpts=PTS/{factor}`.
+    /// **Audio**: uses chained `atempo` filters (each in [0.5, 2.0]) so the
+    /// full range 0.1–100.0 is covered without quality degradation.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `factor` is outside [0.1, 100.0].
+    #[must_use]
+    pub fn speed(mut self, factor: f64) -> Self {
+        self.steps.push(FilterStep::Speed { factor });
+        self
+    }
+
     /// Overlay text onto the video using the `drawtext` filter.
     ///
     /// See [`DrawTextOptions`] for all configurable fields including position,
@@ -623,6 +640,13 @@ impl FilterGraphBuilder {
         // (e.g. a watermark larger than the video). Catch it early with a
         // descriptive error rather than silently producing invisible output.
         for step in &self.steps {
+            if let FilterStep::Speed { factor } = step
+                && !(0.1..=100.0).contains(factor)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("speed factor {factor} out of range [0.1, 100.0]"),
+                });
+            }
             if let FilterStep::Crop { width, height, .. } = step
                 && (*width == 0 || *height == 0)
             {
