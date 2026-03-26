@@ -495,6 +495,24 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Burn ASS/SSA styled subtitles into the video (hard subtitles).
+    ///
+    /// Subtitles are read from the `.ass` or `.ssa` file at `ass_path` and
+    /// rendered with full styling using `FFmpeg`'s dedicated `ass` filter,
+    /// which preserves fonts, colours, and positioning better than the generic
+    /// `subtitles` filter.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if:
+    /// - the extension is not `.ass` or `.ssa`, or
+    /// - the file does not exist at build time.
+    #[must_use]
+    pub fn subtitles_ass(mut self, ass_path: &str) -> Self {
+        self.steps.push(FilterStep::SubtitlesAss {
+            path: ass_path.to_owned(),
+        });
+        self
+    }
+
     // ── Audio filters ─────────────────────────────────────────────────────────
 
     /// Adjust audio volume by `gain_db` decibels (negative = quieter).
@@ -623,6 +641,24 @@ impl FilterGraphBuilder {
                 if ext != "srt" {
                     return Err(FilterError::InvalidConfig {
                         reason: format!("unsupported subtitle format: .{ext}; expected .srt"),
+                    });
+                }
+                if !Path::new(path).exists() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("subtitle file not found: {path}"),
+                    });
+                }
+            }
+            if let FilterStep::SubtitlesAss { path } = step {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if !matches!(ext, "ass" | "ssa") {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "unsupported subtitle format: .{ext}; expected .ass or .ssa"
+                        ),
                     });
                 }
                 if !Path::new(path).exists() {

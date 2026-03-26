@@ -189,6 +189,11 @@ pub(crate) enum FilterStep {
         /// Absolute or relative path to the `.srt` file.
         path: String,
     },
+    /// Burn-in ASS/SSA styled subtitles using the `ass` filter.
+    SubtitlesAss {
+        /// Absolute or relative path to the `.ass` or `.ssa` file.
+        path: String,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -257,6 +262,7 @@ impl FilterStep {
             Self::XFade { .. } => "xfade",
             Self::DrawText { .. } => "drawtext",
             Self::SubtitlesSrt { .. } => "subtitles",
+            Self::SubtitlesAss { .. } => "ass",
         }
     }
 
@@ -420,7 +426,9 @@ impl FilterStep {
                 }
                 parts.join(":")
             }
-            Self::SubtitlesSrt { path } => format!("filename={path}"),
+            Self::SubtitlesSrt { path } | Self::SubtitlesAss { path } => {
+                format!("filename={path}")
+            }
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by

@@ -1899,3 +1899,83 @@ fn builder_subtitles_srt_with_nonexistent_file_should_return_invalid_config() {
         );
     }
 }
+
+#[test]
+fn filter_step_subtitles_ass_should_produce_correct_filter_name() {
+    let step = FilterStep::SubtitlesAss {
+        path: "subs.ass".to_owned(),
+    };
+    assert_eq!(step.filter_name(), "ass");
+}
+
+#[test]
+fn filter_step_subtitles_ass_should_produce_correct_args() {
+    let step = FilterStep::SubtitlesAss {
+        path: "subs.ass".to_owned(),
+    };
+    assert_eq!(step.args(), "filename=subs.ass");
+}
+
+#[test]
+fn filter_step_subtitles_ssa_should_produce_correct_filter_name() {
+    let step = FilterStep::SubtitlesAss {
+        path: "subs.ssa".to_owned(),
+    };
+    assert_eq!(step.filter_name(), "ass");
+}
+
+#[test]
+fn builder_subtitles_ass_with_wrong_extension_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .subtitles_ass("subtitles.srt")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for wrong extension, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("unsupported subtitle format"),
+            "reason should mention unsupported format: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_subtitles_ass_with_no_extension_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .subtitles_ass("subtitles_no_ext")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for missing extension, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_subtitles_ass_with_nonexistent_file_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .subtitles_ass("/nonexistent/path/subs_ab12cd.ass")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for nonexistent .ass file, got {result:?}"
+    );
+    if let Err(FilterError::InvalidConfig { reason }) = result {
+        assert!(
+            reason.contains("subtitle file not found"),
+            "reason should mention file not found: {reason}"
+        );
+    }
+}
+
+#[test]
+fn builder_subtitles_ssa_with_nonexistent_file_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .subtitles_ass("/nonexistent/path/subs_ab12cd.ssa")
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for nonexistent .ssa file, got {result:?}"
+    );
+}
