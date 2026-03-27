@@ -139,6 +139,15 @@ pub(crate) struct FilterGraphInner {
     loudness_output_idx: usize,
     /// True once the two-pass measurement + correction has been executed.
     loudness_pass2_done: bool,
+    /// Buffered raw audio frames for peak-level two-pass normalization.
+    /// Populated during `push_audio` when a `NormalizePeak` step is present.
+    peak_buf: Vec<AudioFrame>,
+    /// Corrected audio frames ready to be returned from `pull_audio` (pass-2 output).
+    peak_output: Vec<AudioFrame>,
+    /// Index of the next frame to return from `peak_output`.
+    peak_output_idx: usize,
+    /// True once the two-pass peak measurement + correction has been executed.
+    peak_pass2_done: bool,
 }
 
 // SAFETY: `FilterGraphInner` owns all raw pointers exclusively.  No other
@@ -161,6 +170,10 @@ impl FilterGraphInner {
             loudness_output: Vec::new(),
             loudness_output_idx: 0,
             loudness_pass2_done: false,
+            peak_buf: Vec::new(),
+            peak_output: Vec::new(),
+            peak_output_idx: 0,
+            peak_pass2_done: false,
         }
     }
 
@@ -368,6 +381,12 @@ impl FilterGraphInner {
             // LoudnessNormalize is audio-only and handled via two-pass in
             // push_audio / pull_audio rather than through the filter graph.
             if matches!(step, FilterStep::LoudnessNormalize { .. }) {
+                continue;
+            }
+
+            // NormalizePeak is audio-only and handled via two-pass buffering in
+            // push_audio / pull_audio.
+            if matches!(step, FilterStep::NormalizePeak { .. }) {
                 continue;
             }
 
@@ -750,6 +769,12 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // NormalizePeak is handled via two-pass buffering in
+            // push_audio / pull_audio; same reasoning as LoudnessNormalize.
+            if matches!(step, FilterStep::NormalizePeak { .. }) {
+                continue;
+            }
+
             // Speed uses `setpts` for video but `atempo` for audio.  Bypass the
             // standard `add_and_link_step` path and insert the atempo chain here.
             if let FilterStep::Speed { factor } = step {
@@ -791,6 +816,16 @@ impl FilterGraphInner {
             .any(|s| matches!(s, FilterStep::LoudnessNormalize { .. }))
         {
             self.loudness_buf.push(frame.clone());
+            return Ok(());
+        }
+
+        // Two-pass peak normalization: buffer frames instead of feeding the graph.
+        if self
+            .steps
+            .iter()
+            .any(|s| matches!(s, FilterStep::NormalizePeak { .. }))
+        {
+            self.peak_buf.push(frame.clone());
             return Ok(());
         }
 
@@ -865,6 +900,24 @@ impl FilterGraphInner {
             if self.loudness_output_idx < self.loudness_output.len() {
                 let frame = self.loudness_output[self.loudness_output_idx].clone();
                 self.loudness_output_idx += 1;
+                return Ok(Some(frame));
+            }
+            return Ok(None);
+        }
+
+        // Two-pass peak normalization: run both passes on the first call,
+        // then drain the corrected output frame-by-frame.
+        if self
+            .steps
+            .iter()
+            .any(|s| matches!(s, FilterStep::NormalizePeak { .. }))
+        {
+            if !self.peak_pass2_done {
+                self.run_peak_normalization()?;
+            }
+            if self.peak_output_idx < self.peak_output.len() {
+                let frame = self.peak_output[self.peak_output_idx].clone();
+                self.peak_output_idx += 1;
                 return Ok(Some(frame));
             }
             return Ok(None);
@@ -956,6 +1009,69 @@ impl FilterGraphInner {
                 return Err(FilterError::BuildFailed);
             }
             let result = run_volume_graph(graph, &self.loudness_buf, gain_db);
+            let mut g = graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            result?
+        };
+
+        Ok(())
+    }
+
+    // ── Two-pass peak normalization ───────────────────────────────────────────
+
+    /// Run peak-level two-pass normalization over `self.peak_buf`:
+    ///
+    /// 1. Measure the true peak with an `astats=metadata=1` graph.
+    /// 2. Compute `gain_db = target_db − measured_peak_db`.
+    /// 3. Apply gain with a `volume={gain_db}dB` graph.
+    /// 4. Store corrected frames in `self.peak_output`.
+    fn run_peak_normalization(&mut self) -> Result<(), FilterError> {
+        let target_db = self
+            .steps
+            .iter()
+            .find_map(|s| {
+                if let FilterStep::NormalizePeak { target_db } = s {
+                    Some(*target_db)
+                } else {
+                    None
+                }
+            })
+            .ok_or(FilterError::BuildFailed)?;
+
+        // Mark done early to prevent re-entry on error.
+        self.peak_pass2_done = true;
+
+        if self.peak_buf.is_empty() {
+            return Ok(());
+        }
+
+        // === Pass 1: measure peak level ===
+        let measured_peak_db = unsafe {
+            let graph = ff_sys::avfilter_graph_alloc();
+            if graph.is_null() {
+                return Err(FilterError::BuildFailed);
+            }
+            let result = run_astats_graph(graph, &self.peak_buf);
+            let mut g = graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            result?
+        };
+
+        let gain_db = target_db - measured_peak_db;
+        log::info!(
+            "peak normalization measured_peak_db={:.2} target_db={:.2} gain_db={:.2}",
+            measured_peak_db,
+            target_db,
+            gain_db,
+        );
+
+        // === Pass 2: apply volume correction ===
+        self.peak_output = unsafe {
+            let graph = ff_sys::avfilter_graph_alloc();
+            if graph.is_null() {
+                return Err(FilterError::BuildFailed);
+            }
+            let result = run_volume_graph(graph, &self.peak_buf, gain_db);
             let mut g = graph;
             ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
             result?
@@ -1274,6 +1390,172 @@ unsafe fn run_volume_graph(
     }
 
     Ok(output)
+}
+
+// ── Peak normalization helper ─────────────────────────────────────────────────
+
+/// Build a temporary `abuffer → astats=metadata=1 → abuffersink` graph,
+/// feed all `frames` through it, drain the output, and return the maximum
+/// peak level (dBFS) read from `lavfi.astats.Overall.Peak_level` across all
+/// output frames.
+///
+/// Falls back to `−70.0` (silence level) if no metadata is found.
+///
+/// # Safety
+///
+/// `graph` must be a valid, freshly-allocated `AVFilterGraph`.  The caller is
+/// responsible for freeing it with `avfilter_graph_free` after this call returns
+/// (whether `Ok` or `Err`).
+unsafe fn run_astats_graph(
+    graph: *mut ff_sys::AVFilterGraph,
+    frames: &[AudioFrame],
+) -> Result<f32, FilterError> {
+    let first = &frames[0];
+    let src_args_str = audio_buffersrc_args(
+        first.sample_rate(),
+        sample_format_to_av_name(first.format()),
+        first.channels(),
+    );
+    let src_args = std::ffi::CString::new(src_args_str).map_err(|_| FilterError::BuildFailed)?;
+
+    // 1. abuffersrc
+    let abuffer = ff_sys::avfilter_get_by_name(c"abuffer".as_ptr());
+    if abuffer.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let mut src_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut src_ctx,
+        abuffer,
+        c"peak_in".as_ptr(),
+        src_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 2. astats=metadata=1
+    let astats_filt = ff_sys::avfilter_get_by_name(c"astats".as_ptr());
+    if astats_filt.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let mut meas_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut meas_ctx,
+        astats_filt,
+        c"peak_astats".as_ptr(),
+        c"metadata=1".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 3. abuffersink
+    let abuffersink = ff_sys::avfilter_get_by_name(c"abuffersink".as_ptr());
+    if abuffersink.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        abuffersink,
+        c"peak_out".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Link: src → astats → sink
+    let ret = ff_sys::avfilter_link(src_ctx, 0, meas_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(meas_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Configure
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        return Err(ffmpeg_err(ret));
+    }
+
+    // Feed all frames
+    for frame in frames {
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            return Err(FilterError::ProcessFailed);
+        }
+        (*raw_frame).nb_samples = frame.samples() as c_int;
+        (*raw_frame).sample_rate = frame.sample_rate() as c_int;
+        (*raw_frame).format = sample_format_to_av(frame.format());
+        (*raw_frame).pts = audio_pts_ticks(frame.timestamp(), frame.sample_rate());
+        (*raw_frame).ch_layout.nb_channels = frame.channels() as c_int;
+        let ret = ff_sys::av_frame_get_buffer(raw_frame, 0);
+        if ret < 0 {
+            let mut ptr = raw_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            return Err(FilterError::ProcessFailed);
+        }
+        copy_audio_planes_to_av(frame, raw_frame);
+        let ret = ff_sys::av_buffersrc_add_frame_flags(
+            src_ctx,
+            raw_frame,
+            ff_sys::BUFFERSRC_FLAG_KEEP_REF,
+        );
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+        if ret < 0 {
+            return Err(FilterError::ProcessFailed);
+        }
+    }
+
+    // Signal EOF so the filter flushes all pending frames.
+    ff_sys::av_buffersrc_close(src_ctx, ff_sys::AV_NOPTS_VALUE, 0u32);
+
+    // Drain all output; read `lavfi.astats.Overall.Peak_level` from each frame.
+    // `astats` with no reset accumulates across the whole clip, so the last
+    // frame's metadata holds the overall peak.  We track the maximum across all
+    // frames as a safety net in case the filter resets per frame.
+    let mut max_peak_db: f32 = -70.0;
+    loop {
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            break;
+        }
+        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, raw_frame);
+        if ret < 0 {
+            let mut ptr = raw_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            break;
+        }
+        // SAFETY: `(*raw_frame).metadata` is a valid `AVDictionary*` (may be null);
+        // `av_dict_get` handles null dictionaries by returning null.
+        let entry = ff_sys::av_dict_get(
+            (*raw_frame).metadata,
+            c"lavfi.astats.Overall.Peak_level".as_ptr(),
+            std::ptr::null(),
+            0,
+        );
+        if !entry.is_null()
+            && let Ok(s) = std::ffi::CStr::from_ptr((*entry).value).to_str()
+            && let Ok(v) = s.parse::<f32>()
+        {
+            max_peak_db = max_peak_db.max(v);
+        }
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+    }
+
+    Ok(max_peak_db)
 }
 
 impl Drop for FilterGraphInner {

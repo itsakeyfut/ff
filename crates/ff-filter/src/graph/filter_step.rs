@@ -224,6 +224,16 @@ pub(crate) enum FilterStep {
         /// Target loudness range in LU (e.g. 7.0). Must be > 0.0.
         lra: f32,
     },
+    /// Peak-level two-pass normalization using `astats`.
+    ///
+    /// Pass 1 measures the true peak with `astats=metadata=1`.
+    /// Pass 2 applies `volume={gain}dB` so the output peak reaches `target_db`.
+    /// All audio frames are buffered in memory between passes — use only
+    /// for clips that fit comfortably in RAM.
+    NormalizePeak {
+        /// Target peak level in dBFS (e.g. −1.0). Must be ≤ 0.0.
+        target_db: f32,
+    },
     /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts` seconds is held for `duration` seconds, then
@@ -341,6 +351,7 @@ impl FilterStep {
             Self::Speed { .. } => "setpts",
             Self::FreezeFrame { .. } => "loop",
             Self::LoudnessNormalize { .. } => "ebur128",
+            Self::NormalizePeak { .. } => "astats",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -536,6 +547,9 @@ impl FilterStep {
             // args() is not used by the build loop for LoudnessNormalize (two-pass
             // is handled entirely in filter_inner); provided here for completeness.
             Self::LoudnessNormalize { .. } => "peak=true:metadata=1".to_string(),
+            // args() is not used by the build loop for NormalizePeak (two-pass
+            // is handled entirely in filter_inner); provided here for completeness.
+            Self::NormalizePeak { .. } => "metadata=1".to_string(),
             Self::FreezeFrame { pts, duration } => {
                 // The `loop` filter needs a frame index and a loop count, not PTS or
                 // wall-clock duration.  We approximate both using 25 fps; accuracy
