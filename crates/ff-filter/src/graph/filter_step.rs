@@ -243,6 +243,19 @@ pub(crate) enum FilterStep {
         /// Target peak level in dBFS (e.g. −1.0). Must be ≤ 0.0.
         target_db: f32,
     },
+    /// Noise gate via `FFmpeg`'s `agate` filter.
+    ///
+    /// Audio below `threshold_db` is attenuated; audio above passes through.
+    /// The threshold is converted from dBFS to the linear scale expected by
+    /// `agate`'s `threshold` parameter (`linear = 10^(dB/20)`).
+    ANoiseGate {
+        /// Gate open/close threshold in dBFS (e.g. −40.0).
+        threshold_db: f32,
+        /// Attack time in milliseconds — how quickly the gate opens. Must be > 0.0.
+        attack_ms: f32,
+        /// Release time in milliseconds — how quickly the gate closes. Must be > 0.0.
+        release_ms: f32,
+    },
     /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts` seconds is held for `duration` seconds, then
@@ -365,6 +378,7 @@ impl FilterStep {
             Self::FreezeFrame { .. } => "loop",
             Self::LoudnessNormalize { .. } => "ebur128",
             Self::NormalizePeak { .. } => "astats",
+            Self::ANoiseGate { .. } => "agate",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -612,6 +626,15 @@ impl FilterStep {
                     y.to_string()
                 };
                 format!("width={width}:height={height}:x={px}:y={py}:color={color}")
+            }
+            Self::ANoiseGate {
+                threshold_db,
+                attack_ms,
+                release_ms,
+            } => {
+                // `agate` expects threshold as a linear amplitude ratio (0.0–1.0).
+                let threshold_linear = 10f32.powf(threshold_db / 20.0);
+                format!("threshold={threshold_linear:.6}:attack={attack_ms}:release={release_ms}")
             }
         }
     }

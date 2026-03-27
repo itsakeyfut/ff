@@ -1214,3 +1214,27 @@ fn push_video_through_drawtext_with_box_should_return_frame_with_same_dimensions
         "height should be unchanged after drawtext with box"
     );
 }
+
+#[test]
+fn push_audio_through_agate_should_return_frame_with_same_properties() {
+    let mut graph = match FilterGraph::builder().agate(-40.0, 10.0, 100.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_audio_frame();
+    match graph.push_audio(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_audio().expect("pull_audio must not fail");
+    let out = result.expect("expected Some(frame) after agate push");
+    assert_eq!(out.sample_rate(), 48000, "sample rate should be unchanged");
+    assert_eq!(out.channels(), 2, "channel count should be unchanged");
+    assert_eq!(out.samples(), 1024, "sample count should be unchanged");
+}
