@@ -2803,3 +2803,22 @@ fn builder_compressor_with_zero_release_should_return_invalid_config() {
         "expected InvalidConfig for release_ms=0.0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_stereo_to_mono_should_have_correct_filter_name() {
+    assert_eq!(FilterStep::StereoToMono.filter_name(), "pan");
+}
+
+#[test]
+fn filter_step_stereo_to_mono_should_produce_correct_args() {
+    assert_eq!(FilterStep::StereoToMono.args(), "mono|c0=0.5*c0+0.5*c1");
+}
+
+#[test]
+fn builder_stereo_to_mono_should_build_successfully() {
+    let result = FilterGraph::builder().stereo_to_mono().build();
+    assert!(
+        result.is_ok(),
+        "stereo_to_mono() must build successfully, got {result:?}"
+    );
+}

@@ -617,6 +617,16 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Downmix stereo audio to mono by equally mixing both channels.
+    ///
+    /// Uses `FFmpeg`'s `pan` filter with the expression
+    /// `mono|c0=0.5*c0+0.5*c1`.  The output has a single channel.
+    #[must_use]
+    pub fn stereo_to_mono(mut self) -> Self {
+        self.steps.push(FilterStep::StereoToMono);
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
