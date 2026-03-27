@@ -5,7 +5,7 @@ use std::path::Path;
 use super::FilterGraph;
 use super::filter_step::FilterStep;
 use super::types::{
-    DrawTextOptions, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+    DrawTextOptions, EqBand, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
@@ -704,10 +704,18 @@ impl FilterGraphBuilder {
         self
     }
 
-    /// Apply a parametric equalizer band at `band_hz` Hz with `gain_db` dB.
+    /// Apply a multi-band parametric equalizer.
+    ///
+    /// Each [`EqBand`] maps to one `FFmpeg` filter node chained in sequence:
+    /// - [`EqBand::LowShelf`] → `lowshelf`
+    /// - [`EqBand::HighShelf`] → `highshelf`
+    /// - [`EqBand::Peak`] → `equalizer`
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if `bands`
+    /// is empty.
     #[must_use]
-    pub fn equalizer(mut self, band_hz: f64, gain_db: f64) -> Self {
-        self.steps.push(FilterStep::Equalizer { band_hz, gain_db });
+    pub fn equalizer(mut self, bands: Vec<EqBand>) -> Self {
+        self.steps.push(FilterStep::ParametricEq { bands });
         self
     }
 
@@ -743,6 +751,13 @@ impl FilterGraphBuilder {
         // (e.g. a watermark larger than the video). Catch it early with a
         // descriptive error rather than silently producing invisible output.
         for step in &self.steps {
+            if let FilterStep::ParametricEq { bands } = step
+                && bands.is_empty()
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "equalizer bands must not be empty".to_string(),
+                });
+            }
             if let FilterStep::Speed { factor } = step
                 && !(0.1..=100.0).contains(factor)
             {

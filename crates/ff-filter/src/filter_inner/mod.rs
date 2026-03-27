@@ -17,8 +17,8 @@ mod convert;
 
 use build::{
     add_and_link_step, add_atempo_chain, add_fit_to_aspect_pad, add_overlay_image_step,
-    add_setpts_after_trim, audio_buffersrc_args, create_hw_filter, hw_accel_to_device_type,
-    video_buffersrc_args,
+    add_parametric_eq_chain, add_setpts_after_trim, audio_buffersrc_args, create_hw_filter,
+    hw_accel_to_device_type, video_buffersrc_args,
 };
 use convert::{
     audio_pts_ticks, av_frame_to_audio_frame, av_frame_to_video_frame, copy_audio_planes_to_av,
@@ -373,11 +373,13 @@ impl FilterGraphInner {
         // 4-5. Add each `FilterStep`, link the main chain (in0 → step[0] → …),
         // and wire extra input pads for multi-input filters.
         for (i, step) in steps.iter().enumerate() {
-            // AReverse, AFadeIn, and AFadeOut are audio-only; skip them in the
-            // video graph.
+            // Audio-only steps; skip them in the video graph.
             if matches!(
                 step,
-                FilterStep::AReverse | FilterStep::AFadeIn { .. } | FilterStep::AFadeOut { .. }
+                FilterStep::AReverse
+                    | FilterStep::AFadeIn { .. }
+                    | FilterStep::AFadeOut { .. }
+                    | FilterStep::ParametricEq { .. }
             ) {
                 continue;
             }
@@ -785,6 +787,14 @@ impl FilterGraphInner {
                 prev_ctx = add_atempo_chain(graph, prev_ctx, *factor, i)?;
                 continue;
             }
+
+            // ParametricEq generates one filter node per band; bypass the
+            // single-node `add_and_link_step` path.
+            if let FilterStep::ParametricEq { bands } = step {
+                prev_ctx = add_parametric_eq_chain(graph, prev_ctx, bands, i)?;
+                continue;
+            }
+
             prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "astep")?;
         }
 
