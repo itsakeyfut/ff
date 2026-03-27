@@ -2339,3 +2339,89 @@ fn builder_freeze_frame_with_negative_duration_should_return_invalid_config() {
         "expected InvalidConfig for negative duration, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_loudness_normalize_should_produce_correct_filter_name() {
+    let step = FilterStep::LoudnessNormalize {
+        target_lufs: -23.0,
+        true_peak_db: -1.0,
+        lra: 7.0,
+    };
+    assert_eq!(step.filter_name(), "ebur128");
+}
+
+#[test]
+fn filter_step_loudness_normalize_should_produce_correct_args() {
+    let step = FilterStep::LoudnessNormalize {
+        target_lufs: -23.0,
+        true_peak_db: -1.0,
+        lra: 7.0,
+    };
+    assert_eq!(step.args(), "peak=true:metadata=1");
+}
+
+#[test]
+fn builder_loudness_normalize_with_valid_params_should_succeed() {
+    let result = FilterGraph::builder()
+        .loudness_normalize(-23.0, -1.0, 7.0)
+        .build();
+    assert!(
+        result.is_ok(),
+        "loudness_normalize(-23.0, -1.0, 7.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_loudness_normalize_with_zero_target_lufs_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .loudness_normalize(0.0, -1.0, 7.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for target_lufs=0.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_loudness_normalize_with_positive_target_lufs_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .loudness_normalize(5.0, -1.0, 7.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for target_lufs=5.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_loudness_normalize_with_positive_true_peak_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .loudness_normalize(-23.0, 1.0, 7.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for true_peak_db=1.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_loudness_normalize_with_zero_lra_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .loudness_normalize(-23.0, -1.0, 0.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for lra=0.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_loudness_normalize_with_negative_lra_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .loudness_normalize(-23.0, -1.0, -7.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for lra=-7.0, got {result:?}"
+    );
+}

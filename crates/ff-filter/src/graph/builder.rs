@@ -506,6 +506,29 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply EBU R128 two-pass loudness normalization.
+    ///
+    /// `target_lufs` is the target integrated loudness (e.g. `−23.0`),
+    /// `true_peak_db` is the true-peak ceiling (e.g. `−1.0`), and
+    /// `lra` is the target loudness range in LU (e.g. `7.0`).
+    ///
+    /// Pass 1 measures integrated loudness with the `ebur128` filter.
+    /// Pass 2 applies a linear `volume` correction.  All audio frames are
+    /// buffered in memory between the two passes — use only for clips that
+    /// fit comfortably in RAM.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `target_lufs >= 0.0`, `true_peak_db > 0.0`, or `lra <= 0.0`.
+    #[must_use]
+    pub fn loudness_normalize(mut self, target_lufs: f32, true_peak_db: f32, lra: f32) -> Self {
+        self.steps.push(FilterStep::LoudnessNormalize {
+            target_lufs,
+            true_peak_db,
+            lra,
+        });
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
@@ -683,6 +706,32 @@ impl FilterGraphBuilder {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("speed factor {factor} out of range [0.1, 100.0]"),
                 });
+            }
+            if let FilterStep::LoudnessNormalize {
+                target_lufs,
+                true_peak_db,
+                lra,
+            } = step
+            {
+                if *target_lufs >= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "loudness_normalize target_lufs {target_lufs} must be < 0.0"
+                        ),
+                    });
+                }
+                if *true_peak_db > 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "loudness_normalize true_peak_db {true_peak_db} must be <= 0.0"
+                        ),
+                    });
+                }
+                if *lra <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("loudness_normalize lra {lra} must be > 0.0"),
+                    });
+                }
             }
             if let FilterStep::FreezeFrame { pts, duration } = step {
                 if *pts < 0.0 {
