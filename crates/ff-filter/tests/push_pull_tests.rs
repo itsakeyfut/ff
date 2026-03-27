@@ -1317,3 +1317,56 @@ fn push_audio_through_channel_map_should_return_frame_with_same_properties() {
     );
     assert_eq!(out.samples(), 1024, "sample count should be unchanged");
 }
+
+#[test]
+fn push_audio_through_audio_delay_positive_should_return_frame_with_same_properties() {
+    let mut graph = match FilterGraph::builder().audio_delay(100.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_audio_frame();
+    match graph.push_audio(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    // adelay pads with silence first; result may be None if the delay
+    // exceeds one frame's worth of samples.  No error is the key assertion.
+    let result = graph.pull_audio().expect("pull_audio must not fail");
+    if let Some(out) = result {
+        assert_eq!(out.sample_rate(), 48000, "sample rate should be unchanged");
+        assert_eq!(out.channels(), 2, "channel count should be unchanged");
+    }
+}
+
+#[test]
+fn push_audio_through_audio_delay_negative_should_not_error() {
+    // Use a 5 ms advance. The test frame is 1024/48000 ≈ 21 ms, so atrim
+    // trims only a portion of it and may still return a frame.
+    // Regardless of whether a frame is returned, no error is the key assertion.
+    let mut graph = match FilterGraph::builder().audio_delay(-5.0).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_audio_frame();
+    match graph.push_audio(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_audio().expect("pull_audio must not fail");
+    if let Some(out) = result {
+        assert_eq!(out.sample_rate(), 48000, "sample rate should be unchanged");
+        assert_eq!(out.channels(), 2, "channel count should be unchanged");
+    }
+}
