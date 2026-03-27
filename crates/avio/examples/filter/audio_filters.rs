@@ -22,7 +22,7 @@ use std::{
     process,
 };
 
-use avio::{AudioCodec, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
+use avio::{AudioCodec, EncoderConfig, EqBand, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
 
 fn render_progress(p: &Progress) {
     match p.percent() {
@@ -117,7 +117,13 @@ fn main() {
             println!("Input:   {in_name}");
             println!("Effect:  equalizer  (freq={freq} Hz  gain={gain:+.1} dB)");
             println!("Output:  {out_name}");
-            FilterGraphBuilder::new().equalizer(freq, gain).build()
+            FilterGraphBuilder::new()
+                .equalizer(vec![EqBand::Peak {
+                    freq_hz: freq,
+                    gain_db: gain,
+                    q: 1.0,
+                }])
+                .build()
         }
         other => {
             eprintln!("Unknown effect '{other}' (try volume, equalizer)");

@@ -1,6 +1,8 @@
 //! Internal filter step representation.
 
-use super::types::{DrawTextOptions, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode};
+use super::types::{
+    DrawTextOptions, EqBand, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+};
 
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
@@ -50,8 +52,11 @@ pub(crate) enum FilterStep {
     Volume(f64),
     /// Mix `n` audio inputs together.
     Amix(usize),
-    /// Parametric equalizer band.
-    Equalizer { band_hz: f64, gain_db: f64 },
+    /// Multi-band parametric equalizer (low-shelf, high-shelf, or peak bands).
+    ///
+    /// Each band maps to its own `FFmpeg` filter node chained in sequence.
+    /// The `bands` vec must not be empty.
+    ParametricEq { bands: Vec<EqBand> },
     /// Apply a 3D LUT from a `.cube` or `.3dl` file.
     Lut3d { path: String },
     /// Brightness/contrast/saturation adjustment via `FFmpeg` `eq` filter.
@@ -326,7 +331,10 @@ impl FilterStep {
             Self::ToneMap(_) => "tonemap",
             Self::Volume(_) => "volume",
             Self::Amix(_) => "amix",
-            Self::Equalizer { .. } => "equalizer",
+            // ParametricEq is a compound step; "equalizer" is used only by
+            // validate_filter_steps as a best-effort existence check.  The
+            // actual nodes are built by `filter_inner::add_parametric_eq_chain`.
+            Self::ParametricEq { .. } => "equalizer",
             Self::Lut3d { .. } => "lut3d",
             Self::Eq { .. } => "eq",
             Self::Curves { .. } => "curves",
@@ -415,9 +423,10 @@ impl FilterStep {
             Self::ToneMap(algorithm) => format!("tonemap={}", algorithm.as_str()),
             Self::Volume(db) => format!("volume={db}dB"),
             Self::Amix(inputs) => format!("inputs={inputs}"),
-            Self::Equalizer { band_hz, gain_db } => {
-                format!("f={band_hz}:width_type=o:width=2:g={gain_db}")
-            }
+            // args() for ParametricEq is not used by the build loop (which is
+            // bypassed in favour of add_parametric_eq_chain); provided here for
+            // completeness using the first band's args.
+            Self::ParametricEq { bands } => bands.first().map(EqBand::args).unwrap_or_default(),
             Self::Lut3d { path } => format!("file={path}:interp=trilinear"),
             Self::Eq {
                 brightness,

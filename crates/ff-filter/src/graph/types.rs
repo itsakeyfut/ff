@@ -188,6 +188,78 @@ impl XfadeTransition {
     }
 }
 
+/// A single band for the parametric equalizer.
+///
+/// Used with [`super::FilterGraphBuilder::equalizer`].
+#[derive(Debug, Clone)]
+pub enum EqBand {
+    /// Low-shelf EQ: boosts or cuts all frequencies below `freq_hz`.
+    ///
+    /// `slope` controls the steepness of the shelf (typical range 0.1–1.0).
+    LowShelf {
+        /// Centre frequency in Hz.
+        freq_hz: f64,
+        /// Gain in dB (positive = boost, negative = cut).
+        gain_db: f64,
+        /// Shelf slope (0.1–1.0; 1.0 is the steepest shelf).
+        slope: f64,
+    },
+    /// High-shelf EQ: boosts or cuts all frequencies above `freq_hz`.
+    ///
+    /// `slope` controls the steepness of the shelf (typical range 0.1–1.0).
+    HighShelf {
+        /// Centre frequency in Hz.
+        freq_hz: f64,
+        /// Gain in dB (positive = boost, negative = cut).
+        gain_db: f64,
+        /// Shelf slope (0.1–1.0; 1.0 is the steepest shelf).
+        slope: f64,
+    },
+    /// Peaking (bell) EQ: boosts or cuts a band centred on `freq_hz`.
+    ///
+    /// Higher `q` values produce a narrower bell.
+    Peak {
+        /// Centre frequency in Hz.
+        freq_hz: f64,
+        /// Gain in dB (positive = boost, negative = cut).
+        gain_db: f64,
+        /// Q factor controlling bandwidth (higher Q = narrower band).
+        q: f64,
+    },
+}
+
+impl EqBand {
+    /// Returns the `libavfilter` filter name for this band type.
+    pub(crate) fn filter_name(&self) -> &'static str {
+        match self {
+            Self::LowShelf { .. } => "lowshelf",
+            Self::HighShelf { .. } => "highshelf",
+            Self::Peak { .. } => "equalizer",
+        }
+    }
+
+    /// Returns the args string passed to `avfilter_graph_create_filter`.
+    pub(crate) fn args(&self) -> String {
+        match self {
+            Self::LowShelf {
+                freq_hz,
+                gain_db,
+                slope,
+            } => format!("f={freq_hz}:g={gain_db}:s={slope}"),
+            Self::HighShelf {
+                freq_hz,
+                gain_db,
+                slope,
+            } => format!("f={freq_hz}:g={gain_db}:s={slope}"),
+            Self::Peak {
+                freq_hz,
+                gain_db,
+                q,
+            } => format!("f={freq_hz}:g={gain_db}:width_type=q:width={q}"),
+        }
+    }
+}
+
 /// Options for the `drawtext` filter.
 ///
 /// Used with [`super::FilterGraphBuilder::drawtext`].

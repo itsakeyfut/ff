@@ -290,13 +290,96 @@ fn filter_step_amix_should_produce_correct_args() {
 }
 
 #[test]
-fn filter_step_equalizer_should_produce_correct_args() {
-    let step = FilterStep::Equalizer {
-        band_hz: 1000.0,
-        gain_db: 3.0,
+fn filter_step_parametric_eq_should_have_filter_name_equalizer() {
+    let step = FilterStep::ParametricEq {
+        bands: vec![EqBand::Peak {
+            freq_hz: 1000.0,
+            gain_db: 3.0,
+            q: 1.0,
+        }],
     };
     assert_eq!(step.filter_name(), "equalizer");
-    assert_eq!(step.args(), "f=1000:width_type=o:width=2:g=3");
+}
+
+#[test]
+fn eq_band_peak_should_produce_correct_args() {
+    let band = EqBand::Peak {
+        freq_hz: 1000.0,
+        gain_db: 3.0,
+        q: 1.0,
+    };
+    assert_eq!(band.args(), "f=1000:g=3:width_type=q:width=1");
+}
+
+#[test]
+fn eq_band_low_shelf_should_produce_correct_args() {
+    let band = EqBand::LowShelf {
+        freq_hz: 200.0,
+        gain_db: -3.0,
+        slope: 1.0,
+    };
+    assert_eq!(band.args(), "f=200:g=-3:s=1");
+}
+
+#[test]
+fn eq_band_high_shelf_should_produce_correct_args() {
+    let band = EqBand::HighShelf {
+        freq_hz: 8000.0,
+        gain_db: 2.0,
+        slope: 0.5,
+    };
+    assert_eq!(band.args(), "f=8000:g=2:s=0.5");
+}
+
+#[test]
+fn builder_equalizer_with_single_peak_band_should_succeed() {
+    let result = FilterGraph::builder()
+        .equalizer(vec![EqBand::Peak {
+            freq_hz: 1000.0,
+            gain_db: 3.0,
+            q: 1.0,
+        }])
+        .build();
+    assert!(
+        result.is_ok(),
+        "equalizer with single Peak band must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_equalizer_with_multiple_bands_should_succeed() {
+    let result = FilterGraph::builder()
+        .equalizer(vec![
+            EqBand::LowShelf {
+                freq_hz: 200.0,
+                gain_db: -2.0,
+                slope: 1.0,
+            },
+            EqBand::Peak {
+                freq_hz: 1000.0,
+                gain_db: 3.0,
+                q: 1.4,
+            },
+            EqBand::HighShelf {
+                freq_hz: 8000.0,
+                gain_db: 1.0,
+                slope: 0.5,
+            },
+        ])
+        .build();
+    assert!(
+        result.is_ok(),
+        "equalizer with three bands must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_equalizer_with_empty_bands_should_return_invalid_config() {
+    let result = FilterGraph::builder().equalizer(vec![]).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for empty bands, got {result:?}"
+    );
 }
 
 #[test]

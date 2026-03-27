@@ -6,7 +6,7 @@ pub mod types;
 
 pub use builder::FilterGraphBuilder;
 pub use types::{
-    DrawTextOptions, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+    DrawTextOptions, EqBand, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 
 use ff_format::{AudioFrame, VideoFrame};

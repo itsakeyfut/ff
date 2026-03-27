@@ -3,7 +3,7 @@
 use super::{AUDIO_TIME_BASE_NUM, VIDEO_TIME_BASE_DEN, VIDEO_TIME_BASE_NUM};
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
-use crate::graph::types::HwAccel;
+use crate::graph::types::{EqBand, HwAccel};
 
 // ── Hardware acceleration helpers ─────────────────────────────────────────────
 
@@ -533,4 +533,70 @@ pub(super) fn audio_buffersrc_args(
         "sample_rate={}:sample_fmt={}:channels={}:time_base={}/{}",
         sample_rate, sample_fmt_name, channels, AUDIO_TIME_BASE_NUM, sample_rate,
     )
+}
+
+// ── Parametric EQ (multi-band chain) ─────────────────────────────────────────
+
+/// Insert a chain of filter nodes for a [`FilterStep::ParametricEq`] step.
+///
+/// One node per band is created using the band's own filter name (e.g.,
+/// `lowshelf`, `highshelf`, `equalizer`) and args, and each is linked in
+/// series after `prev_ctx`.
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_parametric_eq_chain(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    bands: &[EqBand],
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let mut ctx = prev_ctx;
+    for (j, band) in bands.iter().enumerate() {
+        let filter_name =
+            std::ffi::CString::new(band.filter_name()).map_err(|_| FilterError::BuildFailed)?;
+        let filter = ff_sys::avfilter_get_by_name(filter_name.as_ptr());
+        if filter.is_null() {
+            log::warn!("filter not found name={}", band.filter_name());
+            return Err(FilterError::BuildFailed);
+        }
+
+        let name = std::ffi::CString::new(format!("eq{index}_{j}"))
+            .map_err(|_| FilterError::BuildFailed)?;
+        let args_str = band.args();
+        let args =
+            std::ffi::CString::new(args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+
+        let mut band_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut band_ctx,
+            filter,
+            name.as_ptr(),
+            args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            log::warn!(
+                "filter creation failed name={} args={}",
+                band.filter_name(),
+                args_str
+            );
+            return Err(FilterError::BuildFailed);
+        }
+        log::debug!(
+            "filter added name={} args={} index={index} band={j}",
+            band.filter_name(),
+            args_str
+        );
+
+        let ret = ff_sys::avfilter_link(ctx, 0, band_ctx, 0);
+        if ret < 0 {
+            return Err(FilterError::BuildFailed);
+        }
+        ctx = band_ctx;
+    }
+    Ok(ctx)
 }

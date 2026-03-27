@@ -422,7 +422,14 @@ fn push_audio_through_amix_should_return_mixed_frame() {
 
 #[test]
 fn push_audio_through_equalizer_should_return_frame_with_same_properties() {
-    let mut graph = match FilterGraph::builder().equalizer(1000.0, 3.0).build() {
+    let mut graph = match FilterGraph::builder()
+        .equalizer(vec![ff_filter::EqBand::Peak {
+            freq_hz: 1000.0,
+            gain_db: 3.0,
+            q: 1.0,
+        }])
+        .build()
+    {
         Ok(g) => g,
         Err(e) => {
             println!("Skipping: {e}");
