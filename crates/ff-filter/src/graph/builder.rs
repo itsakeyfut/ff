@@ -506,6 +506,23 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
+    ///
+    /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
+    /// playback resumes. Frame numbers are approximated using a 25 fps assumption;
+    /// accuracy depends on the source stream's actual frame rate.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `pts_sec` is negative or `duration_sec` is ≤ 0.0.
+    #[must_use]
+    pub fn freeze_frame(mut self, pts_sec: f64, duration_sec: f64) -> Self {
+        self.steps.push(FilterStep::FreezeFrame {
+            pts: pts_sec,
+            duration: duration_sec,
+        });
+        self
+    }
+
     /// Overlay text onto the video using the `drawtext` filter.
     ///
     /// See [`DrawTextOptions`] for all configurable fields including position,
@@ -666,6 +683,18 @@ impl FilterGraphBuilder {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("speed factor {factor} out of range [0.1, 100.0]"),
                 });
+            }
+            if let FilterStep::FreezeFrame { pts, duration } = step {
+                if *pts < 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("freeze_frame pts {pts} must be >= 0.0"),
+                    });
+                }
+                if *duration <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("freeze_frame duration {duration} must be > 0.0"),
+                    });
+                }
             }
             if let FilterStep::Crop { width, height, .. } = step
                 && (*width == 0 || *height == 0)

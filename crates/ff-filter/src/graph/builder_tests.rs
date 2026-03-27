@@ -2275,3 +2275,67 @@ fn builder_areverse_should_succeed() {
         "areverse must build successfully, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_freeze_frame_should_produce_correct_filter_name() {
+    let step = FilterStep::FreezeFrame {
+        pts: 2.0,
+        duration: 3.0,
+    };
+    assert_eq!(step.filter_name(), "loop");
+}
+
+#[test]
+fn filter_step_freeze_frame_should_produce_correct_args() {
+    let step = FilterStep::FreezeFrame {
+        pts: 2.0,
+        duration: 3.0,
+    };
+    // 2.0s * 25fps = frame 50; 3.0s * 25fps = 75 loop iterations
+    assert_eq!(step.args(), "loop=75:size=1:start=50");
+}
+
+#[test]
+fn filter_step_freeze_frame_at_zero_pts_should_produce_start_zero() {
+    let step = FilterStep::FreezeFrame {
+        pts: 0.0,
+        duration: 1.0,
+    };
+    assert_eq!(step.args(), "loop=25:size=1:start=0");
+}
+
+#[test]
+fn builder_freeze_frame_with_valid_params_should_succeed() {
+    let result = FilterGraph::builder().freeze_frame(2.0, 3.0).build();
+    assert!(
+        result.is_ok(),
+        "freeze_frame(2.0, 3.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_freeze_frame_with_negative_pts_should_return_invalid_config() {
+    let result = FilterGraph::builder().freeze_frame(-1.0, 3.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for negative pts, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_freeze_frame_with_zero_duration_should_return_invalid_config() {
+    let result = FilterGraph::builder().freeze_frame(2.0, 0.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for zero duration, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_freeze_frame_with_negative_duration_should_return_invalid_config() {
+    let result = FilterGraph::builder().freeze_frame(2.0, -1.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for negative duration, got {result:?}"
+    );
+}

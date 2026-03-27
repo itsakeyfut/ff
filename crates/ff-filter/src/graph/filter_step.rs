@@ -210,6 +210,17 @@ pub(crate) enum FilterStep {
         /// Speed multiplier. Must be in [0.1, 100.0].
         factor: f64,
     },
+    /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
+    ///
+    /// The frame nearest to `pts` seconds is held for `duration` seconds, then
+    /// playback resumes. Frame numbers are approximated using a 25 fps assumption;
+    /// accuracy depends on the source stream's actual frame rate.
+    FreezeFrame {
+        /// Timestamp of the frame to freeze, in seconds. Must be >= 0.0.
+        pts: f64,
+        /// Duration to hold the frozen frame, in seconds. Must be > 0.0.
+        duration: f64,
+    },
     /// Scrolling text ticker (right-to-left) using the `drawtext` filter.
     ///
     /// The text starts off-screen to the right and scrolls left at
@@ -314,6 +325,7 @@ impl FilterStep {
             // "setpts" is checked at build-time; the audio path uses "atempo"
             // which is verified at graph-construction time in filter_inner.
             Self::Speed { .. } => "setpts",
+            Self::FreezeFrame { .. } => "loop",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -506,6 +518,16 @@ impl FilterStep {
             // Video path: divide PTS by factor to change playback speed.
             // Audio path args are built by filter_inner (chained atempo).
             Self::Speed { factor } => format!("PTS/{factor}"),
+            Self::FreezeFrame { pts, duration } => {
+                // The `loop` filter needs a frame index and a loop count, not PTS or
+                // wall-clock duration.  We approximate both using 25 fps; accuracy
+                // depends on the source stream's actual frame rate.
+                #[allow(clippy::cast_possible_truncation)]
+                let start = (*pts * 25.0) as i64;
+                #[allow(clippy::cast_possible_truncation)]
+                let loop_count = (*duration * 25.0) as i64;
+                format!("loop={loop_count}:size=1:start={start}")
+            }
             Self::SubtitlesSrt { path } | Self::SubtitlesAss { path } => {
                 format!("filename={path}")
             }
