@@ -373,8 +373,12 @@ impl FilterGraphInner {
         // 4-5. Add each `FilterStep`, link the main chain (in0 → step[0] → …),
         // and wire extra input pads for multi-input filters.
         for (i, step) in steps.iter().enumerate() {
-            // AReverse is audio-only; skip it in the video graph.
-            if matches!(step, FilterStep::AReverse) {
+            // AReverse, AFadeIn, and AFadeOut are audio-only; skip them in the
+            // video graph.
+            if matches!(
+                step,
+                FilterStep::AReverse | FilterStep::AFadeIn { .. } | FilterStep::AFadeOut { .. }
+            ) {
                 continue;
             }
 

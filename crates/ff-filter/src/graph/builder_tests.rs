@@ -2472,3 +2472,75 @@ fn builder_normalize_peak_with_positive_target_db_should_return_invalid_config()
         "expected InvalidConfig for target_db=1.0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_afade_in_should_have_correct_filter_name() {
+    let step = FilterStep::AFadeIn {
+        start: 0.0,
+        duration: 1.0,
+    };
+    assert_eq!(step.filter_name(), "afade");
+}
+
+#[test]
+fn filter_step_afade_out_should_have_correct_filter_name() {
+    let step = FilterStep::AFadeOut {
+        start: 4.0,
+        duration: 1.0,
+    };
+    assert_eq!(step.filter_name(), "afade");
+}
+
+#[test]
+fn filter_step_afade_in_should_produce_correct_args() {
+    let step = FilterStep::AFadeIn {
+        start: 0.0,
+        duration: 1.0,
+    };
+    assert_eq!(step.args(), "type=in:start_time=0:duration=1");
+}
+
+#[test]
+fn filter_step_afade_out_should_produce_correct_args() {
+    let step = FilterStep::AFadeOut {
+        start: 4.0,
+        duration: 1.0,
+    };
+    assert_eq!(step.args(), "type=out:start_time=4:duration=1");
+}
+
+#[test]
+fn builder_afade_in_with_valid_params_should_succeed() {
+    let result = FilterGraph::builder().afade_in(0.0, 1.0).build();
+    assert!(
+        result.is_ok(),
+        "afade_in(0.0, 1.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_afade_out_with_valid_params_should_succeed() {
+    let result = FilterGraph::builder().afade_out(4.0, 1.0).build();
+    assert!(
+        result.is_ok(),
+        "afade_out(4.0, 1.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_afade_in_with_zero_duration_should_return_invalid_config() {
+    let result = FilterGraph::builder().afade_in(0.0, 0.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for duration=0.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_afade_out_with_negative_duration_should_return_invalid_config() {
+    let result = FilterGraph::builder().afade_out(4.0, -1.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for duration=-1.0, got {result:?}"
+    );
+}

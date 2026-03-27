@@ -128,6 +128,34 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Audio fade-in from silence, starting at `start_sec` seconds and reaching
+    /// full volume after `duration_sec` seconds.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `duration_sec` is ≤ 0.0.
+    #[must_use]
+    pub fn afade_in(mut self, start_sec: f64, duration_sec: f64) -> Self {
+        self.steps.push(FilterStep::AFadeIn {
+            start: start_sec,
+            duration: duration_sec,
+        });
+        self
+    }
+
+    /// Audio fade-out to silence, starting at `start_sec` seconds and reaching
+    /// full silence after `duration_sec` seconds.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `duration_sec` is ≤ 0.0.
+    #[must_use]
+    pub fn afade_out(mut self, start_sec: f64, duration_sec: f64) -> Self {
+        self.steps.push(FilterStep::AFadeOut {
+            start: start_sec,
+            duration: duration_sec,
+        });
+        self
+    }
+
     /// Rotate the video clockwise by `angle_degrees`, filling exposed corners
     /// with `fill_color`.
     ///
@@ -782,6 +810,14 @@ impl FilterGraphBuilder {
             {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("fade duration {duration} must be > 0.0"),
+                });
+            }
+            if let FilterStep::AFadeIn { duration, .. } | FilterStep::AFadeOut { duration, .. } =
+                step
+                && *duration <= 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("afade duration {duration} must be > 0.0"),
                 });
             }
             if let FilterStep::XFade { duration, .. } = step
