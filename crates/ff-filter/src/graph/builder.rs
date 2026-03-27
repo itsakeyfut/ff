@@ -590,6 +590,33 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a dynamic range compressor to the audio.
+    ///
+    /// Uses `FFmpeg`'s `acompressor` filter. Audio peaks above `threshold_db`
+    /// (dBFS) are reduced by `ratio`:1.  `makeup_db` applies additional gain
+    /// after compression to restore perceived loudness.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `ratio < 1.0`, `attack_ms ≤ 0.0`, or `release_ms ≤ 0.0`.
+    #[must_use]
+    pub fn compressor(
+        mut self,
+        threshold_db: f32,
+        ratio: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        makeup_db: f32,
+    ) -> Self {
+        self.steps.push(FilterStep::ACompressor {
+            threshold_db,
+            ratio,
+            attack_ms,
+            release_ms,
+            makeup_db,
+        });
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
@@ -874,6 +901,29 @@ impl FilterGraphBuilder {
                 if *release_ms <= 0.0 {
                     return Err(FilterError::InvalidConfig {
                         reason: format!("agate release_ms {release_ms} must be > 0.0"),
+                    });
+                }
+            }
+            if let FilterStep::ACompressor {
+                ratio,
+                attack_ms,
+                release_ms,
+                ..
+            } = step
+            {
+                if *ratio < 1.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("compressor ratio {ratio} must be >= 1.0"),
+                    });
+                }
+                if *attack_ms <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("compressor attack_ms {attack_ms} must be > 0.0"),
+                    });
+                }
+                if *release_ms <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("compressor release_ms {release_ms} must be > 0.0"),
                     });
                 }
             }

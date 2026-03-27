@@ -2720,3 +2720,86 @@ fn builder_agate_with_negative_release_should_return_invalid_config() {
         "expected InvalidConfig for release_ms=-50.0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_compressor_should_have_correct_filter_name() {
+    let step = FilterStep::ACompressor {
+        threshold_db: -20.0,
+        ratio: 4.0,
+        attack_ms: 10.0,
+        release_ms: 100.0,
+        makeup_db: 6.0,
+    };
+    assert_eq!(step.filter_name(), "acompressor");
+}
+
+#[test]
+fn filter_step_compressor_should_produce_correct_args() {
+    let step = FilterStep::ACompressor {
+        threshold_db: -20.0,
+        ratio: 4.0,
+        attack_ms: 10.0,
+        release_ms: 100.0,
+        makeup_db: 6.0,
+    };
+    assert_eq!(
+        step.args(),
+        "threshold=-20dB:ratio=4:attack=10:release=100:makeup=6dB"
+    );
+}
+
+#[test]
+fn builder_compressor_valid_should_build_successfully() {
+    let result = FilterGraph::builder()
+        .compressor(-20.0, 4.0, 10.0, 100.0, 6.0)
+        .build();
+    assert!(
+        result.is_ok(),
+        "compressor(-20.0, 4.0, 10.0, 100.0, 6.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_compressor_with_unity_ratio_should_build_successfully() {
+    // ratio=1.0 is the minimum valid value (no compression)
+    let result = FilterGraph::builder()
+        .compressor(-20.0, 1.0, 10.0, 100.0, 0.0)
+        .build();
+    assert!(
+        result.is_ok(),
+        "compressor with ratio=1.0 must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_compressor_with_ratio_below_one_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .compressor(-20.0, 0.5, 10.0, 100.0, 0.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for ratio=0.5, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_compressor_with_zero_attack_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .compressor(-20.0, 4.0, 0.0, 100.0, 0.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for attack_ms=0.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_compressor_with_zero_release_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .compressor(-20.0, 4.0, 10.0, 0.0, 0.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for release_ms=0.0, got {result:?}"
+    );
+}
