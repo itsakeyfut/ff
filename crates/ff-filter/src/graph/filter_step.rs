@@ -278,6 +278,15 @@ pub(crate) enum FilterStep {
     /// Both channels are mixed with equal weight:
     /// `mono|c0=0.5*c0+0.5*c1`.  The output has a single channel.
     StereoToMono,
+    /// Remap audio channels using `FFmpeg`'s `channelmap` filter.
+    ///
+    /// `mapping` is a `|`-separated list of output channel names taken
+    /// from input channels, e.g. `"FR|FL"` swaps left and right.
+    /// Must not be empty.
+    ChannelMap {
+        /// `FFmpeg` channelmap mapping expression (e.g. `"FR|FL"`).
+        mapping: String,
+    },
     /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts` seconds is held for `duration` seconds, then
@@ -403,6 +412,7 @@ impl FilterStep {
             Self::ANoiseGate { .. } => "agate",
             Self::ACompressor { .. } => "acompressor",
             Self::StereoToMono => "pan",
+            Self::ChannelMap { .. } => "channelmap",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -673,6 +683,7 @@ impl FilterStep {
                 )
             }
             Self::StereoToMono => "mono|c0=0.5*c0+0.5*c1".to_string(),
+            Self::ChannelMap { mapping } => format!("map={mapping}"),
         }
     }
 }
