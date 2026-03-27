@@ -627,6 +627,21 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Remap audio channels using `FFmpeg`'s `channelmap` filter.
+    ///
+    /// `mapping` is a `|`-separated list of output channel names taken from
+    /// input channels, e.g. `"FR|FL"` swaps left and right.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `mapping` is empty.
+    #[must_use]
+    pub fn channel_map(mut self, mapping: &str) -> Self {
+        self.steps.push(FilterStep::ChannelMap {
+            mapping: mapping.to_string(),
+        });
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
@@ -936,6 +951,13 @@ impl FilterGraphBuilder {
                         reason: format!("compressor release_ms {release_ms} must be > 0.0"),
                     });
                 }
+            }
+            if let FilterStep::ChannelMap { mapping } = step
+                && mapping.is_empty()
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "channel_map mapping must not be empty".to_string(),
+                });
             }
             if let FilterStep::DrawText { opts } = step {
                 if opts.text.is_empty() {

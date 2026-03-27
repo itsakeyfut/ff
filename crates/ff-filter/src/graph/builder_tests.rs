@@ -2822,3 +2822,37 @@ fn builder_stereo_to_mono_should_build_successfully() {
         "stereo_to_mono() must build successfully, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_channel_map_should_have_correct_filter_name() {
+    let step = FilterStep::ChannelMap {
+        mapping: "FR|FL".to_string(),
+    };
+    assert_eq!(step.filter_name(), "channelmap");
+}
+
+#[test]
+fn filter_step_channel_map_should_produce_correct_args() {
+    let step = FilterStep::ChannelMap {
+        mapping: "FR|FL".to_string(),
+    };
+    assert_eq!(step.args(), "map=FR|FL");
+}
+
+#[test]
+fn builder_channel_map_valid_should_build_successfully() {
+    let result = FilterGraph::builder().channel_map("FR|FL").build();
+    assert!(
+        result.is_ok(),
+        "channel_map(\"FR|FL\") must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_channel_map_with_empty_mapping_should_return_invalid_config() {
+    let result = FilterGraph::builder().channel_map("").build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for empty mapping, got {result:?}"
+    );
+}

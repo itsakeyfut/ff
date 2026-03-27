@@ -383,6 +383,7 @@ impl FilterGraphInner {
                     | FilterStep::ANoiseGate { .. }
                     | FilterStep::ACompressor { .. }
                     | FilterStep::StereoToMono
+                    | FilterStep::ChannelMap { .. }
             ) {
                 continue;
             }
