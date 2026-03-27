@@ -31,6 +31,10 @@ pub(crate) enum FilterStep {
     FadeIn { start: f64, duration: f64 },
     /// Fade-out to black starting at `start` seconds, over `duration` seconds.
     FadeOut { start: f64, duration: f64 },
+    /// Audio fade-in from silence starting at `start` seconds, over `duration` seconds.
+    AFadeIn { start: f64, duration: f64 },
+    /// Audio fade-out to silence starting at `start` seconds, over `duration` seconds.
+    AFadeOut { start: f64, duration: f64 },
     /// Fade-in from white starting at `start` seconds, over `duration` seconds.
     FadeInWhite { start: f64, duration: f64 },
     /// Fade-out to white starting at `start` seconds, over `duration` seconds.
@@ -317,6 +321,7 @@ impl FilterStep {
             | Self::FadeOut { .. }
             | Self::FadeInWhite { .. }
             | Self::FadeOutWhite { .. } => "fade",
+            Self::AFadeIn { .. } | Self::AFadeOut { .. } => "afade",
             Self::Rotate { .. } => "rotate",
             Self::ToneMap(_) => "tonemap",
             Self::Volume(_) => "volume",
@@ -391,6 +396,12 @@ impl FilterStep {
             }
             Self::FadeOutWhite { start, duration } => {
                 format!("type=out:start_time={start}:duration={duration}:color=white")
+            }
+            Self::AFadeIn { start, duration } => {
+                format!("type=in:start_time={start}:duration={duration}")
+            }
+            Self::AFadeOut { start, duration } => {
+                format!("type=out:start_time={start}:duration={duration}")
             }
             Self::Rotate {
                 angle_degrees,
