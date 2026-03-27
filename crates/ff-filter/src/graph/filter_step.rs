@@ -287,6 +287,16 @@ pub(crate) enum FilterStep {
         /// `FFmpeg` channelmap mapping expression (e.g. `"FR|FL"`).
         mapping: String,
     },
+    /// A/V sync correction via audio delay or advance.
+    ///
+    /// Positive `ms`: uses `FFmpeg`'s `adelay` filter to shift audio later.
+    /// Negative `ms`: uses `FFmpeg`'s `atrim` filter to trim the audio start,
+    /// effectively advancing audio by `|ms|` milliseconds.
+    /// Zero `ms`: uses `adelay` with zero delay (no-op).
+    AudioDelay {
+        /// Delay in milliseconds. Positive = delay; negative = advance.
+        ms: f64,
+    },
     /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts` seconds is held for `duration` seconds, then
@@ -413,6 +423,9 @@ impl FilterStep {
             Self::ACompressor { .. } => "acompressor",
             Self::StereoToMono => "pan",
             Self::ChannelMap { .. } => "channelmap",
+            // AudioDelay dispatches to adelay (positive) or atrim (negative) at
+            // build time; "adelay" is returned here for validate_filter_steps only.
+            Self::AudioDelay { .. } => "adelay",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -684,6 +697,16 @@ impl FilterStep {
             }
             Self::StereoToMono => "mono|c0=0.5*c0+0.5*c1".to_string(),
             Self::ChannelMap { mapping } => format!("map={mapping}"),
+            // args() is not used directly for AudioDelay — the audio build loop
+            // dispatches to add_raw_filter_step with the correct filter name and
+            // args based on the sign of ms.  These are provided for completeness.
+            Self::AudioDelay { ms } => {
+                if *ms >= 0.0 {
+                    format!("delays={ms}:all=1")
+                } else {
+                    format!("start={}", -ms / 1000.0)
+                }
+            }
         }
     }
 }

@@ -2856,3 +2856,63 @@ fn builder_channel_map_with_empty_mapping_should_return_invalid_config() {
         "expected InvalidConfig for empty mapping, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_audio_delay_positive_should_have_correct_filter_name() {
+    let step = FilterStep::AudioDelay { ms: 100.0 };
+    assert_eq!(step.filter_name(), "adelay");
+}
+
+#[test]
+fn filter_step_audio_delay_negative_should_have_correct_filter_name() {
+    // filter_name() always returns "adelay" (used for validation only);
+    // the build loop dispatches to "atrim" at runtime.
+    let step = FilterStep::AudioDelay { ms: -100.0 };
+    assert_eq!(step.filter_name(), "adelay");
+}
+
+#[test]
+fn filter_step_audio_delay_positive_should_produce_adelay_args() {
+    let step = FilterStep::AudioDelay { ms: 100.0 };
+    assert_eq!(step.args(), "delays=100:all=1");
+}
+
+#[test]
+fn filter_step_audio_delay_zero_should_produce_adelay_args() {
+    let step = FilterStep::AudioDelay { ms: 0.0 };
+    assert_eq!(step.args(), "delays=0:all=1");
+}
+
+#[test]
+fn filter_step_audio_delay_negative_should_produce_atrim_args() {
+    let step = FilterStep::AudioDelay { ms: -100.0 };
+    // -(-100) / 1000 = 0.1 seconds
+    assert_eq!(step.args(), "start=0.1");
+}
+
+#[test]
+fn builder_audio_delay_positive_should_build_successfully() {
+    let result = FilterGraph::builder().audio_delay(100.0).build();
+    assert!(
+        result.is_ok(),
+        "audio_delay(100.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_audio_delay_zero_should_build_successfully() {
+    let result = FilterGraph::builder().audio_delay(0.0).build();
+    assert!(
+        result.is_ok(),
+        "audio_delay(0.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_audio_delay_negative_should_build_successfully() {
+    let result = FilterGraph::builder().audio_delay(-100.0).build();
+    assert!(
+        result.is_ok(),
+        "audio_delay(-100.0) must build successfully, got {result:?}"
+    );
+}

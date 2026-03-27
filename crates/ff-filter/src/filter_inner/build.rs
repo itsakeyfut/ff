@@ -142,6 +142,57 @@ pub(super) unsafe fn add_and_link_step(
     Ok(step_ctx)
 }
 
+/// Create and link a filter by explicit name and args strings, without a
+/// `FilterStep`.  Used when the filter name cannot be determined statically
+/// (e.g., `AudioDelay` dispatches to `adelay` or `atrim` depending on sign).
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_raw_filter_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    filter_name: &str,
+    args: &str,
+    index: usize,
+    prefix: &str,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let filter_cname = std::ffi::CString::new(filter_name).map_err(|_| FilterError::BuildFailed)?;
+    // SAFETY: `avfilter_get_by_name` reads a valid null-terminated C string.
+    let filter = ff_sys::avfilter_get_by_name(filter_cname.as_ptr());
+    if filter.is_null() {
+        log::warn!("filter not found name={filter_name}");
+        return Err(FilterError::BuildFailed);
+    }
+
+    let step_name =
+        std::ffi::CString::new(format!("{prefix}{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let step_args = std::ffi::CString::new(args).map_err(|_| FilterError::BuildFailed)?;
+
+    let mut step_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut step_ctx,
+        filter,
+        step_name.as_ptr(),
+        step_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name={filter_name} args={args}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name={filter_name} args={args}");
+
+    // SAFETY: `prev_ctx` and `step_ctx` belong to the same graph; pad indices are valid.
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, step_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    Ok(step_ctx)
+}
+
 /// Insert a `setpts=PTS-STARTPTS` filter immediately after a `trim` step so
 /// that the output stream's timestamps start at zero.
 ///

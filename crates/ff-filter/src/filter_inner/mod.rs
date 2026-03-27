@@ -17,8 +17,8 @@ mod convert;
 
 use build::{
     add_and_link_step, add_atempo_chain, add_fit_to_aspect_pad, add_overlay_image_step,
-    add_parametric_eq_chain, add_setpts_after_trim, audio_buffersrc_args, create_hw_filter,
-    hw_accel_to_device_type, video_buffersrc_args,
+    add_parametric_eq_chain, add_raw_filter_step, add_setpts_after_trim, audio_buffersrc_args,
+    create_hw_filter, hw_accel_to_device_type, video_buffersrc_args,
 };
 use convert::{
     audio_pts_ticks, av_frame_to_audio_frame, av_frame_to_video_frame, copy_audio_planes_to_av,
@@ -384,6 +384,7 @@ impl FilterGraphInner {
                     | FilterStep::ACompressor { .. }
                     | FilterStep::StereoToMono
                     | FilterStep::ChannelMap { .. }
+                    | FilterStep::AudioDelay { .. }
             ) {
                 continue;
             }
@@ -796,6 +797,18 @@ impl FilterGraphInner {
             // single-node `add_and_link_step` path.
             if let FilterStep::ParametricEq { bands } = step {
                 prev_ctx = add_parametric_eq_chain(graph, prev_ctx, bands, i)?;
+                continue;
+            }
+
+            // AudioDelay dispatches to adelay (positive/zero) or atrim (negative).
+            if let FilterStep::AudioDelay { ms } = step {
+                let (filter_name, args) = if *ms >= 0.0 {
+                    ("adelay".to_string(), format!("delays={ms}:all=1"))
+                } else {
+                    ("atrim".to_string(), format!("start={}", -ms / 1000.0))
+                };
+                // SAFETY: graph and prev_ctx are valid pointers in the same graph.
+                prev_ctx = add_raw_filter_step(graph, prev_ctx, &filter_name, &args, i, "adelay")?;
                 continue;
             }
 

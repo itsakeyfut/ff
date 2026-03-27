@@ -642,6 +642,18 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Shift audio for A/V sync correction.
+    ///
+    /// Positive `ms`: uses `FFmpeg`'s `adelay` filter to delay the audio
+    /// (audio plays later). Negative `ms`: uses `FFmpeg`'s `atrim` filter to
+    /// advance the audio by trimming the start (audio plays earlier).
+    /// Zero `ms` is a no-op.
+    #[must_use]
+    pub fn audio_delay(mut self, ms: f64) -> Self {
+        self.steps.push(FilterStep::AudioDelay { ms });
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
