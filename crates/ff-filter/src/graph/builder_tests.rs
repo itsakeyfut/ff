@@ -39,6 +39,13 @@ fn filter_step_volume_should_produce_correct_args() {
 }
 
 #[test]
+fn volume_should_convert_db_to_ffmpeg_string() {
+    assert_eq!(FilterStep::Volume(-6.0).args(), "volume=-6dB");
+    assert_eq!(FilterStep::Volume(6.0).args(), "volume=6dB");
+    assert_eq!(FilterStep::Volume(0.0).args(), "volume=0dB");
+}
+
+#[test]
 fn tone_map_variants_should_have_correct_names() {
     assert_eq!(ToneMap::Hable.as_str(), "hable");
     assert_eq!(ToneMap::Reinhard.as_str(), "reinhard");
