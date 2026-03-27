@@ -380,6 +380,7 @@ impl FilterGraphInner {
                     | FilterStep::AFadeIn { .. }
                     | FilterStep::AFadeOut { .. }
                     | FilterStep::ParametricEq { .. }
+                    | FilterStep::ANoiseGate { .. }
             ) {
                 continue;
             }

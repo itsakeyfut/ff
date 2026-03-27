@@ -572,6 +572,24 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a noise gate to suppress audio below a given threshold.
+    ///
+    /// Uses `FFmpeg`'s `agate` filter. Audio below `threshold_db` (dBFS) is
+    /// attenuated; audio above it passes through unmodified. The threshold is
+    /// converted from dBFS to the linear amplitude ratio expected by `agate`.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `attack_ms` or `release_ms` is ≤ 0.0.
+    #[must_use]
+    pub fn agate(mut self, threshold_db: f32, attack_ms: f32, release_ms: f32) -> Self {
+        self.steps.push(FilterStep::ANoiseGate {
+            threshold_db,
+            attack_ms,
+            release_ms,
+        });
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
@@ -841,6 +859,23 @@ impl FilterGraphBuilder {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("xfade duration {duration} must be > 0.0"),
                 });
+            }
+            if let FilterStep::ANoiseGate {
+                attack_ms,
+                release_ms,
+                ..
+            } = step
+            {
+                if *attack_ms <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("agate attack_ms {attack_ms} must be > 0.0"),
+                    });
+                }
+                if *release_ms <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("agate release_ms {release_ms} must be > 0.0"),
+                    });
+                }
             }
             if let FilterStep::DrawText { opts } = step {
                 if opts.text.is_empty() {

@@ -2627,3 +2627,96 @@ fn builder_afade_out_with_negative_duration_should_return_invalid_config() {
         "expected InvalidConfig for duration=-1.0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_agate_should_have_correct_filter_name() {
+    let step = FilterStep::ANoiseGate {
+        threshold_db: -40.0,
+        attack_ms: 10.0,
+        release_ms: 100.0,
+    };
+    assert_eq!(step.filter_name(), "agate");
+}
+
+#[test]
+fn filter_step_agate_should_produce_correct_args_for_minus_40_db() {
+    let step = FilterStep::ANoiseGate {
+        threshold_db: -40.0,
+        attack_ms: 10.0,
+        release_ms: 100.0,
+    };
+    // 10^(-40/20) = 10^(-2) = 0.01
+    let args = step.args();
+    assert!(
+        args.starts_with("threshold=0.010000:"),
+        "expected args to start with threshold=0.010000:, got {args}"
+    );
+    assert!(
+        args.contains("attack=10:"),
+        "expected attack=10: in args, got {args}"
+    );
+    assert!(
+        args.contains("release=100"),
+        "expected release=100 in args, got {args}"
+    );
+}
+
+#[test]
+fn filter_step_agate_should_produce_correct_args_for_zero_db() {
+    let step = FilterStep::ANoiseGate {
+        threshold_db: 0.0,
+        attack_ms: 5.0,
+        release_ms: 50.0,
+    };
+    // 10^(0/20) = 1.0
+    let args = step.args();
+    assert!(
+        args.starts_with("threshold=1.000000:"),
+        "expected threshold=1.000000: in args, got {args}"
+    );
+}
+
+#[test]
+fn builder_agate_valid_should_build_successfully() {
+    let result = FilterGraph::builder().agate(-40.0, 10.0, 100.0).build();
+    assert!(
+        result.is_ok(),
+        "agate(-40.0, 10.0, 100.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_agate_with_zero_attack_should_return_invalid_config() {
+    let result = FilterGraph::builder().agate(-40.0, 0.0, 100.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for attack_ms=0.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_agate_with_negative_attack_should_return_invalid_config() {
+    let result = FilterGraph::builder().agate(-40.0, -1.0, 100.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for attack_ms=-1.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_agate_with_zero_release_should_return_invalid_config() {
+    let result = FilterGraph::builder().agate(-40.0, 10.0, 0.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for release_ms=0.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_agate_with_negative_release_should_return_invalid_config() {
+    let result = FilterGraph::builder().agate(-40.0, 10.0, -50.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for release_ms=-50.0, got {result:?}"
+    );
+}
