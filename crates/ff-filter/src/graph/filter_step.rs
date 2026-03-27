@@ -256,6 +256,23 @@ pub(crate) enum FilterStep {
         /// Release time in milliseconds — how quickly the gate closes. Must be > 0.0.
         release_ms: f32,
     },
+    /// Dynamic range compressor via `FFmpeg`'s `acompressor` filter.
+    ///
+    /// Reduces the dynamic range of the audio signal: peaks above
+    /// `threshold_db` are attenuated by `ratio`:1.  `makeup_db` applies
+    /// additional gain after compression to restore perceived loudness.
+    ACompressor {
+        /// Compression threshold in dBFS (e.g. −20.0).
+        threshold_db: f32,
+        /// Compression ratio (e.g. 4.0 = 4:1). Must be ≥ 1.0.
+        ratio: f32,
+        /// Attack time in milliseconds. Must be > 0.0.
+        attack_ms: f32,
+        /// Release time in milliseconds. Must be > 0.0.
+        release_ms: f32,
+        /// Make-up gain in dB applied after compression (e.g. 6.0).
+        makeup_db: f32,
+    },
     /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts` seconds is held for `duration` seconds, then
@@ -379,6 +396,7 @@ impl FilterStep {
             Self::LoudnessNormalize { .. } => "ebur128",
             Self::NormalizePeak { .. } => "astats",
             Self::ANoiseGate { .. } => "agate",
+            Self::ACompressor { .. } => "acompressor",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -635,6 +653,18 @@ impl FilterStep {
                 // `agate` expects threshold as a linear amplitude ratio (0.0–1.0).
                 let threshold_linear = 10f32.powf(threshold_db / 20.0);
                 format!("threshold={threshold_linear:.6}:attack={attack_ms}:release={release_ms}")
+            }
+            Self::ACompressor {
+                threshold_db,
+                ratio,
+                attack_ms,
+                release_ms,
+                makeup_db,
+            } => {
+                format!(
+                    "threshold={threshold_db}dB:ratio={ratio}:attack={attack_ms}:\
+                     release={release_ms}:makeup={makeup_db}dB"
+                )
             }
         }
     }

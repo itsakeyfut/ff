@@ -381,6 +381,7 @@ impl FilterGraphInner {
                     | FilterStep::AFadeOut { .. }
                     | FilterStep::ParametricEq { .. }
                     | FilterStep::ANoiseGate { .. }
+                    | FilterStep::ACompressor { .. }
             ) {
                 continue;
             }
