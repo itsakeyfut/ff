@@ -529,6 +529,21 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Normalize the audio peak level to `target_db` dBFS using a two-pass approach.
+    ///
+    /// Pass 1 measures the true peak with `astats=metadata=1`.
+    /// Pass 2 applies `volume={gain}dB` so the output peak reaches `target_db`.
+    /// All audio frames are buffered in memory between the two passes — use only
+    /// for clips that fit comfortably in RAM.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `target_db > 0.0` (cannot normalize above digital full scale).
+    #[must_use]
+    pub fn normalize_peak(mut self, target_db: f32) -> Self {
+        self.steps.push(FilterStep::NormalizePeak { target_db });
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
@@ -732,6 +747,13 @@ impl FilterGraphBuilder {
                         reason: format!("loudness_normalize lra {lra} must be > 0.0"),
                     });
                 }
+            }
+            if let FilterStep::NormalizePeak { target_db } = step
+                && *target_db > 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("normalize_peak target_db {target_db} must be <= 0.0"),
+                });
             }
             if let FilterStep::FreezeFrame { pts, duration } = step {
                 if *pts < 0.0 {

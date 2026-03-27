@@ -2425,3 +2425,43 @@ fn builder_loudness_normalize_with_negative_lra_should_return_invalid_config() {
         "expected InvalidConfig for lra=-7.0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_normalize_peak_should_have_correct_filter_name() {
+    let step = FilterStep::NormalizePeak { target_db: -1.0 };
+    assert_eq!(step.filter_name(), "astats");
+}
+
+#[test]
+fn filter_step_normalize_peak_should_have_correct_args() {
+    let step = FilterStep::NormalizePeak { target_db: -1.0 };
+    assert_eq!(step.args(), "metadata=1");
+}
+
+#[test]
+fn builder_normalize_peak_valid_should_build_successfully() {
+    let result = FilterGraph::builder().normalize_peak(-1.0).build();
+    assert!(
+        result.is_ok(),
+        "normalize_peak(-1.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_normalize_peak_with_zero_target_db_should_build_successfully() {
+    // 0.0 dBFS is the maximum allowed value (digital full scale).
+    let result = FilterGraph::builder().normalize_peak(0.0).build();
+    assert!(
+        result.is_ok(),
+        "normalize_peak(0.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_normalize_peak_with_positive_target_db_should_return_invalid_config() {
+    let result = FilterGraph::builder().normalize_peak(1.0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for target_db=1.0, got {result:?}"
+    );
+}
