@@ -151,6 +151,7 @@ pub struct AVFrame {
     pub duration: i64,
     pub time_base: AVRational,
     pub hw_frames_ctx: *mut AVBufferRef,
+    pub metadata: *mut AVDictionary,
 }
 
 pub struct AVPacket {
@@ -660,6 +661,14 @@ pub unsafe fn av_buffersrc_add_frame_flags(
     _ctx: *mut AVFilterContext,
     _frame: *mut AVFrame,
     _flags: c_int,
+) -> c_int {
+    0
+}
+
+pub unsafe fn av_buffersrc_close(
+    _ctx: *mut AVFilterContext,
+    _pts: i64,
+    _flags: c_uint,
 ) -> c_int {
     0
 }

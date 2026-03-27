@@ -210,6 +210,20 @@ pub(crate) enum FilterStep {
         /// Speed multiplier. Must be in [0.1, 100.0].
         factor: f64,
     },
+    /// EBU R128 two-pass loudness normalization.
+    ///
+    /// Pass 1 measures integrated loudness with `ebur128=peak=true:metadata=1`.
+    /// Pass 2 applies a linear volume correction so the output reaches `target_lufs`.
+    /// All audio frames are buffered in memory between the two passes — use only
+    /// for clips that fit comfortably in RAM.
+    LoudnessNormalize {
+        /// Target integrated loudness in LUFS (e.g. −23.0). Must be < 0.0.
+        target_lufs: f32,
+        /// True-peak ceiling in dBTP (e.g. −1.0). Must be ≤ 0.0.
+        true_peak_db: f32,
+        /// Target loudness range in LU (e.g. 7.0). Must be > 0.0.
+        lra: f32,
+    },
     /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts` seconds is held for `duration` seconds, then
@@ -326,6 +340,7 @@ impl FilterStep {
             // which is verified at graph-construction time in filter_inner.
             Self::Speed { .. } => "setpts",
             Self::FreezeFrame { .. } => "loop",
+            Self::LoudnessNormalize { .. } => "ebur128",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -518,6 +533,9 @@ impl FilterStep {
             // Video path: divide PTS by factor to change playback speed.
             // Audio path args are built by filter_inner (chained atempo).
             Self::Speed { factor } => format!("PTS/{factor}"),
+            // args() is not used by the build loop for LoudnessNormalize (two-pass
+            // is handled entirely in filter_inner); provided here for completeness.
+            Self::LoudnessNormalize { .. } => "peak=true:metadata=1".to_string(),
             Self::FreezeFrame { pts, duration } => {
                 // The `loop` filter needs a frame index and a loop count, not PTS or
                 // wall-clock duration.  We approximate both using 25 fps; accuracy

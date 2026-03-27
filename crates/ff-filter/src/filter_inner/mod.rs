@@ -130,6 +130,15 @@ pub(crate) struct FilterGraphInner {
     /// Owned reference to the hardware device context (`None` when no hardware
     /// acceleration is in use).  Freed in `Drop` after the graph is freed.
     hw_device_ctx: Option<*mut ff_sys::AVBufferRef>,
+    /// Buffered raw audio frames for EBU R128 two-pass loudness normalization.
+    /// Populated during `push_audio` when a `LoudnessNormalize` step is present.
+    loudness_buf: Vec<AudioFrame>,
+    /// Corrected audio frames ready to be returned from `pull_audio` (pass-2 output).
+    loudness_output: Vec<AudioFrame>,
+    /// Index of the next frame to return from `loudness_output`.
+    loudness_output_idx: usize,
+    /// True once the two-pass measurement + correction has been executed.
+    loudness_pass2_done: bool,
 }
 
 // SAFETY: `FilterGraphInner` owns all raw pointers exclusively.  No other
@@ -148,6 +157,10 @@ impl FilterGraphInner {
             steps,
             hw,
             hw_device_ctx: None,
+            loudness_buf: Vec::new(),
+            loudness_output: Vec::new(),
+            loudness_output_idx: 0,
+            loudness_pass2_done: false,
         }
     }
 
@@ -349,6 +362,12 @@ impl FilterGraphInner {
         for (i, step) in steps.iter().enumerate() {
             // AReverse is audio-only; skip it in the video graph.
             if matches!(step, FilterStep::AReverse) {
+                continue;
+            }
+
+            // LoudnessNormalize is audio-only and handled via two-pass in
+            // push_audio / pull_audio rather than through the filter graph.
+            if matches!(step, FilterStep::LoudnessNormalize { .. }) {
                 continue;
             }
 
@@ -724,6 +743,13 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // LoudnessNormalize is handled via two-pass buffering in
+            // push_audio / pull_audio; the regular audio graph is never built
+            // when this step is present, so this guard is defensive only.
+            if matches!(step, FilterStep::LoudnessNormalize { .. }) {
+                continue;
+            }
+
             // Speed uses `setpts` for video but `atempo` for audio.  Bypass the
             // standard `add_and_link_step` path and insert the atempo chain here.
             if let FilterStep::Speed { factor } = step {
@@ -757,6 +783,17 @@ impl FilterGraphInner {
         slot: usize,
         frame: &AudioFrame,
     ) -> Result<(), FilterError> {
+        // Two-pass loudness normalization: buffer frames instead of feeding the
+        // graph.  The measurement + correction passes run on the first pull_audio.
+        if self
+            .steps
+            .iter()
+            .any(|s| matches!(s, FilterStep::LoudnessNormalize { .. }))
+        {
+            self.loudness_buf.push(frame.clone());
+            return Ok(());
+        }
+
         self.ensure_audio_graph(frame)?;
 
         let audio_inputs = self.audio_input_count();
@@ -815,6 +852,24 @@ impl FilterGraphInner {
 
     /// Pull the next filtered audio frame, or `None` if not yet available.
     pub(crate) fn pull_audio(&mut self) -> Result<Option<AudioFrame>, FilterError> {
+        // Two-pass loudness normalization: run both passes on the first call,
+        // then drain the corrected output frame-by-frame.
+        if self
+            .steps
+            .iter()
+            .any(|s| matches!(s, FilterStep::LoudnessNormalize { .. }))
+        {
+            if !self.loudness_pass2_done {
+                self.run_loudness_normalization()?;
+            }
+            if self.loudness_output_idx < self.loudness_output.len() {
+                let frame = self.loudness_output[self.loudness_output_idx].clone();
+                self.loudness_output_idx += 1;
+                return Ok(Some(frame));
+            }
+            return Ok(None);
+        }
+
         let Some(sink_ctx) = self.asink_ctx else {
             return Ok(None);
         };
@@ -845,6 +900,380 @@ impl FilterGraphInner {
             }
         }
     }
+
+    // ── Two-pass loudness normalization ──────────────────────────────────────
+
+    /// Run EBU R128 two-pass loudness normalization over `self.loudness_buf`:
+    ///
+    /// 1. Measure integrated loudness with an `ebur128=peak=true:metadata=1` graph.
+    /// 2. Compute `gain_db = target_lufs − measured_lufs`.
+    /// 3. Apply gain with a `volume={gain_db}dB` graph.
+    /// 4. Store corrected frames in `self.loudness_output`.
+    fn run_loudness_normalization(&mut self) -> Result<(), FilterError> {
+        let target_lufs = self
+            .steps
+            .iter()
+            .find_map(|s| {
+                if let FilterStep::LoudnessNormalize { target_lufs, .. } = s {
+                    Some(*target_lufs)
+                } else {
+                    None
+                }
+            })
+            .ok_or(FilterError::BuildFailed)?;
+
+        // Mark done early to prevent re-entry on error.
+        self.loudness_pass2_done = true;
+
+        if self.loudness_buf.is_empty() {
+            return Ok(());
+        }
+
+        // === Pass 1: measure integrated loudness ===
+        let measured_lufs = unsafe {
+            let graph = ff_sys::avfilter_graph_alloc();
+            if graph.is_null() {
+                return Err(FilterError::BuildFailed);
+            }
+            let result = run_ebur128_graph(graph, &self.loudness_buf);
+            let mut g = graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            result?
+        };
+
+        let gain_db = target_lufs - measured_lufs;
+        log::info!(
+            "loudness normalization measured_lufs={:.1} target_lufs={:.1} gain_db={:.2}",
+            measured_lufs,
+            target_lufs,
+            gain_db,
+        );
+
+        // === Pass 2: apply volume correction ===
+        self.loudness_output = unsafe {
+            let graph = ff_sys::avfilter_graph_alloc();
+            if graph.is_null() {
+                return Err(FilterError::BuildFailed);
+            }
+            let result = run_volume_graph(graph, &self.loudness_buf, gain_db);
+            let mut g = graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            result?
+        };
+
+        Ok(())
+    }
+}
+
+// ── EBU R128 two-pass helper functions ───────────────────────────────────────
+
+/// Build a temporary `abuffer → ebur128=peak=true:metadata=1 → abuffersink` graph,
+/// feed all `frames` through it, drain the output, and return the integrated
+/// loudness (LUFS) read from `lavfi.r128.I` on the last output frame.
+///
+/// Falls back to `−70.0` (silence level) if no metadata is found.
+///
+/// # Safety
+///
+/// `graph` must be a valid, freshly-allocated `AVFilterGraph`.  The caller is
+/// responsible for freeing it with `avfilter_graph_free` after this call returns
+/// (whether `Ok` or `Err`).
+unsafe fn run_ebur128_graph(
+    graph: *mut ff_sys::AVFilterGraph,
+    frames: &[AudioFrame],
+) -> Result<f32, FilterError> {
+    let first = &frames[0];
+    let src_args_str = audio_buffersrc_args(
+        first.sample_rate(),
+        sample_format_to_av_name(first.format()),
+        first.channels(),
+    );
+    let src_args = std::ffi::CString::new(src_args_str).map_err(|_| FilterError::BuildFailed)?;
+
+    // 1. abuffersrc
+    let abuffer = ff_sys::avfilter_get_by_name(c"abuffer".as_ptr());
+    if abuffer.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let mut src_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut src_ctx,
+        abuffer,
+        c"meas_in".as_ptr(),
+        src_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 2. ebur128=peak=true:metadata=1
+    let ebur128_filt = ff_sys::avfilter_get_by_name(c"ebur128".as_ptr());
+    if ebur128_filt.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let mut meas_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut meas_ctx,
+        ebur128_filt,
+        c"meas_ebur128".as_ptr(),
+        c"peak=true:metadata=1".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 3. abuffersink
+    let abuffersink = ff_sys::avfilter_get_by_name(c"abuffersink".as_ptr());
+    if abuffersink.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        abuffersink,
+        c"meas_out".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Link: src → ebur128 → sink
+    let ret = ff_sys::avfilter_link(src_ctx, 0, meas_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(meas_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Configure
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        return Err(ffmpeg_err(ret));
+    }
+
+    // Feed all frames
+    for frame in frames {
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            return Err(FilterError::ProcessFailed);
+        }
+        (*raw_frame).nb_samples = frame.samples() as c_int;
+        (*raw_frame).sample_rate = frame.sample_rate() as c_int;
+        (*raw_frame).format = sample_format_to_av(frame.format());
+        (*raw_frame).pts = audio_pts_ticks(frame.timestamp(), frame.sample_rate());
+        (*raw_frame).ch_layout.nb_channels = frame.channels() as c_int;
+        let ret = ff_sys::av_frame_get_buffer(raw_frame, 0);
+        if ret < 0 {
+            let mut ptr = raw_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            return Err(FilterError::ProcessFailed);
+        }
+        copy_audio_planes_to_av(frame, raw_frame);
+        let ret = ff_sys::av_buffersrc_add_frame_flags(
+            src_ctx,
+            raw_frame,
+            ff_sys::BUFFERSRC_FLAG_KEEP_REF,
+        );
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+        if ret < 0 {
+            return Err(FilterError::ProcessFailed);
+        }
+    }
+
+    // Signal EOF so the filter flushes all pending frames.
+    ff_sys::av_buffersrc_close(src_ctx, ff_sys::AV_NOPTS_VALUE, 0u32);
+
+    // Drain all output; read `lavfi.r128.I` from each frame, keep the last value.
+    let mut last_integrated: f32 = -70.0;
+    loop {
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            break;
+        }
+        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, raw_frame);
+        if ret < 0 {
+            let mut ptr = raw_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            break;
+        }
+        // SAFETY: `(*raw_frame).metadata` is a valid `AVDictionary*` (may be null);
+        // `av_dict_get` handles null dictionaries by returning null.
+        let entry = ff_sys::av_dict_get(
+            (*raw_frame).metadata,
+            c"lavfi.r128.I".as_ptr(),
+            std::ptr::null(),
+            0,
+        );
+        if !entry.is_null()
+            && let Ok(s) = std::ffi::CStr::from_ptr((*entry).value).to_str()
+            && let Ok(v) = s.parse::<f32>()
+        {
+            last_integrated = v;
+        }
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+    }
+
+    Ok(last_integrated)
+}
+
+/// Build a temporary `abuffer → volume={gain_db}dB → abuffersink` graph,
+/// feed all `frames` through it, drain the output, and return the corrected frames.
+///
+/// # Safety
+///
+/// `graph` must be a valid, freshly-allocated `AVFilterGraph`.  The caller is
+/// responsible for freeing it with `avfilter_graph_free` after this call returns
+/// (whether `Ok` or `Err`).
+unsafe fn run_volume_graph(
+    graph: *mut ff_sys::AVFilterGraph,
+    frames: &[AudioFrame],
+    gain_db: f32,
+) -> Result<Vec<AudioFrame>, FilterError> {
+    let first = &frames[0];
+    let src_args_str = audio_buffersrc_args(
+        first.sample_rate(),
+        sample_format_to_av_name(first.format()),
+        first.channels(),
+    );
+    let src_args = std::ffi::CString::new(src_args_str).map_err(|_| FilterError::BuildFailed)?;
+
+    // 1. abuffersrc
+    let abuffer = ff_sys::avfilter_get_by_name(c"abuffer".as_ptr());
+    if abuffer.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let mut src_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut src_ctx,
+        abuffer,
+        c"vol_in".as_ptr(),
+        src_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 2. volume={gain_db}dB
+    let volume_filt = ff_sys::avfilter_get_by_name(c"volume".as_ptr());
+    if volume_filt.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let vol_args =
+        std::ffi::CString::new(format!("{gain_db:.4}dB")).map_err(|_| FilterError::BuildFailed)?;
+    let mut vol_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut vol_ctx,
+        volume_filt,
+        c"vol_volume".as_ptr(),
+        vol_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 3. abuffersink
+    let abuffersink = ff_sys::avfilter_get_by_name(c"abuffersink".as_ptr());
+    if abuffersink.is_null() {
+        return Err(FilterError::BuildFailed);
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        abuffersink,
+        c"vol_out".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Link: src → volume → sink
+    let ret = ff_sys::avfilter_link(src_ctx, 0, vol_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(vol_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Configure
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        return Err(ffmpeg_err(ret));
+    }
+
+    // Feed all frames
+    for frame in frames {
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            return Err(FilterError::ProcessFailed);
+        }
+        (*raw_frame).nb_samples = frame.samples() as c_int;
+        (*raw_frame).sample_rate = frame.sample_rate() as c_int;
+        (*raw_frame).format = sample_format_to_av(frame.format());
+        (*raw_frame).pts = audio_pts_ticks(frame.timestamp(), frame.sample_rate());
+        (*raw_frame).ch_layout.nb_channels = frame.channels() as c_int;
+        let ret = ff_sys::av_frame_get_buffer(raw_frame, 0);
+        if ret < 0 {
+            let mut ptr = raw_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            return Err(FilterError::ProcessFailed);
+        }
+        copy_audio_planes_to_av(frame, raw_frame);
+        let ret = ff_sys::av_buffersrc_add_frame_flags(
+            src_ctx,
+            raw_frame,
+            ff_sys::BUFFERSRC_FLAG_KEEP_REF,
+        );
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+        if ret < 0 {
+            return Err(FilterError::ProcessFailed);
+        }
+    }
+
+    // Signal EOF
+    ff_sys::av_buffersrc_close(src_ctx, ff_sys::AV_NOPTS_VALUE, 0u32);
+
+    // Drain all corrected output frames
+    let mut output = Vec::new();
+    loop {
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            break;
+        }
+        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, raw_frame);
+        if ret < 0 {
+            let mut ptr = raw_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            break;
+        }
+        if let Ok(af) = av_frame_to_audio_frame(raw_frame) {
+            output.push(af);
+        }
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+    }
+
+    Ok(output)
 }
 
 impl Drop for FilterGraphInner {
