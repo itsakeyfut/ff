@@ -382,6 +382,7 @@ impl FilterGraphInner {
                     | FilterStep::ParametricEq { .. }
                     | FilterStep::ANoiseGate { .. }
                     | FilterStep::ACompressor { .. }
+                    | FilterStep::StereoToMono
             ) {
                 continue;
             }

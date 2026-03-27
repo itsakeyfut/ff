@@ -273,6 +273,11 @@ pub(crate) enum FilterStep {
         /// Make-up gain in dB applied after compression (e.g. 6.0).
         makeup_db: f32,
     },
+    /// Downmix stereo to mono via `FFmpeg`'s `pan` filter.
+    ///
+    /// Both channels are mixed with equal weight:
+    /// `mono|c0=0.5*c0+0.5*c1`.  The output has a single channel.
+    StereoToMono,
     /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts` seconds is held for `duration` seconds, then
@@ -397,6 +402,7 @@ impl FilterStep {
             Self::NormalizePeak { .. } => "astats",
             Self::ANoiseGate { .. } => "agate",
             Self::ACompressor { .. } => "acompressor",
+            Self::StereoToMono => "pan",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -666,6 +672,7 @@ impl FilterStep {
                      release={release_ms}:makeup={makeup_db}dB"
                 )
             }
+            Self::StereoToMono => "mono|c0=0.5*c0+0.5*c1".to_string(),
         }
     }
 }
