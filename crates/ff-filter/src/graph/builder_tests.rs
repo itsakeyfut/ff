@@ -2961,3 +2961,48 @@ fn builder_concat_video_with_n0_should_return_invalid_config() {
         "expected InvalidConfig for n=0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_concat_audio_should_have_correct_filter_name() {
+    let step = FilterStep::ConcatAudio { n: 2 };
+    assert_eq!(step.filter_name(), "concat");
+}
+
+#[test]
+fn filter_step_concat_audio_should_produce_correct_args_for_n2() {
+    let step = FilterStep::ConcatAudio { n: 2 };
+    assert_eq!(step.args(), "n=2:v=0:a=1");
+}
+
+#[test]
+fn filter_step_concat_audio_should_produce_correct_args_for_n3() {
+    let step = FilterStep::ConcatAudio { n: 3 };
+    assert_eq!(step.args(), "n=3:v=0:a=1");
+}
+
+#[test]
+fn builder_concat_audio_valid_should_build_successfully() {
+    let result = FilterGraph::builder().concat_audio(2).build();
+    assert!(
+        result.is_ok(),
+        "concat_audio(2) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_concat_audio_with_n1_should_return_invalid_config() {
+    let result = FilterGraph::builder().concat_audio(1).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for n=1, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_concat_audio_with_n0_should_return_invalid_config() {
+    let result = FilterGraph::builder().concat_audio(0).build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for n=0, got {result:?}"
+    );
+}
