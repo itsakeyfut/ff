@@ -654,6 +654,17 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Concatenate `n_segments` sequential video inputs using `FFmpeg`'s `concat` filter.
+    ///
+    /// Requires `n_segments` video input slots (push to slots 0 through
+    /// `n_segments - 1` in order). [`build`](Self::build) returns
+    /// [`FilterError::InvalidConfig`] if `n_segments < 2`.
+    #[must_use]
+    pub fn concat_video(mut self, n_segments: u32) -> Self {
+        self.steps.push(FilterStep::ConcatVideo { n: n_segments });
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
@@ -969,6 +980,13 @@ impl FilterGraphBuilder {
             {
                 return Err(FilterError::InvalidConfig {
                     reason: "channel_map mapping must not be empty".to_string(),
+                });
+            }
+            if let FilterStep::ConcatVideo { n } = step
+                && *n < 2
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("concat_video n={n} must be >= 2"),
                 });
             }
             if let FilterStep::DrawText { opts } = step {
