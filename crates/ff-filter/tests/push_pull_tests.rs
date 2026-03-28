@@ -1370,3 +1370,33 @@ fn push_audio_through_audio_delay_negative_should_not_error() {
         assert_eq!(out.channels(), 2, "channel count should be unchanged");
     }
 }
+
+#[test]
+fn push_video_through_concat_video_should_produce_output() {
+    let mut graph = match FilterGraph::builder().concat_video(2).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after concat push to both slots");
+    assert_eq!(out.width(), 64, "width should be unchanged");
+    assert_eq!(out.height(), 64, "height should be unchanged");
+}

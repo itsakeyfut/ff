@@ -385,6 +385,7 @@ impl FilterGraphInner {
                     | FilterStep::StereoToMono
                     | FilterStep::ChannelMap { .. }
                     | FilterStep::AudioDelay { .. }
+                    | FilterStep::ConcatVideo { .. }
             ) {
                 continue;
             }
@@ -457,6 +458,20 @@ impl FilterGraphInner {
                     bail!(FilterError::BuildFailed);
                 }
                 log::debug!("filter linked extra_input=in1 to two-input filter pad=1");
+            }
+
+            // ConcatVideo consumes n input pads; link src_ctxs[1..n-1] to pads 1..n-1.
+            if let FilterStep::ConcatVideo { n } = step {
+                for slot in 1..*n as usize {
+                    if let Some(Some(extra_src)) = src_ctxs.get(slot) {
+                        let ret =
+                            ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, slot as u32);
+                        if ret < 0 {
+                            bail!(FilterError::BuildFailed);
+                        }
+                        log::debug!("filter linked extra_input=in{slot} to concat pad={slot}");
+                    }
+                }
             }
         }
 
@@ -607,6 +622,9 @@ impl FilterGraphInner {
         for step in &self.steps {
             if matches!(step, FilterStep::Overlay { .. } | FilterStep::XFade { .. }) {
                 return 2;
+            }
+            if let FilterStep::ConcatVideo { n } = step {
+                return *n as usize;
             }
         }
         1
