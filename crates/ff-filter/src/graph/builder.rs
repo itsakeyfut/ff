@@ -665,6 +665,17 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Concatenate `n_segments` sequential audio inputs using `FFmpeg`'s `concat` filter.
+    ///
+    /// Requires `n_segments` audio input slots (push to slots 0 through
+    /// `n_segments - 1` in order). [`build`](Self::build) returns
+    /// [`FilterError::InvalidConfig`] if `n_segments < 2`.
+    #[must_use]
+    pub fn concat_audio(mut self, n_segments: u32) -> Self {
+        self.steps.push(FilterStep::ConcatAudio { n: n_segments });
+        self
+    }
+
     /// Freeze the frame at `pts_sec` for `duration_sec` seconds using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts_sec` is held for `duration_sec` seconds before
@@ -987,6 +998,13 @@ impl FilterGraphBuilder {
             {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("concat_video n={n} must be >= 2"),
+                });
+            }
+            if let FilterStep::ConcatAudio { n } = step
+                && *n < 2
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("concat_audio n={n} must be >= 2"),
                 });
             }
             if let FilterStep::DrawText { opts } = step {

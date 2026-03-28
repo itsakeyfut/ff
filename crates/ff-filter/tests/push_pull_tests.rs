@@ -1400,3 +1400,33 @@ fn push_video_through_concat_video_should_produce_output() {
     assert_eq!(out.width(), 64, "width should be unchanged");
     assert_eq!(out.height(), 64, "height should be unchanged");
 }
+
+#[test]
+fn push_audio_through_concat_audio_should_produce_output() {
+    let mut graph = match FilterGraph::builder().concat_audio(2).build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_audio_frame();
+    match graph.push_audio(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_audio(1, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_audio().expect("pull_audio must not fail");
+    let out = result.expect("expected Some(frame) after concat push to both slots");
+    assert_eq!(out.sample_rate(), 48000, "sample rate should be unchanged");
+    assert_eq!(out.channels(), 2, "channel count should be unchanged");
+}

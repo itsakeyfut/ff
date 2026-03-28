@@ -385,7 +385,7 @@ impl FilterGraphInner {
                     | FilterStep::StereoToMono
                     | FilterStep::ChannelMap { .. }
                     | FilterStep::AudioDelay { .. }
-                    | FilterStep::ConcatVideo { .. }
+                    | FilterStep::ConcatAudio { .. }
             ) {
                 continue;
             }
@@ -636,6 +636,9 @@ impl FilterGraphInner {
             if let FilterStep::Amix(n) = step {
                 return *n;
             }
+            if let FilterStep::ConcatAudio { n } = step {
+                return *n as usize;
+            }
         }
         1
     }
@@ -786,8 +789,8 @@ impl FilterGraphInner {
         // 3-5. Add each `FilterStep` (audio-relevant steps) and link.
         let mut prev_ctx = first_src_ctx.as_ptr();
         for (i, step) in steps.iter().enumerate() {
-            // Reverse is video-only; skip it in the audio graph.
-            if matches!(step, FilterStep::Reverse) {
+            // Video-only steps; skip them in the audio graph.
+            if matches!(step, FilterStep::Reverse | FilterStep::ConcatVideo { .. }) {
                 continue;
             }
 
@@ -831,6 +834,20 @@ impl FilterGraphInner {
             }
 
             prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "astep")?;
+
+            // ConcatAudio consumes n input pads; link src_ctxs[1..n-1] to pads 1..n-1.
+            if let FilterStep::ConcatAudio { n } = step {
+                for slot in 1..*n as usize {
+                    if let Some(Some(extra_src)) = src_ctxs.get(slot) {
+                        let ret =
+                            ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, slot as u32);
+                        if ret < 0 {
+                            return Err(FilterError::BuildFailed);
+                        }
+                        log::debug!("filter linked extra_input=in{slot} to concat pad={slot}");
+                    }
+                }
+            }
         }
 
         // Link last filter to sink.

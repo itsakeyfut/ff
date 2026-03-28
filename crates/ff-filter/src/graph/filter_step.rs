@@ -304,6 +304,13 @@ pub(crate) enum FilterStep {
         /// Number of video input segments to concatenate. Must be ≥ 2.
         n: u32,
     },
+    /// Concatenate `n` sequential audio input segments via `FFmpeg`'s `concat` filter.
+    ///
+    /// Requires `n` audio input slots (0 through `n-1`). `n` must be ≥ 2.
+    ConcatAudio {
+        /// Number of audio input segments to concatenate. Must be ≥ 2.
+        n: u32,
+    },
     /// Freeze a single frame for a configurable duration using `FFmpeg`'s `loop` filter.
     ///
     /// The frame nearest to `pts` seconds is held for `duration` seconds, then
@@ -433,7 +440,7 @@ impl FilterStep {
             // AudioDelay dispatches to adelay (positive) or atrim (negative) at
             // build time; "adelay" is returned here for validate_filter_steps only.
             Self::AudioDelay { .. } => "adelay",
-            Self::ConcatVideo { .. } => "concat",
+            Self::ConcatVideo { .. } | Self::ConcatAudio { .. } => "concat",
             Self::SubtitlesSrt { .. } => "subtitles",
             Self::SubtitlesAss { .. } => "ass",
             // OverlayImage is a compound step (movie → lut → overlay); "overlay"
@@ -716,6 +723,7 @@ impl FilterStep {
                 }
             }
             Self::ConcatVideo { n } => format!("n={n}:v=1:a=0"),
+            Self::ConcatAudio { n } => format!("n={n}:v=0:a=1"),
         }
     }
 }
