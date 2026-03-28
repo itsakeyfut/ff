@@ -201,6 +201,7 @@ mod hardware;
 mod image;
 mod preset;
 mod progress;
+mod trim;
 mod video;
 
 pub use audio::{
@@ -215,6 +216,7 @@ pub use hardware::HardwareEncoder;
 pub use image::{ImageEncoder, ImageEncoderBuilder};
 pub use preset::Preset;
 pub use progress::{EncodeProgress, EncodeProgressCallback};
+pub use trim::StreamCopyTrimmer;
 pub use video::{
     Av1Options, Av1Usage, DnxhdOptions, DnxhdVariant, H264Options, H264Preset, H264Profile,
     H264Tune, H265Options, H265Profile, H265Tier, ProResOptions, ProResProfile, SvtAv1Options,
