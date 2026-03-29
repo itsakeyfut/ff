@@ -519,18 +519,34 @@ impl VideoEncoderBuilder {
         let requires_even_dims = !matches!(self.video_codec, VideoCodec::Png);
 
         if has_video {
+            // Dimension range check (2–32768 inclusive).
+            let w = self.video_width.unwrap_or(0);
+            let h = self.video_height.unwrap_or(0);
+            if (self.video_width.is_some() || self.video_height.is_some())
+                && (!(2..=32_768).contains(&w) || !(2..=32_768).contains(&h))
+            {
+                log::warn!(
+                    "video dimensions out of range width={w} height={h} \
+                     (valid range 2–32768 per axis)"
+                );
+                return Err(EncodeError::InvalidDimensions {
+                    width: w,
+                    height: h,
+                });
+            }
+
             if let Some(width) = self.video_width
-                && (width == 0 || (requires_even_dims && width % 2 != 0))
+                && (requires_even_dims && width % 2 != 0)
             {
                 return Err(EncodeError::InvalidConfig {
-                    reason: format!("Video width must be non-zero and even, got {width}"),
+                    reason: format!("Video width must be even, got {width}"),
                 });
             }
             if let Some(height) = self.video_height
-                && (height == 0 || (requires_even_dims && height % 2 != 0))
+                && (requires_even_dims && height % 2 != 0)
             {
                 return Err(EncodeError::InvalidConfig {
-                    reason: format!("Video height must be non-zero and even, got {height}"),
+                    reason: format!("Video height must be even, got {height}"),
                 });
             }
             if let Some(fps) = self.video_fps
@@ -538,6 +554,14 @@ impl VideoEncoderBuilder {
             {
                 return Err(EncodeError::InvalidConfig {
                     reason: format!("Video FPS must be positive, got {fps}"),
+                });
+            }
+            if let Some(fps) = self.video_fps
+                && fps > 1000.0
+            {
+                log::warn!("video fps exceeds maximum fps={fps} (maximum 1000)");
+                return Err(EncodeError::InvalidConfig {
+                    reason: format!("fps {fps} exceeds maximum 1000"),
                 });
             }
             if let Some(crate::BitrateMode::Crf(q)) = self.video_bitrate_mode
@@ -556,6 +580,19 @@ impl VideoEncoderBuilder {
                 return Err(EncodeError::InvalidConfig {
                     reason: format!("BitrateMode::Vbr max ({max}) must be >= target ({target})"),
                 });
+            }
+
+            // Bitrate ceiling: 800 Mbps (800_000_000 bps).
+            let effective_bitrate: Option<u64> = match self.video_bitrate_mode {
+                Some(crate::BitrateMode::Cbr(bps)) => Some(bps),
+                Some(crate::BitrateMode::Vbr { max, .. }) => Some(max),
+                _ => None,
+            };
+            if let Some(bps) = effective_bitrate
+                && bps > 800_000_000
+            {
+                log::warn!("video bitrate exceeds maximum bitrate={bps} maximum=800000000");
+                return Err(EncodeError::InvalidBitrate { bitrate: bps });
             }
         }
 

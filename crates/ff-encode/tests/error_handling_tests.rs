@@ -11,7 +11,7 @@
 
 mod fixtures;
 
-use ff_encode::{EncodeError, VideoCodec, VideoEncoder};
+use ff_encode::{BitrateMode, EncodeError, VideoCodec, VideoEncoder};
 use fixtures::{create_black_frame, test_output_path};
 
 // ============================================================================
@@ -262,4 +262,153 @@ fn test_very_high_framerate() {
             println!("High framerate rejected: {}", e);
         }
     }
+}
+
+// ============================================================================
+// Dimension Validation Tests (issue #283)
+// ============================================================================
+
+#[test]
+fn width_zero_should_return_invalid_dimensions() {
+    let output_path = test_output_path("dim_w0.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(0, 480, 30.0)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidDimensions { .. })),
+        "expected InvalidDimensions for width=0"
+    );
+}
+
+#[test]
+fn width_one_should_return_invalid_dimensions() {
+    let output_path = test_output_path("dim_w1.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(1, 480, 30.0)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidDimensions { .. })),
+        "expected InvalidDimensions for width=1"
+    );
+}
+
+#[test]
+fn width_above_maximum_should_return_invalid_dimensions() {
+    let output_path = test_output_path("dim_w_max.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(32769, 480, 30.0)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidDimensions { .. })),
+        "expected InvalidDimensions for width=32769"
+    );
+}
+
+#[test]
+fn height_one_should_return_invalid_dimensions() {
+    let output_path = test_output_path("dim_h1.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 1, 30.0)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidDimensions { .. })),
+        "expected InvalidDimensions for height=1"
+    );
+}
+
+#[test]
+fn height_above_maximum_should_return_invalid_dimensions() {
+    let output_path = test_output_path("dim_h_max.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 32769, 30.0)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidDimensions { .. })),
+        "expected InvalidDimensions for height=32769"
+    );
+}
+
+#[test]
+fn minimum_valid_dimensions_should_build_without_dimension_error() {
+    let output_path = test_output_path("dim_min_valid.mp4");
+    let result = VideoEncoder::create(&output_path).video(2, 2, 30.0).build();
+    // Build may fail for other reasons (codec, file system), but not InvalidDimensions.
+    assert!(
+        !matches!(result, Err(EncodeError::InvalidDimensions { .. })),
+        "expected no InvalidDimensions for width=2 height=2"
+    );
+}
+
+// ============================================================================
+// Bitrate Validation Tests (issue #283)
+// ============================================================================
+
+#[test]
+fn cbr_bitrate_above_800mbps_should_return_invalid_bitrate() {
+    let output_path = test_output_path("bitrate_cbr_max.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .bitrate_mode(BitrateMode::Cbr(900_000_000))
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidBitrate { .. })),
+        "expected InvalidBitrate for cbr=900_000_000"
+    );
+}
+
+#[test]
+fn vbr_max_above_800mbps_should_return_invalid_bitrate() {
+    let output_path = test_output_path("bitrate_vbr_max.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .bitrate_mode(BitrateMode::Vbr {
+            target: 400_000_000,
+            max: 900_000_000,
+        })
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidBitrate { .. })),
+        "expected InvalidBitrate for vbr max=900_000_000"
+    );
+}
+
+#[test]
+fn cbr_bitrate_at_800mbps_boundary_should_not_return_invalid_bitrate() {
+    let output_path = test_output_path("bitrate_cbr_boundary.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 30.0)
+        .bitrate_mode(BitrateMode::Cbr(800_000_000))
+        .build();
+    assert!(
+        !matches!(result, Err(EncodeError::InvalidBitrate { .. })),
+        "expected no InvalidBitrate for cbr=800_000_000"
+    );
+}
+
+// ============================================================================
+// FPS Upper Bound Tests (issue #283)
+// ============================================================================
+
+#[test]
+fn fps_above_1000_should_return_invalid_config() {
+    let output_path = test_output_path("fps_max.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 1001.0)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidConfig { .. })),
+        "expected InvalidConfig for fps=1001.0"
+    );
+}
+
+#[test]
+fn fps_at_1000_boundary_should_not_return_fps_error() {
+    let output_path = test_output_path("fps_boundary.mp4");
+    let result = VideoEncoder::create(&output_path)
+        .video(640, 480, 1000.0)
+        .build();
+    // Build may fail for other reasons (codec, file system), but not the fps cap.
+    let is_fps_error = matches!(&result, Err(EncodeError::InvalidConfig { reason })
+        if reason.contains("fps") && reason.contains("maximum"));
+    assert!(!is_fps_error, "expected no fps cap error for fps=1000.0");
 }

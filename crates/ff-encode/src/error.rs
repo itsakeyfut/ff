@@ -101,6 +101,22 @@ pub enum EncodeError {
         hint: String,
     },
 
+    /// Video dimensions are outside the supported range (2–32768 per axis).
+    #[error("invalid video dimensions: {width}x{height} (must be 2–32768)")]
+    InvalidDimensions {
+        /// Requested width in pixels.
+        width: u32,
+        /// Requested height in pixels.
+        height: u32,
+    },
+
+    /// Bitrate exceeds the supported ceiling (800 Mbps).
+    #[error("invalid bitrate: {bitrate} bps exceeds maximum 800 Mbps")]
+    InvalidBitrate {
+        /// Requested bitrate in bits per second.
+        bitrate: u64,
+    },
+
     /// Encoding cancelled by user
     #[error("Encoding cancelled by user")]
     Cancelled,
