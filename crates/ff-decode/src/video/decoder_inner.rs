@@ -1121,6 +1121,15 @@ impl VideoDecoderInner {
                         if send_ret == ff_sys::error_codes::AVERROR_INVALIDDATA {
                             log::warn!("packet skipped reason=invalid_data pts={pkt_pts}");
                             self.consecutive_invalid += 1;
+                            if self.consecutive_invalid >= 32 {
+                                log::warn!(
+                                    "stream corrupted consecutive_invalid_packets={}",
+                                    self.consecutive_invalid
+                                );
+                                return Err(DecodeError::StreamCorrupted {
+                                    consecutive_invalid_packets: self.consecutive_invalid,
+                                });
+                            }
                             // Do not return error; fall through to read the next packet.
                         } else if send_ret < 0 && send_ret != ff_sys::error_codes::EAGAIN {
                             return Err(DecodeError::Ffmpeg {

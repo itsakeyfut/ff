@@ -207,6 +207,15 @@ pub enum DecodeError {
         /// Frame height.
         height: u32,
     },
+
+    /// Too many consecutive corrupt packets — the stream is unrecoverable.
+    #[error(
+        "stream corrupted: {consecutive_invalid_packets} consecutive invalid packets without recovery"
+    )]
+    StreamCorrupted {
+        /// Number of consecutive invalid packets that triggered the error.
+        consecutive_invalid_packets: u32,
+    },
 }
 
 impl DecodeError {
@@ -373,7 +382,8 @@ impl DecodeError {
             | Self::Io(_)
             | Self::Ffmpeg { .. }
             | Self::SeekNotSupported
-            | Self::UnsupportedResolution { .. } => false,
+            | Self::UnsupportedResolution { .. }
+            | Self::StreamCorrupted { .. } => false,
         }
     }
 
@@ -419,7 +429,8 @@ impl DecodeError {
             | Self::HwAccelUnavailable { .. }
             | Self::InvalidOutputDimensions { .. }
             | Self::ConnectionFailed { .. }
-            | Self::Io(_) => true,
+            | Self::Io(_)
+            | Self::StreamCorrupted { .. } => true,
             Self::DecodingFailed { .. }
             | Self::SeekFailed { .. }
             | Self::NetworkTimeout { .. }
@@ -755,6 +766,36 @@ mod tests {
             height: 40000,
         };
         assert!(!e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn stream_corrupted_display_should_contain_packet_count() {
+        let e = DecodeError::StreamCorrupted {
+            consecutive_invalid_packets: 32,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("32"), "expected '32' in '{msg}'");
+    }
+
+    #[test]
+    fn stream_corrupted_display_should_mention_consecutive() {
+        let e = DecodeError::StreamCorrupted {
+            consecutive_invalid_packets: 32,
+        };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("consecutive"),
+            "expected 'consecutive' in '{msg}'"
+        );
+    }
+
+    #[test]
+    fn stream_corrupted_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::StreamCorrupted {
+            consecutive_invalid_packets: 32,
+        };
+        assert!(e.is_fatal());
         assert!(!e.is_recoverable());
     }
 }
