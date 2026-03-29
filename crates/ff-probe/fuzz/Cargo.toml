@@ -1,0 +1,19 @@
+[package]
+name = "ff-probe-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "probe_open"
+path = "fuzz_targets/probe_open.rs"
+test = false
+doc = false
+
+[dependencies]
+libfuzzer-sys = "0.4.12"
+ff-probe = { path = ".." }
+tempfile = "3.27.0"
