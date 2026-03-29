@@ -306,6 +306,71 @@ name = "srt_output"
 path = "examples/stream/srt_output.rs"
 required-features = ["stream", "srt"]
 
+[[example]]
+name = "color_grade"
+path = "examples/filter/color_grade.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "video_geometry"
+path = "examples/filter/video_geometry.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "video_enhance"
+path = "examples/filter/video_enhance.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "text_overlay"
+path = "examples/filter/text_overlay.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "subtitles"
+path = "examples/filter/subtitles.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "transitions"
+path = "examples/filter/transitions.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "video_speed"
+path = "examples/filter/video_speed.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "audio_normalize"
+path = "examples/filter/audio_normalize.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "audio_dynamics"
+path = "examples/filter/audio_dynamics.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "audio_channel"
+path = "examples/filter/audio_channel.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "audio_sync"
+path = "examples/filter/audio_sync.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "clip_concat"
+path = "examples/filter/clip_concat.rs"
+required-features = ["pipeline"]
+
+[[example]]
+name = "clip_trim"
+path = "examples/filter/clip_trim.rs"
+required-features = ["encode"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
