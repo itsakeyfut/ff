@@ -11,7 +11,7 @@
 
 mod fixtures;
 
-use ff_encode::{BitrateMode, EncodeError, VideoCodec, VideoEncoder};
+use ff_encode::{AudioCodec, AudioEncoder, BitrateMode, EncodeError, VideoCodec, VideoEncoder};
 use fixtures::{create_black_frame, test_output_path};
 
 // ============================================================================
@@ -411,4 +411,86 @@ fn fps_at_1000_boundary_should_not_return_fps_error() {
     let is_fps_error = matches!(&result, Err(EncodeError::InvalidConfig { reason })
         if reason.contains("fps") && reason.contains("maximum"));
     assert!(!is_fps_error, "expected no fps cap error for fps=1000.0");
+}
+
+// ============================================================================
+// Audio Validation Tests (issue #286)
+// ============================================================================
+
+#[test]
+fn channels_above_8_should_return_invalid_channel_count() {
+    let output_path = test_output_path("audio_ch9.m4a");
+    let result = AudioEncoder::create(&output_path)
+        .audio(48000, 9)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidChannelCount { .. })),
+        "expected InvalidChannelCount for channels=9"
+    );
+}
+
+#[test]
+fn channels_at_8_should_not_return_invalid_channel_count() {
+    let output_path = test_output_path("audio_ch8.m4a");
+    let result = AudioEncoder::create(&output_path)
+        .audio(48000, 8)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+    assert!(
+        !matches!(result, Err(EncodeError::InvalidChannelCount { .. })),
+        "expected no InvalidChannelCount for channels=8"
+    );
+}
+
+#[test]
+fn sample_rate_below_minimum_should_return_invalid_sample_rate() {
+    let output_path = test_output_path("audio_sr7999.m4a");
+    let result = AudioEncoder::create(&output_path)
+        .audio(7999, 2)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidSampleRate { .. })),
+        "expected InvalidSampleRate for sample_rate=7999"
+    );
+}
+
+#[test]
+fn sample_rate_above_maximum_should_return_invalid_sample_rate() {
+    let output_path = test_output_path("audio_sr384001.m4a");
+    let result = AudioEncoder::create(&output_path)
+        .audio(384_001, 2)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+    assert!(
+        matches!(result, Err(EncodeError::InvalidSampleRate { .. })),
+        "expected InvalidSampleRate for sample_rate=384001"
+    );
+}
+
+#[test]
+fn sample_rate_at_minimum_boundary_should_not_return_invalid_sample_rate() {
+    let output_path = test_output_path("audio_sr8000.m4a");
+    let result = AudioEncoder::create(&output_path)
+        .audio(8000, 2)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+    assert!(
+        !matches!(result, Err(EncodeError::InvalidSampleRate { .. })),
+        "expected no InvalidSampleRate for sample_rate=8000"
+    );
+}
+
+#[test]
+fn sample_rate_at_maximum_boundary_should_not_return_invalid_sample_rate() {
+    let output_path = test_output_path("audio_sr384000.m4a");
+    let result = AudioEncoder::create(&output_path)
+        .audio(384_000, 2)
+        .audio_codec(AudioCodec::Aac)
+        .build();
+    assert!(
+        !matches!(result, Err(EncodeError::InvalidSampleRate { .. })),
+        "expected no InvalidSampleRate for sample_rate=384000"
+    );
 }
