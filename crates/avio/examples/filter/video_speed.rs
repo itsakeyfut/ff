@@ -1,25 +1,21 @@
-//! Adjust audio volume or apply an equalizer using `FilterGraphBuilder` + `Pipeline`.
+//! Change video playback speed using `FilterGraphBuilder` + `Pipeline`.
 //!
 //! Available effects:
-//!   `volume`     — adjust loudness by a gain in dB (`+` = louder, `-` = quieter)
-//!   `equalizer`  — boost or cut a specific peak frequency band
-//!   `low-shelf`  — boost or cut all frequencies below a corner frequency
-//!   `high-shelf` — boost or cut all frequencies above a corner frequency
-//!   `afade-in`   — fade in audio from silence at the start of the clip
-//!   `afade-out`  — fade out audio to silence at the end of the clip
+//!   `speed`        — change playback speed (fast / slow motion)
+//!   `reverse`      — reverse video playback (buffers entire clip)
+//!   `areverse`     — reverse audio playback (buffers entire clip)
+//!   `freeze-frame` — freeze a specific frame for a given duration
 //!
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_filters --features pipeline -- \
-//!   --input   input.mp4     \
-//!   --output  filtered.mp4  \
-//!   --effect  volume        \
-//!   [--db    6.0]            # gain in dB for volume (default: 6.0)
-//!   [--freq  1000.0]         # center/corner frequency in Hz (default: 1000.0)
-//!   [--gain  3.0]            # gain in dB for equalizer/shelf (default: 3.0)
-//!   [--start 0.0]            # afade: start time in seconds (default: 0.0)
-//!   [--duration 1.0]         # afade: fade duration in seconds (default: 1.0)
+//! cargo run --example video_speed --features pipeline -- \
+//!   --input   input.mp4   \
+//!   --output  out.mp4     \
+//!   --effect  speed       \
+//!   [--factor   2.0]       # speed factor > 1.0 = faster, < 1.0 = slower (default: 2.0)
+//!   [--pts      5.0]       # freeze-frame: PTS in seconds to freeze (default: 5.0)
+//!   [--duration 3.0]       # freeze-frame: duration to hold the frame (default: 3.0)
 //! ```
 
 use std::{
@@ -28,7 +24,7 @@ use std::{
     process,
 };
 
-use avio::{AudioCodec, EncoderConfig, EqBand, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
+use avio::{AudioCodec, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
 
 fn render_progress(p: &Progress) {
     match p.percent() {
@@ -56,33 +52,18 @@ fn main() {
     let mut input = None::<String>;
     let mut output = None::<String>;
     let mut effect = None::<String>;
-    let mut db: f64 = 6.0;
-    let mut freq: f64 = 1000.0;
-    let mut gain: f64 = 3.0;
-    let mut start: f64 = 0.0;
-    let mut duration: f64 = 1.0;
+    let mut factor: f64 = 2.0;
+    let mut pts: f64 = 5.0;
+    let mut duration: f64 = 3.0;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--input" | "-i" => input = Some(args.next().unwrap_or_default()),
             "--output" | "-o" => output = Some(args.next().unwrap_or_default()),
             "--effect" | "-e" => effect = Some(args.next().unwrap_or_default()),
-            "--db" => {
-                let v = args.next().unwrap_or_default();
-                db = v.parse().unwrap_or(6.0);
-            }
-            "--freq" => {
-                let v = args.next().unwrap_or_default();
-                freq = v.parse().unwrap_or(1000.0);
-            }
-            "--gain" => {
-                let v = args.next().unwrap_or_default();
-                gain = v.parse().unwrap_or(3.0);
-            }
-            "--start" => start = args.next().unwrap_or_default().parse().unwrap_or(0.0),
-            "--duration" => {
-                duration = args.next().unwrap_or_default().parse().unwrap_or(1.0);
-            }
+            "--factor" => factor = args.next().unwrap_or_default().parse().unwrap_or(2.0),
+            "--pts" => pts = args.next().unwrap_or_default().parse().unwrap_or(5.0),
+            "--duration" => duration = args.next().unwrap_or_default().parse().unwrap_or(3.0),
             other => {
                 eprintln!("Unknown flag: {other}");
                 process::exit(1);
@@ -92,8 +73,8 @@ fn main() {
 
     let input = input.unwrap_or_else(|| {
         eprintln!(
-            "Usage: audio_filters --input <file> --output <file> \
-             --effect volume|equalizer|low-shelf|high-shelf|afade-in|afade-out [options]"
+            "Usage: video_speed --input <file> --output <file> \
+             --effect speed|reverse|areverse|freeze-frame [options]"
         );
         process::exit(1);
     });
@@ -102,10 +83,7 @@ fn main() {
         process::exit(1);
     });
     let effect = effect.unwrap_or_else(|| {
-        eprintln!(
-            "--effect is required \
-             (volume|equalizer|low-shelf|high-shelf|afade-in|afade-out)"
-        );
+        eprintln!("--effect is required (speed|reverse|areverse|freeze-frame)");
         process::exit(1);
     });
 
@@ -121,66 +99,39 @@ fn main() {
     // ── Build filter graph ────────────────────────────────────────────────────
 
     let filter_result = match effect.as_str() {
-        "volume" => {
-            let sign = if db >= 0.0 { "+" } else { "" };
+        "speed" => {
+            let label = if factor > 1.0 {
+                "fast motion"
+            } else {
+                "slow motion"
+            };
             println!("Input:   {in_name}");
-            println!("Effect:  volume  ({sign}{db} dB)");
+            println!("Effect:  speed  (factor={factor:.2}×  {label})");
             println!("Output:  {out_name}");
-            FilterGraphBuilder::new().volume(db).build()
+            FilterGraphBuilder::new().speed(factor).build()
         }
-        "equalizer" => {
+        "reverse" => {
             println!("Input:   {in_name}");
-            println!("Effect:  equalizer  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!("Effect:  reverse  (video — buffers entire clip)");
+            println!("Output:  {out_name}");
+            FilterGraphBuilder::new().reverse().build()
+        }
+        "areverse" => {
+            println!("Input:   {in_name}");
+            println!("Effect:  areverse  (audio — buffers entire clip)");
+            println!("Output:  {out_name}");
+            FilterGraphBuilder::new().areverse().build()
+        }
+        "freeze-frame" => {
+            println!("Input:   {in_name}");
+            println!("Effect:  freeze_frame  (pts={pts:.1}s  duration={duration:.1}s)");
             println!("Output:  {out_name}");
             FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::Peak {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    q: 1.0,
-                }])
+                .freeze_frame(pts, duration)
                 .build()
-        }
-        "low-shelf" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  low_shelf  (freq={freq} Hz  gain={gain:+.1} dB)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::LowShelf {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    slope: 0.5,
-                }])
-                .build()
-        }
-        "high-shelf" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  high_shelf  (freq={freq} Hz  gain={gain:+.1} dB)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::HighShelf {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    slope: 0.5,
-                }])
-                .build()
-        }
-        "afade-in" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  afade_in  (start={start:.1}s  duration={duration:.1}s)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new().afade_in(start, duration).build()
-        }
-        "afade-out" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  afade_out  (start={start:.1}s  duration={duration:.1}s)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new().afade_out(start, duration).build()
         }
         other => {
-            eprintln!(
-                "Unknown effect '{other}' \
-                 (try volume, equalizer, low-shelf, high-shelf, afade-in, afade-out)"
-            );
+            eprintln!("Unknown effect '{other}' (try speed, reverse, areverse, freeze-frame)");
             process::exit(1);
         }
     };

@@ -1,25 +1,23 @@
-//! Adjust audio volume or apply an equalizer using `FilterGraphBuilder` + `Pipeline`.
+//! Apply video enhancement and noise reduction using `FilterGraphBuilder` + `Pipeline`.
 //!
 //! Available effects:
-//!   `volume`     — adjust loudness by a gain in dB (`+` = louder, `-` = quieter)
-//!   `equalizer`  — boost or cut a specific peak frequency band
-//!   `low-shelf`  — boost or cut all frequencies below a corner frequency
-//!   `high-shelf` — boost or cut all frequencies above a corner frequency
-//!   `afade-in`   — fade in audio from silence at the start of the clip
-//!   `afade-out`  — fade out audio to silence at the end of the clip
+//!   `blur`         — Gaussian blur with configurable sigma
+//!   `sharpen`      — unsharp mask (luma + chroma strength)
+//!   `hqdn3d`       — High Quality 3D noise reduction
+//!   `nlmeans`      — non-local means noise reduction (high quality, CPU-intensive)
+//!   `deinterlace`  — deinterlace using yadif
 //!
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_filters --features pipeline -- \
-//!   --input   input.mp4     \
-//!   --output  filtered.mp4  \
-//!   --effect  volume        \
-//!   [--db    6.0]            # gain in dB for volume (default: 6.0)
-//!   [--freq  1000.0]         # center/corner frequency in Hz (default: 1000.0)
-//!   [--gain  3.0]            # gain in dB for equalizer/shelf (default: 3.0)
-//!   [--start 0.0]            # afade: start time in seconds (default: 0.0)
-//!   [--duration 1.0]         # afade: fade duration in seconds (default: 1.0)
+//! cargo run --example video_enhance --features pipeline -- \
+//!   --input    input.mp4    \
+//!   --output   enhanced.mp4 \
+//!   --effect   blur         \
+//!   [--sigma       2.0]      # blur: Gaussian sigma (default: 2.0)
+//!   [--luma        0.5]      # sharpen: luma strength −1.5–1.5   (default: 0.5)
+//!   [--chroma      0.3]      # sharpen: chroma strength −1.5–1.5 (default: 0.3)
+//!   [--nlmeans-str 5.0]      # nlmeans: denoising strength 1–30  (default: 5.0)
 //! ```
 
 use std::{
@@ -28,7 +26,9 @@ use std::{
     process,
 };
 
-use avio::{AudioCodec, EncoderConfig, EqBand, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
+use avio::{
+    AudioCodec, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec, YadifMode,
+};
 
 fn render_progress(p: &Progress) {
     match p.percent() {
@@ -56,32 +56,23 @@ fn main() {
     let mut input = None::<String>;
     let mut output = None::<String>;
     let mut effect = None::<String>;
-    let mut db: f64 = 6.0;
-    let mut freq: f64 = 1000.0;
-    let mut gain: f64 = 3.0;
-    let mut start: f64 = 0.0;
-    let mut duration: f64 = 1.0;
+    let mut sigma: f32 = 2.0;
+    let mut luma_strength: f32 = 0.5;
+    let mut chroma_strength: f32 = 0.3;
+    let mut nlmeans_str: f32 = 5.0;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--input" | "-i" => input = Some(args.next().unwrap_or_default()),
             "--output" | "-o" => output = Some(args.next().unwrap_or_default()),
             "--effect" | "-e" => effect = Some(args.next().unwrap_or_default()),
-            "--db" => {
-                let v = args.next().unwrap_or_default();
-                db = v.parse().unwrap_or(6.0);
+            "--sigma" => sigma = args.next().unwrap_or_default().parse().unwrap_or(2.0),
+            "--luma" => luma_strength = args.next().unwrap_or_default().parse().unwrap_or(0.5),
+            "--chroma" => {
+                chroma_strength = args.next().unwrap_or_default().parse().unwrap_or(0.3);
             }
-            "--freq" => {
-                let v = args.next().unwrap_or_default();
-                freq = v.parse().unwrap_or(1000.0);
-            }
-            "--gain" => {
-                let v = args.next().unwrap_or_default();
-                gain = v.parse().unwrap_or(3.0);
-            }
-            "--start" => start = args.next().unwrap_or_default().parse().unwrap_or(0.0),
-            "--duration" => {
-                duration = args.next().unwrap_or_default().parse().unwrap_or(1.0);
+            "--nlmeans-str" => {
+                nlmeans_str = args.next().unwrap_or_default().parse().unwrap_or(5.0);
             }
             other => {
                 eprintln!("Unknown flag: {other}");
@@ -92,8 +83,8 @@ fn main() {
 
     let input = input.unwrap_or_else(|| {
         eprintln!(
-            "Usage: audio_filters --input <file> --output <file> \
-             --effect volume|equalizer|low-shelf|high-shelf|afade-in|afade-out [options]"
+            "Usage: video_enhance --input <file> --output <file> \
+             --effect blur|sharpen|hqdn3d|nlmeans|deinterlace [options]"
         );
         process::exit(1);
     });
@@ -102,10 +93,7 @@ fn main() {
         process::exit(1);
     });
     let effect = effect.unwrap_or_else(|| {
-        eprintln!(
-            "--effect is required \
-             (volume|equalizer|low-shelf|high-shelf|afade-in|afade-out)"
-        );
+        eprintln!("--effect is required (blur|sharpen|hqdn3d|nlmeans|deinterlace)");
         process::exit(1);
     });
 
@@ -121,66 +109,44 @@ fn main() {
     // ── Build filter graph ────────────────────────────────────────────────────
 
     let filter_result = match effect.as_str() {
-        "volume" => {
-            let sign = if db >= 0.0 { "+" } else { "" };
+        "blur" => {
             println!("Input:   {in_name}");
-            println!("Effect:  volume  ({sign}{db} dB)");
+            println!("Effect:  gblur  (sigma={sigma:.1})");
             println!("Output:  {out_name}");
-            FilterGraphBuilder::new().volume(db).build()
+            FilterGraphBuilder::new().gblur(sigma).build()
         }
-        "equalizer" => {
+        "sharpen" => {
             println!("Input:   {in_name}");
-            println!("Effect:  equalizer  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!("Effect:  unsharp  (luma={luma_strength:+.2}  chroma={chroma_strength:+.2})");
             println!("Output:  {out_name}");
             FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::Peak {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    q: 1.0,
-                }])
+                .unsharp(luma_strength, chroma_strength)
                 .build()
         }
-        "low-shelf" => {
+        "hqdn3d" => {
+            // Typical values from FFmpeg docs: luma_spatial=4, chroma_spatial=3,
+            // luma_tmp=6, chroma_tmp=4.5.
             println!("Input:   {in_name}");
-            println!("Effect:  low_shelf  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!(
+                "Effect:  hqdn3d  (luma_spatial=4.0  chroma_spatial=3.0  luma_tmp=6.0  chroma_tmp=4.5)"
+            );
             println!("Output:  {out_name}");
-            FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::LowShelf {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    slope: 0.5,
-                }])
-                .build()
+            FilterGraphBuilder::new().hqdn3d(4.0, 3.0, 6.0, 4.5).build()
         }
-        "high-shelf" => {
+        "nlmeans" => {
             println!("Input:   {in_name}");
-            println!("Effect:  high_shelf  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!("Effect:  nlmeans  (strength={nlmeans_str:.1})");
             println!("Output:  {out_name}");
-            FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::HighShelf {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    slope: 0.5,
-                }])
-                .build()
+            FilterGraphBuilder::new().nlmeans(nlmeans_str).build()
         }
-        "afade-in" => {
+        "deinterlace" => {
             println!("Input:   {in_name}");
-            println!("Effect:  afade_in  (start={start:.1}s  duration={duration:.1}s)");
+            println!("Effect:  yadif  (mode=frame — one output frame per input frame)");
             println!("Output:  {out_name}");
-            FilterGraphBuilder::new().afade_in(start, duration).build()
-        }
-        "afade-out" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  afade_out  (start={start:.1}s  duration={duration:.1}s)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new().afade_out(start, duration).build()
+            FilterGraphBuilder::new().yadif(YadifMode::Frame).build()
         }
         other => {
-            eprintln!(
-                "Unknown effect '{other}' \
-                 (try volume, equalizer, low-shelf, high-shelf, afade-in, afade-out)"
-            );
+            eprintln!("Unknown effect '{other}' (try blur, sharpen, hqdn3d, nlmeans, deinterlace)");
             process::exit(1);
         }
     };

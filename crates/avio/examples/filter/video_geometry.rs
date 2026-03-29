@@ -1,25 +1,24 @@
-//! Adjust audio volume or apply an equalizer using `FilterGraphBuilder` + `Pipeline`.
+//! Apply spatial transform effects using `FilterGraphBuilder` + `Pipeline`.
 //!
 //! Available effects:
-//!   `volume`     — adjust loudness by a gain in dB (`+` = louder, `-` = quieter)
-//!   `equalizer`  — boost or cut a specific peak frequency band
-//!   `low-shelf`  — boost or cut all frequencies below a corner frequency
-//!   `high-shelf` — boost or cut all frequencies above a corner frequency
-//!   `afade-in`   — fade in audio from silence at the start of the clip
-//!   `afade-out`  — fade out audio to silence at the end of the clip
+//!   `vignette`  — darken corners with a radial vignette
+//!   `flip`      — flip horizontally (`hflip`), vertically (`vflip`), or both
+//!   `scale`     — resize with a configurable resampling algorithm
+//!   `pad`       — pad to a target resolution with a fill color
+//!   `letterbox` — scale-and-pad to fit a target aspect ratio (letterbox / pillarbox)
 //!
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_filters --features pipeline -- \
-//!   --input   input.mp4     \
-//!   --output  filtered.mp4  \
-//!   --effect  volume        \
-//!   [--db    6.0]            # gain in dB for volume (default: 6.0)
-//!   [--freq  1000.0]         # center/corner frequency in Hz (default: 1000.0)
-//!   [--gain  3.0]            # gain in dB for equalizer/shelf (default: 3.0)
-//!   [--start 0.0]            # afade: start time in seconds (default: 0.0)
-//!   [--duration 1.0]         # afade: fade duration in seconds (default: 1.0)
+//! cargo run --example video_geometry --features pipeline -- \
+//!   --input   input.mp4  \
+//!   --output  out.mp4    \
+//!   --effect  vignette   \
+//!   [--angle  0.628]               # vignette radius angle 0.0–π/2 (default: π/5 ≈ 0.628)
+//!   [--flip-axis  h|v|both]        # flip: h=horizontal, v=vertical, both (default: h)
+//!   [--width  1280 --height  720]  # scale/pad/letterbox target dimensions
+//!   [--algorithm  fast|bilinear|bicubic|lanczos]  # scale algorithm (default: fast)
+//!   [--pad-color  black]           # pad fill color (default: black)
 //! ```
 
 use std::{
@@ -28,7 +27,9 @@ use std::{
     process,
 };
 
-use avio::{AudioCodec, EncoderConfig, EqBand, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
+use avio::{
+    AudioCodec, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, ScaleAlgorithm, VideoCodec,
+};
 
 fn render_progress(p: &Progress) {
     match p.percent() {
@@ -56,33 +57,24 @@ fn main() {
     let mut input = None::<String>;
     let mut output = None::<String>;
     let mut effect = None::<String>;
-    let mut db: f64 = 6.0;
-    let mut freq: f64 = 1000.0;
-    let mut gain: f64 = 3.0;
-    let mut start: f64 = 0.0;
-    let mut duration: f64 = 1.0;
+    let mut angle: f32 = std::f32::consts::PI / 5.0;
+    let mut flip_axis = "h".to_owned();
+    let mut width: u32 = 1280;
+    let mut height: u32 = 720;
+    let mut algorithm = "fast".to_owned();
+    let mut pad_color = "black".to_owned();
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--input" | "-i" => input = Some(args.next().unwrap_or_default()),
             "--output" | "-o" => output = Some(args.next().unwrap_or_default()),
             "--effect" | "-e" => effect = Some(args.next().unwrap_or_default()),
-            "--db" => {
-                let v = args.next().unwrap_or_default();
-                db = v.parse().unwrap_or(6.0);
-            }
-            "--freq" => {
-                let v = args.next().unwrap_or_default();
-                freq = v.parse().unwrap_or(1000.0);
-            }
-            "--gain" => {
-                let v = args.next().unwrap_or_default();
-                gain = v.parse().unwrap_or(3.0);
-            }
-            "--start" => start = args.next().unwrap_or_default().parse().unwrap_or(0.0),
-            "--duration" => {
-                duration = args.next().unwrap_or_default().parse().unwrap_or(1.0);
-            }
+            "--angle" => angle = args.next().unwrap_or_default().parse().unwrap_or(0.628),
+            "--flip-axis" => flip_axis = args.next().unwrap_or_default(),
+            "--width" => width = args.next().unwrap_or_default().parse().unwrap_or(1280),
+            "--height" => height = args.next().unwrap_or_default().parse().unwrap_or(720),
+            "--algorithm" => algorithm = args.next().unwrap_or_default(),
+            "--pad-color" => pad_color = args.next().unwrap_or_default(),
             other => {
                 eprintln!("Unknown flag: {other}");
                 process::exit(1);
@@ -92,8 +84,8 @@ fn main() {
 
     let input = input.unwrap_or_else(|| {
         eprintln!(
-            "Usage: audio_filters --input <file> --output <file> \
-             --effect volume|equalizer|low-shelf|high-shelf|afade-in|afade-out [options]"
+            "Usage: video_geometry --input <file> --output <file> \
+             --effect vignette|flip|scale|pad|letterbox [options]"
         );
         process::exit(1);
     });
@@ -102,10 +94,7 @@ fn main() {
         process::exit(1);
     });
     let effect = effect.unwrap_or_else(|| {
-        eprintln!(
-            "--effect is required \
-             (volume|equalizer|low-shelf|high-shelf|afade-in|afade-out)"
-        );
+        eprintln!("--effect is required (vignette|flip|scale|pad|letterbox)");
         process::exit(1);
     });
 
@@ -118,69 +107,57 @@ fn main() {
         .and_then(|n| n.to_str())
         .unwrap_or(&output);
 
+    let alg = match algorithm.as_str() {
+        "bilinear" => ScaleAlgorithm::Bilinear,
+        "bicubic" => ScaleAlgorithm::Bicubic,
+        "lanczos" => ScaleAlgorithm::Lanczos,
+        _ => ScaleAlgorithm::Fast,
+    };
+
     // ── Build filter graph ────────────────────────────────────────────────────
 
     let filter_result = match effect.as_str() {
-        "volume" => {
-            let sign = if db >= 0.0 { "+" } else { "" };
+        "vignette" => {
             println!("Input:   {in_name}");
-            println!("Effect:  volume  ({sign}{db} dB)");
+            println!("Effect:  vignette  (angle={angle:.3} rad)");
             println!("Output:  {out_name}");
-            FilterGraphBuilder::new().volume(db).build()
+            FilterGraphBuilder::new().vignette(angle, 0.0, 0.0).build()
         }
-        "equalizer" => {
+        "flip" => {
             println!("Input:   {in_name}");
-            println!("Effect:  equalizer  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!("Effect:  flip  (axis={flip_axis})");
             println!("Output:  {out_name}");
+            match flip_axis.as_str() {
+                "v" => FilterGraphBuilder::new().vflip().build(),
+                "both" => FilterGraphBuilder::new().hflip().vflip().build(),
+                _ => FilterGraphBuilder::new().hflip().build(),
+            }
+        }
+        "scale" => {
+            println!("Input:   {in_name}");
+            println!("Effect:  scale  ({width}×{height}  algorithm={algorithm})");
+            println!("Output:  {out_name}");
+            FilterGraphBuilder::new().scale(width, height, alg).build()
+        }
+        "pad" => {
+            println!("Input:   {in_name}");
+            println!("Effect:  pad  ({width}×{height}  color={pad_color})");
+            println!("Output:  {out_name}");
+            // Center the source on the padded canvas.
             FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::Peak {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    q: 1.0,
-                }])
+                .pad(width, height, -1, -1, &pad_color)
                 .build()
         }
-        "low-shelf" => {
+        "letterbox" => {
             println!("Input:   {in_name}");
-            println!("Effect:  low_shelf  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!("Effect:  letterbox  ({width}×{height}  color={pad_color})");
             println!("Output:  {out_name}");
             FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::LowShelf {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    slope: 0.5,
-                }])
+                .fit_to_aspect(width, height, &pad_color)
                 .build()
-        }
-        "high-shelf" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  high_shelf  (freq={freq} Hz  gain={gain:+.1} dB)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::HighShelf {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    slope: 0.5,
-                }])
-                .build()
-        }
-        "afade-in" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  afade_in  (start={start:.1}s  duration={duration:.1}s)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new().afade_in(start, duration).build()
-        }
-        "afade-out" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  afade_out  (start={start:.1}s  duration={duration:.1}s)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new().afade_out(start, duration).build()
         }
         other => {
-            eprintln!(
-                "Unknown effect '{other}' \
-                 (try volume, equalizer, low-shelf, high-shelf, afade-in, afade-out)"
-            );
+            eprintln!("Unknown effect '{other}' (try vignette, flip, scale, pad, letterbox)");
             process::exit(1);
         }
     };

@@ -1,25 +1,23 @@
-//! Adjust audio volume or apply an equalizer using `FilterGraphBuilder` + `Pipeline`.
+//! Burn text overlays into video using `FilterGraphBuilder` + `Pipeline`.
 //!
 //! Available effects:
-//!   `volume`     — adjust loudness by a gain in dB (`+` = louder, `-` = quieter)
-//!   `equalizer`  — boost or cut a specific peak frequency band
-//!   `low-shelf`  — boost or cut all frequencies below a corner frequency
-//!   `high-shelf` — boost or cut all frequencies above a corner frequency
-//!   `afade-in`   — fade in audio from silence at the start of the clip
-//!   `afade-out`  — fade out audio to silence at the end of the clip
+//!   `drawtext` — static text at a fixed position with optional background box
+//!   `box`      — static text with a semi-transparent background box
+//!   `ticker`   — scrolling news-ticker text from right to left
 //!
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example audio_filters --features pipeline -- \
-//!   --input   input.mp4     \
-//!   --output  filtered.mp4  \
-//!   --effect  volume        \
-//!   [--db    6.0]            # gain in dB for volume (default: 6.0)
-//!   [--freq  1000.0]         # center/corner frequency in Hz (default: 1000.0)
-//!   [--gain  3.0]            # gain in dB for equalizer/shelf (default: 3.0)
-//!   [--start 0.0]            # afade: start time in seconds (default: 0.0)
-//!   [--duration 1.0]         # afade: fade duration in seconds (default: 1.0)
+//! cargo run --example text_overlay --features pipeline -- \
+//!   --input   input.mp4   \
+//!   --output  out.mp4     \
+//!   --effect  drawtext    \
+//!   [--text       "Hello World"]   # text content (default: "Hello World")
+//!   [--x          10]              # X position expression (default: "10")
+//!   [--y          10]              # Y position expression (default: "10")
+//!   [--font-size  36]              # font size in points (default: 36)
+//!   [--font-color white]           # font color (default: white)
+//!   [--speed      200.0]           # ticker: pixels per second (default: 200.0)
 //! ```
 
 use std::{
@@ -28,7 +26,9 @@ use std::{
     process,
 };
 
-use avio::{AudioCodec, EncoderConfig, EqBand, FilterGraphBuilder, Pipeline, Progress, VideoCodec};
+use avio::{
+    AudioCodec, DrawTextOptions, EncoderConfig, FilterGraphBuilder, Pipeline, Progress, VideoCodec,
+};
 
 fn render_progress(p: &Progress) {
     match p.percent() {
@@ -56,33 +56,26 @@ fn main() {
     let mut input = None::<String>;
     let mut output = None::<String>;
     let mut effect = None::<String>;
-    let mut db: f64 = 6.0;
-    let mut freq: f64 = 1000.0;
-    let mut gain: f64 = 3.0;
-    let mut start: f64 = 0.0;
-    let mut duration: f64 = 1.0;
+    let mut text = "Hello World".to_owned();
+    let mut x = "10".to_owned();
+    let mut y = "10".to_owned();
+    let mut font_size: u32 = 36;
+    let mut font_color = "white".to_owned();
+    let mut speed: f32 = 200.0;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--input" | "-i" => input = Some(args.next().unwrap_or_default()),
             "--output" | "-o" => output = Some(args.next().unwrap_or_default()),
             "--effect" | "-e" => effect = Some(args.next().unwrap_or_default()),
-            "--db" => {
-                let v = args.next().unwrap_or_default();
-                db = v.parse().unwrap_or(6.0);
+            "--text" => text = args.next().unwrap_or_default(),
+            "--x" => x = args.next().unwrap_or_default(),
+            "--y" => y = args.next().unwrap_or_default(),
+            "--font-size" => {
+                font_size = args.next().unwrap_or_default().parse().unwrap_or(36);
             }
-            "--freq" => {
-                let v = args.next().unwrap_or_default();
-                freq = v.parse().unwrap_or(1000.0);
-            }
-            "--gain" => {
-                let v = args.next().unwrap_or_default();
-                gain = v.parse().unwrap_or(3.0);
-            }
-            "--start" => start = args.next().unwrap_or_default().parse().unwrap_or(0.0),
-            "--duration" => {
-                duration = args.next().unwrap_or_default().parse().unwrap_or(1.0);
-            }
+            "--font-color" => font_color = args.next().unwrap_or_default(),
+            "--speed" => speed = args.next().unwrap_or_default().parse().unwrap_or(200.0),
             other => {
                 eprintln!("Unknown flag: {other}");
                 process::exit(1);
@@ -92,8 +85,8 @@ fn main() {
 
     let input = input.unwrap_or_else(|| {
         eprintln!(
-            "Usage: audio_filters --input <file> --output <file> \
-             --effect volume|equalizer|low-shelf|high-shelf|afade-in|afade-out [options]"
+            "Usage: text_overlay --input <file> --output <file> \
+             --effect drawtext|box|ticker [options]"
         );
         process::exit(1);
     });
@@ -102,10 +95,7 @@ fn main() {
         process::exit(1);
     });
     let effect = effect.unwrap_or_else(|| {
-        eprintln!(
-            "--effect is required \
-             (volume|equalizer|low-shelf|high-shelf|afade-in|afade-out)"
-        );
+        eprintln!("--effect is required (drawtext|box|ticker)");
         process::exit(1);
     });
 
@@ -121,66 +111,57 @@ fn main() {
     // ── Build filter graph ────────────────────────────────────────────────────
 
     let filter_result = match effect.as_str() {
-        "volume" => {
-            let sign = if db >= 0.0 { "+" } else { "" };
+        "drawtext" => {
             println!("Input:   {in_name}");
-            println!("Effect:  volume  ({sign}{db} dB)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new().volume(db).build()
-        }
-        "equalizer" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  equalizer  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!("Effect:  drawtext  (text={text:?}  x={x}  y={y}  size={font_size})");
             println!("Output:  {out_name}");
             FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::Peak {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    q: 1.0,
-                }])
+                .drawtext(DrawTextOptions {
+                    text: text.clone(),
+                    x: x.clone(),
+                    y: y.clone(),
+                    font_size,
+                    font_color: font_color.clone(),
+                    font_file: None,
+                    opacity: 1.0,
+                    box_color: None,
+                    box_border_width: 0,
+                })
                 .build()
         }
-        "low-shelf" => {
+        "box" => {
             println!("Input:   {in_name}");
-            println!("Effect:  low_shelf  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!(
+                "Effect:  drawtext+box  (text={text:?}  x={x}  y={y}  \
+                 size={font_size}  box=black@0.5)"
+            );
             println!("Output:  {out_name}");
             FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::LowShelf {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    slope: 0.5,
-                }])
+                .drawtext(DrawTextOptions {
+                    text: text.clone(),
+                    x: x.clone(),
+                    y: y.clone(),
+                    font_size,
+                    font_color: font_color.clone(),
+                    font_file: None,
+                    opacity: 1.0,
+                    box_color: Some("black@0.5".to_owned()),
+                    box_border_width: 6,
+                })
                 .build()
         }
-        "high-shelf" => {
+        "ticker" => {
             println!("Input:   {in_name}");
-            println!("Effect:  high_shelf  (freq={freq} Hz  gain={gain:+.1} dB)");
+            println!(
+                "Effect:  ticker  (text={text:?}  y=h-50  speed={speed:.0} px/s  size={font_size})"
+            );
             println!("Output:  {out_name}");
             FilterGraphBuilder::new()
-                .equalizer(vec![EqBand::HighShelf {
-                    freq_hz: freq,
-                    gain_db: gain,
-                    slope: 0.5,
-                }])
+                .ticker(&text, "h-50", speed, font_size, &font_color)
                 .build()
-        }
-        "afade-in" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  afade_in  (start={start:.1}s  duration={duration:.1}s)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new().afade_in(start, duration).build()
-        }
-        "afade-out" => {
-            println!("Input:   {in_name}");
-            println!("Effect:  afade_out  (start={start:.1}s  duration={duration:.1}s)");
-            println!("Output:  {out_name}");
-            FilterGraphBuilder::new().afade_out(start, duration).build()
         }
         other => {
-            eprintln!(
-                "Unknown effect '{other}' \
-                 (try volume, equalizer, low-shelf, high-shelf, afade-in, afade-out)"
-            );
+            eprintln!("Unknown effect '{other}' (try drawtext, box, ticker)");
             process::exit(1);
         }
     };
