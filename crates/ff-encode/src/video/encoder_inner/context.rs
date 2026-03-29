@@ -1,0 +1,832 @@
+//! Format context, stream, and subtitle initialization helpers.
+#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::ptr_as_ptr)]
+#![allow(clippy::cast_possible_wrap)]
+
+use super::color::{
+    color_primaries_to_av, color_space_to_av, color_transfer_to_av, from_av_pixel_format,
+    pixel_format_to_av,
+};
+use super::options::{audio_codec_to_id, codec_to_id};
+use super::two_pass::AV_CODEC_FLAG_PASS1;
+use super::{
+    AV_TIME_BASE, AVChapter, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P,
+    AudioCodec, CString, EncodeError, VideoCodec, VideoEncoderInner, av_interleaved_write_frame,
+    av_mallocz, av_packet_alloc, av_packet_free, av_packet_unref, avcodec, avformat_free_context,
+    avformat_new_stream, ptr, swresample, swscale,
+};
+
+impl VideoEncoderInner {
+    /// Call `av_dict_set` for each metadata entry before `avformat_write_header`.
+    ///
+    /// # Safety
+    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`.
+    /// Must be called before `avformat_write_header`.
+    pub(super) unsafe fn apply_metadata(
+        format_ctx: *mut ff_sys::AVFormatContext,
+        metadata: &[(String, String)],
+    ) {
+        for (key, value) in metadata {
+            let Ok(c_key) = std::ffi::CString::new(key.as_str()) else {
+                log::warn!("metadata key contains null byte, skipping key={key}");
+                continue;
+            };
+            let Ok(c_value) = std::ffi::CString::new(value.as_str()) else {
+                log::warn!("metadata value contains null byte, skipping key={key}");
+                continue;
+            };
+            // SAFETY: format_ctx is valid and non-null. c_key/c_value are valid
+            // CStrings covering this call. av_dict_set copies both strings.
+            let ret = ff_sys::av_dict_set(
+                &mut (*format_ctx).metadata,
+                c_key.as_ptr(),
+                c_value.as_ptr(),
+                0,
+            );
+            if ret < 0 {
+                log::warn!(
+                    "av_dict_set failed for metadata entry, skipping \
+                     key={key} error={}",
+                    ff_sys::av_error_string(ret)
+                );
+            }
+        }
+    }
+
+    /// Apply `movflags` for fMP4 containers before `avformat_write_header`.
+    ///
+    /// When `container` is [`crate::OutputContainer::FMp4`], sets
+    /// `movflags=+frag_keyframe+empty_moov+default_base_moof` via `av_opt_set`
+    /// on the format context's `priv_data`. This enables CMAF-compatible
+    /// fragmented output required for HLS fMP4 segments and MPEG-DASH.
+    ///
+    /// # Safety
+    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`
+    /// whose `priv_data` is non-null. Must be called before `avformat_write_header`.
+    pub(super) unsafe fn apply_movflags(
+        format_ctx: *mut ff_sys::AVFormatContext,
+        container: Option<crate::OutputContainer>,
+    ) {
+        if container.is_some_and(|c| c.is_fragmented()) {
+            // SAFETY: format_ctx and priv_data are non-null; string literals are
+            // static and NUL-terminated. av_opt_set does not retain the pointers.
+            let ret = ff_sys::av_opt_set(
+                (*format_ctx).priv_data,
+                c"movflags".as_ptr(),
+                c"+frag_keyframe+empty_moov+default_base_moof".as_ptr(),
+                0,
+            );
+            if ret < 0 {
+                log::warn!(
+                    "av_opt_set movflags failed for fMP4 container error={}",
+                    ff_sys::av_error_string(ret)
+                );
+            }
+        }
+    }
+
+    /// Allocate `AVChapter` entries on the format context before `avformat_write_header`.
+    ///
+    /// # Safety
+    /// `format_ctx` must be a valid non-null pointer to an allocated `AVFormatContext`.
+    /// Must be called before `avformat_write_header`.
+    pub(super) unsafe fn apply_chapters(
+        format_ctx: *mut ff_sys::AVFormatContext,
+        chapters: &[ff_format::chapter::ChapterInfo],
+    ) {
+        if chapters.is_empty() {
+            return;
+        }
+        let n = chapters.len();
+        // SAFETY: allocating an array of n pointers for the chapters field.
+        let chapters_arr =
+            av_mallocz(std::mem::size_of::<*mut AVChapter>() * n) as *mut *mut AVChapter;
+        if chapters_arr.is_null() {
+            log::warn!("av_mallocz failed for chapters array, skipping chapters");
+            return;
+        }
+        (*format_ctx).chapters = chapters_arr;
+        (*format_ctx).nb_chapters = 0;
+
+        for (i, chapter) in chapters.iter().enumerate() {
+            // SAFETY: allocating a zeroed AVChapter struct.
+            let chap = av_mallocz(std::mem::size_of::<AVChapter>()) as *mut AVChapter;
+            if chap.is_null() {
+                log::warn!(
+                    "av_mallocz failed for AVChapter, skipping chapter id={}",
+                    chapter.id()
+                );
+                continue;
+            }
+            // SAFETY: chap is freshly allocated, non-null, and zeroed.
+            (*chap).id = chapter.id();
+            (*chap).time_base = ff_sys::AVRational {
+                num: 1,
+                den: AV_TIME_BASE as i32,
+            };
+            (*chap).start = chapter.start().as_micros() as i64;
+            (*chap).end = chapter.end().as_micros() as i64;
+            (*chap).metadata = std::ptr::null_mut();
+
+            if let Some(title) = chapter.title() {
+                let Ok(c_title) = std::ffi::CString::new(title) else {
+                    log::warn!(
+                        "chapter title contains null byte, skipping title id={}",
+                        chapter.id()
+                    );
+                    // SAFETY: chapters_arr is valid with capacity n.
+                    *chapters_arr.add(i) = chap;
+                    (*format_ctx).nb_chapters += 1;
+                    continue;
+                };
+                // SAFETY: chap->metadata is null; av_dict_set allocates and copies.
+                let ret = ff_sys::av_dict_set(
+                    &mut (*chap).metadata,
+                    b"title\0".as_ptr() as *const _,
+                    c_title.as_ptr(),
+                    0,
+                );
+                if ret < 0 {
+                    log::warn!(
+                        "av_dict_set failed for chapter title, skipping title \
+                         id={} error={}",
+                        chapter.id(),
+                        ff_sys::av_error_string(ret)
+                    );
+                }
+            }
+            // SAFETY: i < n so the write is in bounds.
+            *chapters_arr.add(i) = chap;
+            (*format_ctx).nb_chapters += 1;
+        }
+    }
+
+    /// Initialize video encoder.
+    ///
+    /// When `two_pass` is `true` the codec context is opened with
+    /// `AV_CODEC_FLAG_PASS1` and stored in `pass1_codec_ctx`; in single-pass
+    /// mode it is stored in `video_codec_ctx` as usual.
+    pub(super) unsafe fn init_video_encoder(
+        &mut self,
+        width: u32,
+        height: u32,
+        fps: f64,
+        codec: VideoCodec,
+        bitrate_mode: Option<&crate::BitrateMode>,
+        preset: &str,
+        hardware_encoder: crate::HardwareEncoder,
+        two_pass: bool,
+        codec_options: Option<&crate::video::codec_options::VideoCodecOptions>,
+        pixel_format: Option<&ff_format::PixelFormat>,
+        color_space: Option<ff_format::ColorSpace>,
+        color_transfer: Option<ff_format::ColorTransfer>,
+        color_primaries: Option<ff_format::ColorPrimaries>,
+    ) -> Result<(), EncodeError> {
+        use crate::BitrateMode;
+        // Select encoder based on codec and availability
+        let encoder_name = self.select_video_encoder(codec, hardware_encoder)?;
+        self.actual_video_codec = encoder_name.clone();
+
+        let c_encoder_name =
+            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid encoder name".to_string(),
+            })?;
+
+        let codec_ptr =
+            avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
+                EncodeError::NoSuitableEncoder {
+                    codec: format!("{:?}", codec),
+                    tried: vec![encoder_name.clone()],
+                }
+            })?;
+
+        // Allocate codec context
+        let mut codec_ctx =
+            avcodec::alloc_context3(codec_ptr).map_err(EncodeError::from_ffmpeg_error)?;
+
+        // Configure codec context
+        (*codec_ctx).codec_id = codec_to_id(codec);
+        (*codec_ctx).width = width as i32;
+        (*codec_ctx).height = height as i32;
+        (*codec_ctx).time_base.num = 1;
+        (*codec_ctx).time_base.den = (fps * 1000.0) as i32; // Use millisecond precision
+        (*codec_ctx).framerate.num = fps as i32;
+        (*codec_ctx).framerate.den = 1;
+        (*codec_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+
+        // Set bitrate control mode
+        match bitrate_mode {
+            Some(BitrateMode::Cbr(bps)) => {
+                (*codec_ctx).bit_rate = *bps as i64;
+            }
+            Some(BitrateMode::Vbr { target, max }) => {
+                (*codec_ctx).bit_rate = *target as i64;
+                (*codec_ctx).rc_max_rate = *max as i64;
+                (*codec_ctx).rc_buffer_size = (*max * 2) as i32;
+            }
+            Some(BitrateMode::Crf(q)) => {
+                let crf_str = CString::new(q.to_string()).map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Invalid CRF value".to_string(),
+                })?;
+                // SAFETY: priv_data, option name, and value are all valid pointers
+                let ret = ff_sys::av_opt_set(
+                    (*codec_ctx).priv_data,
+                    b"crf\0".as_ptr() as *const i8,
+                    crf_str.as_ptr(),
+                    0,
+                );
+                if ret < 0 {
+                    log::warn!(
+                        "crf option not supported by encoder, falling back to default bitrate \
+                         encoder={encoder_name} crf={q}"
+                    );
+                    (*codec_ctx).bit_rate = 2_000_000;
+                }
+            }
+            None => {
+                // Default 2 Mbps
+                (*codec_ctx).bit_rate = 2_000_000;
+            }
+        }
+
+        // Set preset for x264/x265
+        if encoder_name.contains("264") || encoder_name.contains("265") {
+            let preset_cstr = CString::new(preset).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid preset value".to_string(),
+            })?;
+            // SAFETY: priv_data, option name, and value are all valid pointers
+            let ret = ff_sys::av_opt_set(
+                (*codec_ctx).priv_data,
+                b"preset\0".as_ptr() as *const i8,
+                preset_cstr.as_ptr(),
+                0,
+            );
+            if ret < 0 {
+                log::warn!(
+                    "preset option not supported by encoder, ignoring \
+                     encoder={encoder_name} preset={preset}"
+                );
+            }
+        }
+
+        // Apply per-codec options before opening the codec context.
+        if let Some(opts) = codec_options {
+            // SAFETY: codec_ctx is valid and allocated; priv_data is set by
+            // avcodec_alloc_context3. Options are applied before avcodec_open2
+            // so they take effect during codec initialisation.
+            Self::apply_codec_options(codec_ctx, opts, &encoder_name);
+        }
+
+        // Apply explicit pixel format override (takes priority over codec-option auto-select).
+        if let Some(fmt) = pixel_format {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).pix_fmt = pixel_format_to_av(*fmt);
+        }
+
+        // Apply HDR10 color context: BT.2020 primaries, PQ transfer, BT.2020 NCL colorspace.
+        if self.hdr10_metadata.is_some() {
+            // SAFETY: codec_ctx is valid and allocated; direct field writes are safe.
+            (*codec_ctx).color_primaries = ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020;
+            (*codec_ctx).color_trc = ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084;
+            (*codec_ctx).colorspace = ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL;
+        }
+
+        // Apply explicit color overrides (take priority over HDR10 automatic defaults).
+        if let Some(cs) = color_space {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).colorspace = color_space_to_av(cs);
+        }
+        if let Some(trc) = color_transfer {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).color_trc = color_transfer_to_av(trc);
+        }
+        if let Some(cp) = color_primaries {
+            // SAFETY: codec_ctx is valid and allocated; direct field write is safe.
+            (*codec_ctx).color_primaries = color_primaries_to_av(cp);
+        }
+
+        // For two-pass, set the pass-1 flag before opening the codec.
+        if two_pass {
+            // SAFETY: codec_ctx is a valid allocated (but not yet opened) context.
+            (*codec_ctx).flags |= AV_CODEC_FLAG_PASS1;
+        }
+
+        // Open codec
+        avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
+            .map_err(EncodeError::from_ffmpeg_error)?;
+        let actual_pix_fmt = from_av_pixel_format((*codec_ctx).pix_fmt);
+        log::info!(
+            "codec opened codec={encoder_name} width={width} height={height} fps={fps} \
+             pix_fmt={actual_pix_fmt}"
+        );
+
+        // Create stream
+        let stream = avformat_new_stream(self.format_ctx, codec_ptr);
+        if stream.is_null() {
+            avcodec::free_context(&mut codec_ctx as *mut *mut _);
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot create stream".to_string(),
+            });
+        }
+
+        (*stream).time_base = (*codec_ctx).time_base;
+
+        // Copy codec parameters to stream
+        if !(*stream).codecpar.is_null() {
+            (*(*stream).codecpar).codec_id = (*codec_ctx).codec_id;
+            (*(*stream).codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
+            (*(*stream).codecpar).width = (*codec_ctx).width;
+            (*(*stream).codecpar).height = (*codec_ctx).height;
+            (*(*stream).codecpar).format = (*codec_ctx).pix_fmt;
+        }
+
+        self.video_stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
+
+        // In two-pass mode the pass-1 context is stored separately; the real
+        // (pass-2) video_codec_ctx is initialised later in run_pass2().
+        if two_pass {
+            self.pass1_codec_ctx = Some(codec_ctx);
+        } else {
+            self.video_codec_ctx = Some(codec_ctx);
+        }
+
+        // Note: SwsContext initialization is deferred to convert_video_frame()
+        // for better optimization (skip unnecessary conversions, reuse context)
+
+        Ok(())
+    }
+
+    /// Initialize audio encoder.
+    pub(super) unsafe fn init_audio_encoder(
+        &mut self,
+        sample_rate: u32,
+        channels: u32,
+        codec: AudioCodec,
+        bitrate: Option<u64>,
+    ) -> Result<(), EncodeError> {
+        // Select encoder based on codec and availability
+        let encoder_name = self.select_audio_encoder(codec)?;
+        self.actual_audio_codec = encoder_name.clone();
+
+        let c_encoder_name =
+            CString::new(encoder_name.as_str()).map_err(|_| EncodeError::Ffmpeg {
+                code: 0,
+                message: "Invalid encoder name".to_string(),
+            })?;
+
+        let codec_ptr =
+            avcodec::find_encoder_by_name(c_encoder_name.as_ptr()).ok_or_else(|| {
+                EncodeError::NoSuitableEncoder {
+                    codec: format!("{:?}", codec),
+                    tried: vec![encoder_name.clone()],
+                }
+            })?;
+
+        // Allocate codec context
+        let mut codec_ctx =
+            avcodec::alloc_context3(codec_ptr).map_err(EncodeError::from_ffmpeg_error)?;
+
+        // Configure codec context
+        (*codec_ctx).codec_id = audio_codec_to_id(codec);
+        (*codec_ctx).sample_rate = sample_rate as i32;
+
+        // Set channel layout using FFmpeg 7.x API
+        swresample::channel_layout::set_default(&mut (*codec_ctx).ch_layout, channels as i32);
+
+        // Set sample format (encoder's preferred format)
+        // We'll use FLTP (planar float) as it's widely supported
+        (*codec_ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
+
+        // Set bitrate
+        if let Some(br) = bitrate {
+            (*codec_ctx).bit_rate = br as i64;
+        } else {
+            // Default bitrate based on codec
+            (*codec_ctx).bit_rate = match codec {
+                AudioCodec::Aac => 192_000,
+                AudioCodec::Opus => 128_000,
+                AudioCodec::Mp3 => 192_000,
+                AudioCodec::Flac => 0,  // Lossless
+                AudioCodec::Pcm => 0,   // Uncompressed
+                AudioCodec::Pcm16 => 0, // Uncompressed
+                AudioCodec::Pcm24 => 0, // Uncompressed
+                AudioCodec::Vorbis => 192_000,
+                AudioCodec::Ac3 => 192_000,
+                AudioCodec::Eac3 => 192_000,
+                AudioCodec::Dts => 0,  // Lossless/variable
+                AudioCodec::Alac => 0, // Lossless
+                _ => 192_000,
+            };
+        }
+
+        // Set time base
+        (*codec_ctx).time_base.num = 1;
+        (*codec_ctx).time_base.den = sample_rate as i32;
+
+        // Open codec
+        avcodec::open2(codec_ctx, codec_ptr, ptr::null_mut())
+            .map_err(EncodeError::from_ffmpeg_error)?;
+
+        // Create stream
+        let stream = avformat_new_stream(self.format_ctx, codec_ptr);
+        if stream.is_null() {
+            avcodec::free_context(&mut codec_ctx as *mut *mut _);
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "Cannot create stream".to_string(),
+            });
+        }
+
+        (*stream).time_base = (*codec_ctx).time_base;
+
+        // Copy codec parameters to stream
+        if !(*stream).codecpar.is_null() {
+            (*(*stream).codecpar).codec_id = (*codec_ctx).codec_id;
+            (*(*stream).codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*(*stream).codecpar).sample_rate = (*codec_ctx).sample_rate;
+            (*(*stream).codecpar).format = (*codec_ctx).sample_fmt;
+            // Copy channel layout
+            swresample::channel_layout::copy(
+                &mut (*(*stream).codecpar).ch_layout,
+                &(*codec_ctx).ch_layout,
+            )
+            .map_err(EncodeError::from_ffmpeg_error)?;
+        }
+
+        self.audio_stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
+        self.audio_codec_ctx = Some(codec_ctx);
+
+        Ok(())
+    }
+
+    /// Select best available audio encoder for the given codec.
+    fn select_audio_encoder(&self, codec: AudioCodec) -> Result<String, EncodeError> {
+        let candidates: Vec<&str> = match codec {
+            AudioCodec::Aac => vec!["aac", "libfdk_aac"],
+            AudioCodec::Opus => vec!["libopus"],
+            AudioCodec::Mp3 => vec!["libmp3lame", "mp3"],
+            AudioCodec::Flac => vec!["flac"],
+            AudioCodec::Pcm => vec!["pcm_s16le"],
+            AudioCodec::Pcm16 => vec!["pcm_s16le"],
+            AudioCodec::Pcm24 => vec!["pcm_s24le"],
+            AudioCodec::Vorbis => vec!["libvorbis", "vorbis"],
+            AudioCodec::Ac3 => vec!["ac3"],
+            AudioCodec::Eac3 => vec!["eac3"],
+            AudioCodec::Dts => vec![],
+            AudioCodec::Alac => vec!["alac"],
+            _ => vec![],
+        };
+
+        // Try each candidate
+        for &name in &candidates {
+            unsafe {
+                let c_name = CString::new(name).map_err(|_| EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Invalid encoder name".to_string(),
+                })?;
+                if avcodec::find_encoder_by_name(c_name.as_ptr()).is_some() {
+                    return Ok(name.to_string());
+                }
+            }
+        }
+
+        Err(EncodeError::NoSuitableEncoder {
+            codec: format!("{:?}", codec),
+            tried: candidates.iter().map(|s| (*s).to_string()).collect(),
+        })
+    }
+
+    /// Register binary attachment streams in the output container.
+    ///
+    /// Each attachment is stored as an `AVMEDIA_TYPE_ATTACHMENT` stream with
+    /// `AV_CODEC_ID_BIN_DATA`. The attachment data is placed in `extradata`
+    /// so the MKV muxer can write it into the container's `Attachments` element.
+    ///
+    /// Failures per entry are non-fatal: a warning is logged and the entry is
+    /// skipped so the rest of encoding can continue.
+    ///
+    /// # Safety
+    ///
+    /// `self.format_ctx` must be a valid, non-null `AVFormatContext` pointer.
+    /// Must be called before `avformat_write_header`.
+    pub(super) unsafe fn init_attachments(&mut self, attachments: &[(Vec<u8>, String, String)]) {
+        for (data, mime_type, filename) in attachments {
+            // Create a new stream for the attachment.
+            // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
+            let out_stream = avformat_new_stream(self.format_ctx, std::ptr::null());
+            if out_stream.is_null() {
+                log::warn!("attachment: avformat_new_stream failed, skipping filename={filename}");
+                continue;
+            }
+
+            let codecpar = (*out_stream).codecpar;
+            (*codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_ATTACHMENT;
+            (*codecpar).codec_id = ff_sys::AVCodecID_AV_CODEC_ID_BIN_DATA;
+
+            // Allocate extradata with FFmpeg's allocator so it can be freed by
+            // avcodec_parameters_free. The padding bytes are zeroed by av_mallocz.
+            let alloc_size = data.len() + ff_sys::AV_INPUT_BUFFER_PADDING_SIZE as usize;
+            let extradata = ff_sys::av_mallocz(alloc_size) as *mut u8;
+            if extradata.is_null() {
+                log::warn!(
+                    "attachment: av_mallocz failed for extradata, skipping filename={filename}"
+                );
+                continue;
+            }
+            // SAFETY: extradata has at least `data.len()` bytes; data slice is valid.
+            std::ptr::copy_nonoverlapping(data.as_ptr(), extradata, data.len());
+            (*codecpar).extradata = extradata;
+            (*codecpar).extradata_size = data.len() as i32;
+
+            // Set stream metadata so the muxer records the filename and MIME type.
+            let Ok(c_filename) = std::ffi::CString::new(filename.as_str()) else {
+                log::warn!("attachment: filename contains null byte, skipping filename={filename}");
+                continue;
+            };
+            let Ok(c_mime) = std::ffi::CString::new(mime_type.as_str()) else {
+                log::warn!(
+                    "attachment: mime_type contains null byte, skipping filename={filename}"
+                );
+                continue;
+            };
+            // SAFETY: out_stream->metadata pointer is valid (initialized by avformat_new_stream).
+            ff_sys::av_dict_set(
+                &mut (*out_stream).metadata,
+                b"filename\0".as_ptr() as *const i8,
+                c_filename.as_ptr(),
+                0,
+            );
+            ff_sys::av_dict_set(
+                &mut (*out_stream).metadata,
+                b"mimetype\0".as_ptr() as *const i8,
+                c_mime.as_ptr(),
+                0,
+            );
+
+            log::info!(
+                "attachment: registered filename={filename} mime={mime_type} size={}",
+                data.len()
+            );
+        }
+    }
+
+    /// Open the subtitle source file, find the requested stream, register an output subtitle
+    /// stream with copied codec parameters, and close the source.
+    ///
+    /// Stores `(source_path, source_stream_index, output_stream_index)` in
+    /// `self.subtitle_passthrough` on success. On any failure it logs a warning and returns
+    /// without modifying state, so encoding can continue without subtitles.
+    ///
+    /// # Safety
+    ///
+    /// `self.format_ctx` must be a valid, non-null `AVFormatContext` pointer.
+    /// Must be called before `avformat_write_header`.
+    pub(super) unsafe fn init_subtitle_passthrough(
+        &mut self,
+        source_path: &str,
+        source_stream_index: usize,
+    ) {
+        let path = std::path::Path::new(source_path);
+        let src_ctx = match ff_sys::avformat::open_input(path) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                log::warn!(
+                    "subtitle_passthrough: failed to open source file \
+                     path={source_path} error={}",
+                    ff_sys::av_error_string(e)
+                );
+                return;
+            }
+        };
+
+        if let Err(e) = ff_sys::avformat::find_stream_info(src_ctx) {
+            log::warn!(
+                "subtitle_passthrough: failed to find stream info \
+                 path={source_path} error={}",
+                ff_sys::av_error_string(e)
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        let nb_streams = (*src_ctx).nb_streams as usize;
+        if source_stream_index >= nb_streams {
+            log::warn!(
+                "subtitle_passthrough: stream index out of range \
+                 index={source_stream_index} nb_streams={nb_streams}"
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        // SAFETY: source_stream_index < nb_streams; streams is a valid array.
+        let in_stream = *(*src_ctx).streams.add(source_stream_index);
+
+        if (*(*in_stream).codecpar).codec_type != AVMediaType_AVMEDIA_TYPE_SUBTITLE {
+            log::warn!(
+                "subtitle_passthrough: stream at index {source_stream_index} \
+                 is not a subtitle stream"
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        // Record the output stream index before adding the new stream.
+        let out_stream_index = (*self.format_ctx).nb_streams as i32;
+        // SAFETY: format_ctx is valid; null codec means the muxer selects a default.
+        let out_stream = avformat_new_stream(self.format_ctx, std::ptr::null());
+        if out_stream.is_null() {
+            log::warn!("subtitle_passthrough: avformat_new_stream failed");
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        // SAFETY: out_stream and in_stream->codecpar are valid non-null pointers.
+        let ret = ff_sys::avcodec_parameters_copy((*out_stream).codecpar, (*in_stream).codecpar);
+        if ret < 0 {
+            log::warn!(
+                "subtitle_passthrough: avcodec_parameters_copy failed error={}",
+                ff_sys::av_error_string(ret)
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return;
+        }
+
+        // Reset codec_tag so the muxer can pick the appropriate value for the container.
+        (*(*out_stream).codecpar).codec_tag = 0;
+
+        let mut src_ctx_ptr = src_ctx;
+        ff_sys::avformat::close_input(&mut src_ctx_ptr);
+
+        self.subtitle_passthrough = Some((
+            source_path.to_string(),
+            source_stream_index,
+            out_stream_index,
+        ));
+        log::info!(
+            "subtitle_passthrough: registered subtitle stream \
+             source={source_path} stream_index={source_stream_index} \
+             out_stream_index={out_stream_index}"
+        );
+    }
+
+    /// Re-open the subtitle source file, read all packets from the registered subtitle stream,
+    /// rescale their timestamps, and write them to the output.
+    ///
+    /// No-op if `self.subtitle_passthrough` is `None`.  On non-fatal errors (open failure,
+    /// read errors) it logs a warning and returns `Ok(())` so the caller can still write the
+    /// trailer.
+    ///
+    /// # Safety
+    ///
+    /// `self.format_ctx` must be valid. Must be called before `av_write_trailer`.
+    pub(super) unsafe fn write_subtitle_packets(&mut self) -> Result<(), EncodeError> {
+        let Some((source_path, source_stream_index, out_stream_index)) =
+            self.subtitle_passthrough.clone()
+        else {
+            return Ok(());
+        };
+
+        let path = std::path::Path::new(&source_path);
+        let src_ctx = match ff_sys::avformat::open_input(path) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                log::warn!(
+                    "subtitle_passthrough: failed to re-open source file \
+                     path={source_path} error={}",
+                    ff_sys::av_error_string(e)
+                );
+                return Ok(());
+            }
+        };
+
+        if let Err(e) = ff_sys::avformat::find_stream_info(src_ctx) {
+            log::warn!(
+                "subtitle_passthrough: failed to find stream info on re-open \
+                 path={source_path} error={}",
+                ff_sys::av_error_string(e)
+            );
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return Ok(());
+        }
+
+        // SAFETY: source_stream_index was validated in init_subtitle_passthrough.
+        let in_stream = *(*src_ctx).streams.add(source_stream_index);
+        let in_time_base = (*in_stream).time_base;
+
+        // SAFETY: out_stream_index was set by avformat_new_stream; format_ctx is valid.
+        let out_stream = *(*self.format_ctx).streams.add(out_stream_index as usize);
+        let out_time_base = (*out_stream).time_base;
+
+        let pkt = av_packet_alloc();
+        if pkt.is_null() {
+            let mut src_ctx_ptr = src_ctx;
+            ff_sys::avformat::close_input(&mut src_ctx_ptr);
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "subtitle_passthrough: av_packet_alloc failed".to_string(),
+            });
+        }
+
+        loop {
+            match ff_sys::avformat::read_frame(src_ctx, pkt) {
+                Err(e) if e == ff_sys::error_codes::EOF => break,
+                Err(e) => {
+                    log::warn!(
+                        "subtitle_passthrough: read_frame error, stopping \
+                         path={source_path} error={}",
+                        ff_sys::av_error_string(e)
+                    );
+                    break;
+                }
+                Ok(()) => {}
+            }
+
+            // Skip packets from other streams.
+            if (*pkt).stream_index != source_stream_index as i32 {
+                av_packet_unref(pkt);
+                continue;
+            }
+
+            // Rescale timestamps from the source stream's time base to the output stream's.
+            // SAFETY: pkt is valid; time bases are plain value types.
+            ff_sys::av_packet_rescale_ts(pkt, in_time_base, out_time_base);
+            (*pkt).stream_index = out_stream_index;
+
+            // SRT/subtitle packets typically carry only PTS (DTS is AV_NOPTS_VALUE).
+            // The matroska muxer requires a valid DTS for av_interleaved_write_frame;
+            // mirror PTS → DTS when DTS is absent so packets are not silently dropped.
+            if (*pkt).dts == i64::MIN {
+                (*pkt).dts = (*pkt).pts;
+            }
+
+            let write_ret = av_interleaved_write_frame(self.format_ctx, pkt);
+            if write_ret < 0 {
+                log::warn!(
+                    "subtitle_passthrough: av_interleaved_write_frame failed \
+                     error={}",
+                    ff_sys::av_error_string(write_ret)
+                );
+            }
+            av_packet_unref(pkt);
+        }
+
+        av_packet_free(&mut (pkt as *mut _) as *mut *mut _);
+        let mut src_ctx_ptr = src_ctx;
+        ff_sys::avformat::close_input(&mut src_ctx_ptr);
+
+        Ok(())
+    }
+
+    /// Cleanup FFmpeg resources.
+    pub(super) unsafe fn cleanup(&mut self) {
+        // Free video codec context.
+        // For two-pass encoding, stats_in points into self.stats_in_cstr (Rust-owned).
+        // Null it out BEFORE avcodec_free_context so FFmpeg does not call av_free on it.
+        if let Some(mut ctx) = self.video_codec_ctx.take() {
+            (*ctx).stats_in = ptr::null_mut();
+            avcodec::free_context(&mut ctx as *mut *mut _);
+        }
+        // Drop the owned CString now that the codec context no longer references it.
+        self.stats_in_cstr = None;
+
+        // Free pass-1 codec context (only set in two-pass mode).
+        if let Some(mut ctx) = self.pass1_codec_ctx.take() {
+            avcodec::free_context(&mut ctx as *mut *mut _);
+        }
+
+        // Free audio codec context
+        if let Some(mut ctx) = self.audio_codec_ctx.take() {
+            avcodec::free_context(&mut ctx as *mut *mut _);
+        }
+
+        // Free scaling context
+        if let Some(ctx) = self.sws_ctx.take() {
+            swscale::free_context(ctx);
+        }
+
+        // Free resampling context
+        if let Some(mut ctx) = self.swr_ctx.take() {
+            swresample::free(&mut ctx as *mut *mut _);
+        }
+
+        // Close output file
+        if !self.format_ctx.is_null() {
+            if !(*self.format_ctx).pb.is_null() {
+                ff_sys::avformat::close_output(&mut (*self.format_ctx).pb);
+            }
+            avformat_free_context(self.format_ctx);
+            self.format_ctx = ptr::null_mut();
+        }
+    }
+}

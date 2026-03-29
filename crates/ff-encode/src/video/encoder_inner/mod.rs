@@ -1,0 +1,911 @@
+//! Internal video encoder implementation.
+//!
+//! This module contains the internal implementation details of the video encoder,
+//! including FFmpeg context management and encoding operations.
+
+// Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
+#![allow(unsafe_op_in_unsafe_fn)]
+// FFmpeg C API frequently requires raw pointer casting
+#![allow(clippy::ptr_as_ptr)]
+#![allow(clippy::cast_possible_wrap)]
+
+mod color;
+mod context;
+mod encoding;
+mod hdr;
+mod options;
+mod two_pass;
+
+pub(super) use options::preset_to_string;
+pub(super) use two_pass::TwoPassFrame;
+
+use crate::{AudioCodec, EncodeError, VideoCodec};
+use ff_format::{AudioFrame, VideoFrame};
+use ff_sys::{
+    AV_TIME_BASE, AVChannelLayout, AVChapter, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
+    AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1,
+    AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3,
+    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
+    AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
+    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
+    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG,
+    AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8,
+    AVCodecID_AV_CODEC_ID_VP9, AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
+    AVPacket, AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+    AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc, av_frame_free,
+    av_interleaved_write_frame, av_mallocz, av_packet_alloc, av_packet_free,
+    av_packet_new_side_data, av_packet_unref, av_write_trailer, avcodec,
+    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
+    avformat_write_header, swresample, swscale,
+};
+use std::ffi::CString;
+use std::ptr;
+
+/// Internal encoder state with FFmpeg contexts.
+pub(super) struct VideoEncoderInner {
+    /// Output format context
+    pub(super) format_ctx: *mut AVFormatContext,
+
+    /// Video codec context
+    pub(super) video_codec_ctx: Option<*mut AVCodecContext>,
+
+    /// Audio codec context (for future use)
+    pub(super) audio_codec_ctx: Option<*mut AVCodecContext>,
+
+    /// Video stream index
+    pub(super) video_stream_index: i32,
+
+    /// Audio stream index
+    pub(super) audio_stream_index: i32,
+
+    /// Scaling context for pixel format conversion
+    pub(super) sws_ctx: Option<*mut SwsContext>,
+
+    /// Resampling context for audio format conversion
+    pub(super) swr_ctx: Option<*mut SwrContext>,
+
+    /// Frame counter
+    pub(super) frame_count: u64,
+
+    /// Audio sample counter
+    pub(super) audio_sample_count: u64,
+
+    /// Bytes written
+    pub(super) bytes_written: u64,
+
+    /// Actual video codec name being used
+    pub(super) actual_video_codec: String,
+
+    /// Actual audio codec name being used
+    pub(super) actual_audio_codec: String,
+
+    /// Last source frame width (for SwsContext reuse optimization)
+    pub(super) last_src_width: Option<u32>,
+
+    /// Last source frame height (for SwsContext reuse optimization)
+    pub(super) last_src_height: Option<u32>,
+
+    /// Last source frame format (for SwsContext reuse optimization)
+    pub(super) last_src_format: Option<AVPixelFormat>,
+
+    /// Whether two-pass encoding is active.
+    pub(super) two_pass: bool,
+
+    /// Pass-1 codec context (two-pass mode only; None in single-pass and after pass 1 completes).
+    pub(super) pass1_codec_ctx: Option<*mut AVCodecContext>,
+
+    /// Buffered YUV420P frame data for pass-2 re-encoding (two-pass mode only).
+    pub(super) buffered_frames: Vec<TwoPassFrame>,
+
+    /// Stored configuration for reconstructing the pass-2 codec context.
+    pub(super) two_pass_config: Option<VideoEncoderConfig>,
+
+    /// Owned `stats_in` C string that must outlive the pass-2 codec context.
+    ///
+    /// Nulled out in `cleanup()` before `avcodec_free_context` to prevent FFmpeg
+    /// from calling `av_free` on a Rust-allocated pointer.
+    pub(super) stats_in_cstr: Option<std::ffi::CString>,
+
+    /// Subtitle passthrough info: (source_path, source_stream_index, output_stream_index).
+    ///
+    /// Set by `init_subtitle_passthrough`; read by `write_subtitle_packets`.
+    /// `None` if no subtitle passthrough was requested.
+    pub(super) subtitle_passthrough: Option<(String, usize, i32)>,
+
+    /// HDR10 static metadata to embed in keyframe packets.
+    ///
+    /// `None` if no HDR metadata was requested.
+    pub(super) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
+}
+
+/// VideoEncoder configuration (stored from builder).
+#[derive(Debug, Clone)]
+pub(super) struct VideoEncoderConfig {
+    pub(super) path: std::path::PathBuf,
+    pub(super) video_width: Option<u32>,
+    pub(super) video_height: Option<u32>,
+    pub(super) video_fps: Option<f64>,
+    pub(super) video_codec: VideoCodec,
+    pub(super) video_bitrate_mode: Option<crate::BitrateMode>,
+    pub(super) preset: String,
+    pub(super) hardware_encoder: crate::HardwareEncoder,
+    pub(super) audio_sample_rate: Option<u32>,
+    pub(super) audio_channels: Option<u32>,
+    pub(super) audio_codec: AudioCodec,
+    pub(super) audio_bitrate: Option<u64>,
+    pub(super) _progress_callback: bool,
+    pub(super) two_pass: bool,
+    pub(super) metadata: Vec<(String, String)>,
+    pub(super) chapters: Vec<ff_format::chapter::ChapterInfo>,
+    pub(super) subtitle_passthrough: Option<(String, usize)>,
+    pub(super) codec_options: Option<crate::video::codec_options::VideoCodecOptions>,
+    pub(super) pixel_format: Option<ff_format::PixelFormat>,
+    pub(super) hdr10_metadata: Option<ff_format::Hdr10Metadata>,
+    pub(super) color_space: Option<ff_format::ColorSpace>,
+    pub(super) color_transfer: Option<ff_format::ColorTransfer>,
+    pub(super) color_primaries: Option<ff_format::ColorPrimaries>,
+    /// Binary attachments: (raw data, MIME type, filename).
+    pub(super) attachments: Vec<(Vec<u8>, String, String)>,
+    pub(super) container: Option<crate::OutputContainer>,
+}
+
+impl VideoEncoderInner {
+    /// Create a new encoder with the given configuration.
+    pub(super) fn new(config: &VideoEncoderConfig) -> Result<Self, EncodeError> {
+        unsafe {
+            ff_sys::ensure_initialized();
+
+            // Allocate output format context
+            let c_path = CString::new(config.path.to_str().ok_or_else(|| {
+                EncodeError::CannotCreateFile {
+                    path: config.path.clone(),
+                }
+            })?)
+            .map_err(|_| EncodeError::CannotCreateFile {
+                path: config.path.clone(),
+            })?;
+
+            // For image-sequence outputs (path contains '%'), use the `image2`
+            // muxer explicitly. The `image2` muxer manages I/O internally
+            // (AVFMT_NOFILE), so we must not call avio_open on it.
+            let is_image_sequence = config.path.to_str().is_some_and(|s| s.contains('%'));
+
+            let mut format_ctx: *mut AVFormatContext = ptr::null_mut();
+            let ret = avformat_alloc_output_context2(
+                &mut format_ctx,
+                ptr::null_mut(),
+                if is_image_sequence {
+                    b"image2\0".as_ptr() as *const i8
+                } else {
+                    ptr::null()
+                },
+                c_path.as_ptr(),
+            );
+
+            if ret < 0 || format_ctx.is_null() {
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!(
+                        "Cannot create output context: {}",
+                        ff_sys::av_error_string(ret)
+                    ),
+                });
+            }
+
+            let mut encoder = Self {
+                format_ctx,
+                video_codec_ctx: None,
+                audio_codec_ctx: None,
+                video_stream_index: -1,
+                audio_stream_index: -1,
+                sws_ctx: None,
+                swr_ctx: None,
+                frame_count: 0,
+                audio_sample_count: 0,
+                bytes_written: 0,
+                actual_video_codec: String::new(),
+                actual_audio_codec: String::new(),
+                last_src_width: None,
+                last_src_height: None,
+                last_src_format: None,
+                two_pass: config.two_pass,
+                pass1_codec_ctx: None,
+                buffered_frames: Vec::new(),
+                two_pass_config: None,
+                stats_in_cstr: None,
+                subtitle_passthrough: None,
+                hdr10_metadata: config.hdr10_metadata.clone(),
+            };
+
+            // Initialize video encoder if configured
+            if let (Some(width), Some(height), Some(fps)) =
+                (config.video_width, config.video_height, config.video_fps)
+            {
+                encoder.init_video_encoder(
+                    width,
+                    height,
+                    fps,
+                    config.video_codec,
+                    config.video_bitrate_mode.as_ref(),
+                    &config.preset,
+                    config.hardware_encoder,
+                    config.two_pass,
+                    config.codec_options.as_ref(),
+                    config.pixel_format.as_ref(),
+                    config.color_space,
+                    config.color_transfer,
+                    config.color_primaries,
+                )?;
+            }
+
+            // Store config for pass-2 reconstruction (two-pass mode only).
+            if config.two_pass {
+                encoder.two_pass_config = Some(config.clone());
+            }
+
+            // Initialize audio encoder if configured
+            if let (Some(sample_rate), Some(channels)) =
+                (config.audio_sample_rate, config.audio_channels)
+            {
+                encoder.init_audio_encoder(
+                    sample_rate,
+                    channels,
+                    config.audio_codec,
+                    config.audio_bitrate,
+                )?;
+            }
+
+            // Register subtitle passthrough stream (must happen before avformat_write_header).
+            if let Some((ref path, stream_index)) = config.subtitle_passthrough {
+                encoder.init_subtitle_passthrough(path, stream_index);
+            }
+
+            // Register attachment streams (must happen before avformat_write_header).
+            if !config.attachments.is_empty() {
+                encoder.init_attachments(&config.attachments);
+            }
+
+            // For two-pass encoding the output file is opened in run_pass2() after
+            // pass-1 statistics have been collected.  Single-pass opens it now.
+            // Image-sequence output (path contains '%') uses the `image2` muxer which
+            // manages I/O internally (AVFMT_NOFILE) — skip avio_open in that case.
+            if !config.two_pass {
+                if !is_image_sequence {
+                    match ff_sys::avformat::open_output(
+                        &config.path,
+                        ff_sys::avformat::avio_flags::WRITE,
+                    ) {
+                        Ok(pb) => (*format_ctx).pb = pb,
+                        Err(_) => {
+                            encoder.cleanup();
+                            return Err(EncodeError::CannotCreateFile {
+                                path: config.path.clone(),
+                            });
+                        }
+                    }
+                }
+
+                Self::apply_movflags(format_ctx, config.container);
+                Self::apply_metadata(format_ctx, &config.metadata);
+                Self::apply_chapters(format_ctx, &config.chapters);
+                let ret = avformat_write_header(format_ctx, ptr::null_mut());
+                if ret < 0 {
+                    encoder.cleanup();
+                    return Err(EncodeError::Ffmpeg {
+                        code: ret,
+                        message: format!("Cannot write header: {}", ff_sys::av_error_string(ret)),
+                    });
+                }
+            }
+
+            Ok(encoder)
+        }
+    }
+
+    /// Push a video frame for encoding.
+    ///
+    /// In two-pass mode the frame is converted to YUV420P via the pass-1 codec
+    /// context, the converted data is buffered for pass-2 replay, and the frame
+    /// is then sent through the pass-1 encoder (whose output is discarded).
+    pub(super) fn push_video_frame(&mut self, frame: &VideoFrame) -> Result<(), EncodeError> {
+        // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
+        unsafe {
+            // ── Two-pass path ────────────────────────────────────────────────────
+            if self.two_pass {
+                let pass1_ctx = self
+                    .pass1_codec_ctx
+                    .ok_or_else(|| EncodeError::InvalidConfig {
+                        reason: "Pass-1 codec context not initialized".to_string(),
+                    })?;
+
+                // Convert the incoming frame to YUV420P (the pass-1 codec's format).
+                let mut av_frame = av_frame_alloc();
+                if av_frame.is_null() {
+                    return Err(EncodeError::Ffmpeg {
+                        code: 0,
+                        message: "Cannot allocate frame".to_string(),
+                    });
+                }
+
+                let convert_result = self.convert_video_frame(frame, av_frame, pass1_ctx);
+                if let Err(e) = convert_result {
+                    av_frame_free(&mut av_frame as *mut *mut _);
+                    return Err(e);
+                }
+
+                // Buffer the converted YUV420P data for pass-2 replay.
+                let width = (*pass1_ctx).width as u32;
+                let height = (*pass1_ctx).height as u32;
+                let uv_height = (height as usize).div_ceil(2);
+
+                let planes: Vec<Vec<u8>> = (0..3)
+                    .map(|i| {
+                        if (*av_frame).data[i].is_null() {
+                            return Vec::new();
+                        }
+                        let stride = (*av_frame).linesize[i] as usize;
+                        let h = if i == 0 { height as usize } else { uv_height };
+                        // SAFETY: data[i] points to a valid buffer of stride * h bytes
+                        // allocated by av_frame_get_buffer inside convert_video_frame.
+                        std::slice::from_raw_parts((*av_frame).data[i], stride * h).to_vec()
+                    })
+                    .collect();
+
+                let strides: Vec<usize> =
+                    (0..3).map(|i| (*av_frame).linesize[i] as usize).collect();
+
+                self.buffered_frames.push(TwoPassFrame {
+                    planes,
+                    strides,
+                    width,
+                    height,
+                    pts: self.frame_count as i64,
+                });
+
+                // Send to pass-1 encoder and discard the encoded output.
+                (*av_frame).pts = self.frame_count as i64;
+                let send_result = avcodec::send_frame(pass1_ctx, av_frame);
+                if let Err(e) = send_result {
+                    av_frame_free(&mut av_frame as *mut *mut _);
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Failed to send frame to pass-1 encoder: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    });
+                }
+
+                let drain_result = self.drain_pass1_packets(pass1_ctx);
+                av_frame_free(&mut av_frame as *mut *mut _);
+                drain_result?;
+
+                self.frame_count += 1;
+                return Ok(());
+            }
+
+            // ── Single-pass path ─────────────────────────────────────────────────
+            let codec_ctx = self
+                .video_codec_ctx
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Video codec not initialized".to_string(),
+                })?;
+
+            // Allocate AVFrame
+            let mut av_frame = av_frame_alloc();
+            if av_frame.is_null() {
+                return Err(EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Cannot allocate frame".to_string(),
+                });
+            }
+
+            // Convert VideoFrame to AVFrame
+            let convert_result = self.convert_video_frame(frame, av_frame, codec_ctx);
+            if let Err(e) = convert_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(e);
+            }
+
+            // Set frame properties
+            (*av_frame).pts = self.frame_count as i64;
+
+            // Send frame to encoder
+            let send_result = avcodec::send_frame(codec_ctx, av_frame);
+            if let Err(e) = send_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(EncodeError::Ffmpeg {
+                    code: e,
+                    message: format!("Failed to send frame: {}", ff_sys::av_error_string(e)),
+                });
+            }
+
+            // Receive packets
+            let receive_result = self.receive_packets();
+
+            // Always cleanup the frame
+            av_frame_free(&mut av_frame as *mut *mut _);
+
+            // Check if receiving packets failed
+            receive_result?;
+
+            self.frame_count += 1;
+
+            Ok(())
+        } // unsafe
+    }
+
+    /// Push an audio frame for encoding.
+    pub(super) fn push_audio_frame(&mut self, frame: &AudioFrame) -> Result<(), EncodeError> {
+        // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
+        unsafe {
+            let codec_ctx = self
+                .audio_codec_ctx
+                .ok_or_else(|| EncodeError::InvalidConfig {
+                    reason: "Audio codec not initialized".to_string(),
+                })?;
+
+            // Allocate AVFrame
+            let mut av_frame = av_frame_alloc();
+            if av_frame.is_null() {
+                return Err(EncodeError::Ffmpeg {
+                    code: 0,
+                    message: "Cannot allocate frame".to_string(),
+                });
+            }
+
+            // Convert AudioFrame to AVFrame
+            let convert_result = self.convert_audio_frame(frame, av_frame);
+            if let Err(e) = convert_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(e);
+            }
+
+            // Set frame properties
+            (*av_frame).pts = self.audio_sample_count as i64;
+
+            // Send frame to encoder
+            let send_result = avcodec::send_frame(codec_ctx, av_frame);
+            if let Err(e) = send_result {
+                av_frame_free(&mut av_frame as *mut *mut _);
+                return Err(EncodeError::Ffmpeg {
+                    code: e,
+                    message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
+                });
+            }
+
+            // Receive packets
+            let receive_result = self.receive_audio_packets();
+
+            // Always cleanup the frame
+            av_frame_free(&mut av_frame as *mut *mut _);
+
+            // Check if receiving packets failed
+            receive_result?;
+
+            self.audio_sample_count += frame.samples() as u64;
+
+            Ok(())
+        } // unsafe
+    }
+
+    /// Finish encoding and write trailer.
+    pub(super) fn finish(&mut self) -> Result<(), EncodeError> {
+        // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
+        unsafe {
+            // For two-pass, run the second pass now (handles flushing + trailer).
+            if self.two_pass {
+                return self.run_pass2();
+            }
+
+            // Single-pass: flush video encoder
+            if let Some(codec_ctx) = self.video_codec_ctx {
+                // Send NULL frame to flush
+                avcodec::send_frame(codec_ctx, ptr::null())
+                    .map_err(EncodeError::from_ffmpeg_error)?;
+                self.receive_packets()?;
+            }
+
+            // Flush audio encoder
+            if let Some(codec_ctx) = self.audio_codec_ctx {
+                // Send NULL frame to flush
+                avcodec::send_frame(codec_ctx, ptr::null())
+                    .map_err(EncodeError::from_ffmpeg_error)?;
+                self.receive_audio_packets()?;
+            }
+
+            // Write subtitle passthrough packets before trailer.
+            self.write_subtitle_packets()?;
+
+            // Write trailer
+            let ret = av_write_trailer(self.format_ctx);
+            if ret < 0 {
+                return Err(EncodeError::Ffmpeg {
+                    code: ret,
+                    message: format!("Cannot write trailer: {}", ff_sys::av_error_string(ret)),
+                });
+            }
+
+            Ok(())
+        } // unsafe
+    }
+}
+
+impl Drop for VideoEncoderInner {
+    fn drop(&mut self) {
+        // SAFETY: We own all the FFmpeg resources and need to free them
+        unsafe {
+            self.cleanup();
+        }
+    }
+}
+
+// SAFETY: VideoEncoderInner owns all FFmpeg contexts exclusively.
+//         These contexts are not accessed from multiple threads simultaneously;
+//         all access is serialized by whichever thread holds the VideoEncoder.
+//         Ownership transfer between threads is safe because FFmpeg contexts
+//         are created and destroyed on the same thread (via std::thread::spawn).
+unsafe impl Send for VideoEncoderInner {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_h264_encoder_candidates_auto() {
+        let inner = create_dummy_encoder_inner();
+        let candidates = inner.select_h264_encoder_candidates(crate::HardwareEncoder::Auto);
+
+        // Should include hardware encoders
+        #[cfg(feature = "hwaccel")]
+        {
+            assert!(candidates.contains(&"h264_nvenc"));
+            assert!(candidates.contains(&"h264_qsv"));
+        }
+
+        // Should include libx264 if GPL feature is enabled
+        #[cfg(feature = "gpl")]
+        {
+            assert!(candidates.contains(&"libx264"));
+        }
+
+        // Should always include VP9 fallback
+        assert!(candidates.contains(&"libvpx-vp9"));
+    }
+
+    #[test]
+    fn test_h264_encoder_candidates_nvenc() {
+        let inner = create_dummy_encoder_inner();
+        let candidates = inner.select_h264_encoder_candidates(crate::HardwareEncoder::Nvenc);
+
+        #[cfg(feature = "hwaccel")]
+        {
+            // NVENC should be first priority
+            assert_eq!(candidates[0], "h264_nvenc");
+        }
+
+        // Should include VP9 fallback
+        assert!(candidates.contains(&"libvpx-vp9"));
+    }
+
+    #[test]
+    fn test_h264_encoder_candidates_none() {
+        let inner = create_dummy_encoder_inner();
+        let candidates = inner.select_h264_encoder_candidates(crate::HardwareEncoder::None);
+
+        #[cfg(feature = "hwaccel")]
+        {
+            // Should not include hardware encoders
+            assert!(!candidates.contains(&"h264_nvenc"));
+            assert!(!candidates.contains(&"h264_qsv"));
+        }
+
+        // Should include VP9 fallback
+        assert!(candidates.contains(&"libvpx-vp9"));
+    }
+
+    #[test]
+    fn test_h265_encoder_candidates_auto() {
+        let inner = create_dummy_encoder_inner();
+        let candidates = inner.select_h265_encoder_candidates(crate::HardwareEncoder::Auto);
+
+        // Should include hardware encoders
+        #[cfg(feature = "hwaccel")]
+        {
+            assert!(candidates.contains(&"hevc_nvenc"));
+            assert!(candidates.contains(&"hevc_qsv"));
+        }
+
+        // Should include libx265 if GPL feature is enabled
+        #[cfg(feature = "gpl")]
+        {
+            assert!(candidates.contains(&"libx265"));
+        }
+
+        // Should always include AV1 fallback
+        assert!(candidates.contains(&"libaom-av1") || candidates.contains(&"libsvtav1"));
+    }
+
+    #[test]
+    fn test_lgpl_fallback_priority() {
+        let inner = create_dummy_encoder_inner();
+
+        // Test H264 candidates
+        let h264_candidates = inner.select_h264_encoder_candidates(crate::HardwareEncoder::None);
+
+        #[cfg(not(feature = "gpl"))]
+        {
+            // Without GPL feature, should only have VP9
+            assert_eq!(h264_candidates, vec!["libvpx-vp9"]);
+        }
+
+        // Test H265 candidates
+        let h265_candidates = inner.select_h265_encoder_candidates(crate::HardwareEncoder::None);
+
+        #[cfg(not(feature = "gpl"))]
+        {
+            // Without GPL feature, should only have AV1 options
+            assert!(h265_candidates.contains(&"libaom-av1"));
+            assert!(!h265_candidates.contains(&"libx265"));
+        }
+    }
+
+    #[test]
+    fn test_get_plane_height_yuv420p() {
+        let inner = create_dummy_encoder_inner();
+
+        // Test YUV420P format - Y plane is full height, U/V planes are half height
+        // Even height (640x480)
+        assert_eq!(
+            inner.get_plane_height(480, 0, ff_format::PixelFormat::Yuv420p),
+            480
+        );
+        assert_eq!(
+            inner.get_plane_height(480, 1, ff_format::PixelFormat::Yuv420p),
+            240
+        );
+        assert_eq!(
+            inner.get_plane_height(480, 2, ff_format::PixelFormat::Yuv420p),
+            240
+        );
+
+        // Odd height (641x481) - test ceiling division
+        assert_eq!(
+            inner.get_plane_height(481, 0, ff_format::PixelFormat::Yuv420p),
+            481
+        );
+        assert_eq!(
+            inner.get_plane_height(481, 1, ff_format::PixelFormat::Yuv420p),
+            241
+        ); // (481 + 1) / 2 = 241
+        assert_eq!(
+            inner.get_plane_height(481, 2, ff_format::PixelFormat::Yuv420p),
+            241
+        );
+    }
+
+    #[test]
+    fn test_get_plane_height_nv12() {
+        let inner = create_dummy_encoder_inner();
+
+        // Test NV12 format - Y plane is full height, UV plane is half height
+        assert_eq!(
+            inner.get_plane_height(1080, 0, ff_format::PixelFormat::Nv12),
+            1080
+        );
+        assert_eq!(
+            inner.get_plane_height(1080, 1, ff_format::PixelFormat::Nv12),
+            540
+        );
+
+        // Odd height
+        assert_eq!(
+            inner.get_plane_height(1081, 0, ff_format::PixelFormat::Nv12),
+            1081
+        );
+        assert_eq!(
+            inner.get_plane_height(1081, 1, ff_format::PixelFormat::Nv12),
+            541
+        ); // (1081 + 1) / 2 = 541
+    }
+
+    #[test]
+    fn test_get_plane_height_rgba() {
+        let inner = create_dummy_encoder_inner();
+
+        // Test RGBA format - all planes are full height (only 1 plane)
+        assert_eq!(
+            inner.get_plane_height(720, 0, ff_format::PixelFormat::Rgba),
+            720
+        );
+        assert_eq!(
+            inner.get_plane_height(720, 1, ff_format::PixelFormat::Rgba),
+            720
+        );
+    }
+
+    #[test]
+    fn test_pixel_format_to_av() {
+        // Test common pixel formats
+        assert_eq!(
+            color::pixel_format_to_av(ff_format::PixelFormat::Yuv420p),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
+        );
+        assert_eq!(
+            color::pixel_format_to_av(ff_format::PixelFormat::Rgba),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_RGBA
+        );
+        assert_eq!(
+            color::pixel_format_to_av(ff_format::PixelFormat::Nv12),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_NV12
+        );
+
+        // Test fallback for Other format
+        assert_eq!(
+            color::pixel_format_to_av(ff_format::PixelFormat::Other(999)),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
+        );
+
+        // 10-bit formats
+        assert_eq!(
+            color::pixel_format_to_av(ff_format::PixelFormat::Yuv420p10le),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE
+        );
+        assert_eq!(
+            color::pixel_format_to_av(ff_format::PixelFormat::Yuv422p10le),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE
+        );
+        assert_eq!(
+            color::pixel_format_to_av(ff_format::PixelFormat::Yuv444p10le),
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE
+        );
+    }
+
+    #[test]
+    fn from_av_pixel_format_yuv420p10le_should_return_yuv420p10le() {
+        assert_eq!(
+            color::from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE),
+            ff_format::PixelFormat::Yuv420p10le
+        );
+    }
+
+    #[test]
+    fn from_av_pixel_format_yuv422p10le_should_return_yuv422p10le() {
+        assert_eq!(
+            color::from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE),
+            ff_format::PixelFormat::Yuv422p10le
+        );
+    }
+
+    #[test]
+    fn from_av_pixel_format_yuv444p10le_should_return_yuv444p10le() {
+        assert_eq!(
+            color::from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE),
+            ff_format::PixelFormat::Yuv444p10le
+        );
+    }
+
+    #[test]
+    fn from_av_pixel_format_unknown_should_fall_back_to_yuv420p() {
+        assert_eq!(
+            color::from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_NONE),
+            ff_format::PixelFormat::Yuv420p
+        );
+    }
+
+    #[test]
+    fn color_space_to_av_bt709_should_return_bt709() {
+        assert_eq!(
+            color::color_space_to_av(ff_format::ColorSpace::Bt709),
+            ff_sys::AVColorSpace_AVCOL_SPC_BT709
+        );
+    }
+
+    #[test]
+    fn color_space_to_av_bt2020_should_return_bt2020_ncl() {
+        assert_eq!(
+            color::color_space_to_av(ff_format::ColorSpace::Bt2020),
+            ff_sys::AVColorSpace_AVCOL_SPC_BT2020_NCL
+        );
+    }
+
+    #[test]
+    fn color_space_to_av_dcip3_should_return_rgb() {
+        assert_eq!(
+            color::color_space_to_av(ff_format::ColorSpace::DciP3),
+            ff_sys::AVColorSpace_AVCOL_SPC_RGB
+        );
+    }
+
+    #[test]
+    fn color_transfer_to_av_hlg_should_return_arib_std_b67() {
+        assert_eq!(
+            color::color_transfer_to_av(ff_format::ColorTransfer::Hlg),
+            ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_ARIB_STD_B67
+        );
+    }
+
+    #[test]
+    fn color_transfer_to_av_pq_should_return_smptest2084() {
+        assert_eq!(
+            color::color_transfer_to_av(ff_format::ColorTransfer::Pq),
+            ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_SMPTEST2084
+        );
+    }
+
+    #[test]
+    fn color_transfer_to_av_bt709_should_return_bt709() {
+        assert_eq!(
+            color::color_transfer_to_av(ff_format::ColorTransfer::Bt709),
+            ff_sys::AVColorTransferCharacteristic_AVCOL_TRC_BT709
+        );
+    }
+
+    #[test]
+    fn color_primaries_to_av_bt2020_should_return_bt2020() {
+        assert_eq!(
+            color::color_primaries_to_av(ff_format::ColorPrimaries::Bt2020),
+            ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020
+        );
+    }
+
+    #[test]
+    fn color_primaries_to_av_bt709_should_return_bt709() {
+        assert_eq!(
+            color::color_primaries_to_av(ff_format::ColorPrimaries::Bt709),
+            ff_sys::AVColorPrimaries_AVCOL_PRI_BT709
+        );
+    }
+
+    #[test]
+    fn test_sws_context_tracking() {
+        let mut inner = create_dummy_encoder_inner();
+
+        // Initially no context
+        assert_eq!(inner.last_src_width, None);
+        assert_eq!(inner.last_src_height, None);
+        assert_eq!(inner.last_src_format, None);
+
+        // After setting (simulating what convert_video_frame does)
+        inner.last_src_width = Some(1920);
+        inner.last_src_height = Some(1080);
+        inner.last_src_format = Some(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P);
+
+        // Verify tracking
+        assert_eq!(inner.last_src_width, Some(1920));
+        assert_eq!(inner.last_src_height, Some(1080));
+        assert_eq!(
+            inner.last_src_format,
+            Some(ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P)
+        );
+    }
+
+    /// Helper function to create a dummy encoder inner for testing.
+    fn create_dummy_encoder_inner() -> VideoEncoderInner {
+        VideoEncoderInner {
+            format_ctx: ptr::null_mut(),
+            video_codec_ctx: None,
+            audio_codec_ctx: None,
+            video_stream_index: -1,
+            audio_stream_index: -1,
+            sws_ctx: None,
+            swr_ctx: None,
+            frame_count: 0,
+            audio_sample_count: 0,
+            bytes_written: 0,
+            actual_video_codec: String::new(),
+            actual_audio_codec: String::new(),
+            last_src_width: None,
+            last_src_height: None,
+            last_src_format: None,
+            two_pass: false,
+            pass1_codec_ctx: None,
+            buffered_frames: Vec::new(),
+            two_pass_config: None,
+            stats_in_cstr: None,
+            subtitle_passthrough: None,
+            hdr10_metadata: None,
+        }
+    }
+}
