@@ -309,6 +309,9 @@ pub(crate) struct VideoDecoderInner {
     network_opts: NetworkOptions,
     /// Number of successful reconnects so far (for logging).
     reconnect_count: u32,
+    /// Number of consecutive `AVERROR_INVALIDDATA` packets skipped without a successful frame.
+    /// Reset to 0 on each successfully decoded frame.
+    consecutive_invalid: u32,
 }
 
 impl VideoDecoderInner {
@@ -732,6 +735,7 @@ impl VideoDecoderInner {
                 url,
                 network_opts: stored_network_opts,
                 reconnect_count: 0,
+                consecutive_invalid: 0,
             },
             stream_info,
             container_info,
@@ -1046,7 +1050,9 @@ impl VideoDecoderInner {
                 let ret = ff_sys::avcodec_receive_frame(self.codec_ctx, self.frame);
 
                 if ret == 0 {
-                    // Successfully received a frame
+                    // Successfully received a frame — reset corrupt-stream counter.
+                    self.consecutive_invalid = 0;
+
                     // Check if this is a hardware frame and transfer to CPU memory if needed
                     self.transfer_hardware_frame_if_needed()?;
 
@@ -1108,9 +1114,15 @@ impl VideoDecoderInner {
                     if (*self.packet).stream_index == self.stream_index {
                         // Send the packet to the decoder
                         let send_ret = ff_sys::avcodec_send_packet(self.codec_ctx, self.packet);
+                        // SAFETY: self.packet is valid and non-null; pts is a plain i64 field.
+                        let pkt_pts = (*self.packet).pts;
                         ff_sys::av_packet_unref(self.packet);
 
-                        if send_ret < 0 && send_ret != ff_sys::error_codes::EAGAIN {
+                        if send_ret == ff_sys::error_codes::AVERROR_INVALIDDATA {
+                            log::warn!("packet skipped reason=invalid_data pts={pkt_pts}");
+                            self.consecutive_invalid += 1;
+                            // Do not return error; fall through to read the next packet.
+                        } else if send_ret < 0 && send_ret != ff_sys::error_codes::EAGAIN {
                             return Err(DecodeError::Ffmpeg {
                                 code: send_ret,
                                 message: format!(
