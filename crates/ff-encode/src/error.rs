@@ -117,6 +117,20 @@ pub enum EncodeError {
         bitrate: u64,
     },
 
+    /// Audio channel count exceeds the supported maximum of 8.
+    #[error("channel count {count} exceeds maximum 8")]
+    InvalidChannelCount {
+        /// Requested channel count.
+        count: u32,
+    },
+
+    /// Audio sample rate is outside the supported range [8000, 384000] Hz.
+    #[error("sample rate {rate} Hz outside supported range [8000, 384000]")]
+    InvalidSampleRate {
+        /// Requested sample rate in Hz.
+        rate: u32,
+    },
+
     /// Encoding cancelled by user
     #[error("Encoding cancelled by user")]
     Cancelled,
@@ -220,6 +234,37 @@ mod tests {
         assert!(
             msg.contains("800,000,000"),
             "expected '800,000,000' in '{msg}'"
+        );
+    }
+
+    #[test]
+    fn invalid_channel_count_display_should_contain_count() {
+        let err = EncodeError::InvalidChannelCount { count: 9 };
+        let msg = err.to_string();
+        assert!(msg.contains('9'), "expected '9' in '{msg}'");
+    }
+
+    #[test]
+    fn invalid_channel_count_display_should_contain_maximum_hint() {
+        let err = EncodeError::InvalidChannelCount { count: 9 };
+        let msg = err.to_string();
+        assert!(msg.contains('8'), "expected '8' in '{msg}'");
+    }
+
+    #[test]
+    fn invalid_sample_rate_display_should_contain_rate() {
+        let err = EncodeError::InvalidSampleRate { rate: 7999 };
+        let msg = err.to_string();
+        assert!(msg.contains("7999"), "expected '7999' in '{msg}'");
+    }
+
+    #[test]
+    fn invalid_sample_rate_display_should_contain_range_hint() {
+        let err = EncodeError::InvalidSampleRate { rate: 7999 };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[8000, 384000]"),
+            "expected '[8000, 384000]' in '{msg}'"
         );
     }
 }

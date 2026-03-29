@@ -237,6 +237,20 @@ impl AudioEncoder {
             });
         }
 
+        // Validate channel count and sample rate before constructing inner.
+        if let Some(ch) = builder.audio_channels
+            && ch > 8
+        {
+            log::warn!("audio channel count out of range count={ch} maximum=8");
+            return Err(EncodeError::InvalidChannelCount { count: ch });
+        }
+        if let Some(sr) = builder.audio_sample_rate
+            && !(8_000..=384_000).contains(&sr)
+        {
+            log::warn!("audio sample rate out of range rate={sr} minimum=8000 maximum=384000");
+            return Err(EncodeError::InvalidSampleRate { rate: sr });
+        }
+
         let config = AudioEncoderConfig {
             path: builder.path.clone(),
             sample_rate: builder
