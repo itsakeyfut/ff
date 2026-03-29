@@ -1430,3 +1430,47 @@ fn push_audio_through_concat_audio_should_produce_output() {
     assert_eq!(out.sample_rate(), 48000, "sample rate should be unchanged");
     assert_eq!(out.channels(), 2, "channel count should be unchanged");
 }
+
+#[test]
+fn push_two_clips_through_join_with_dissolve_should_produce_output() {
+    let mut graph = match FilterGraph::builder()
+        .join_with_dissolve(4.0, 1.0, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let clip_a = make_yuv420p_frame(64, 64);
+    let clip_b = make_yuv420p_frame(64, 64);
+    // Push clip A to slot 0 first; this initialises the graph.
+    match graph.push_video(0, &clip_a) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    // Push clip B to slot 1.
+    match graph.push_video(1, &clip_b) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let result = graph.pull_video().expect("pull_video must not fail");
+    let out = result.expect("expected Some(frame) after join_with_dissolve push");
+    assert_eq!(
+        out.width(),
+        64,
+        "output width should match input after join_with_dissolve"
+    );
+    assert_eq!(
+        out.height(),
+        64,
+        "output height should match input after join_with_dissolve"
+    );
+}

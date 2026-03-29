@@ -16,9 +16,9 @@ mod build;
 mod convert;
 
 use build::{
-    add_and_link_step, add_atempo_chain, add_fit_to_aspect_pad, add_overlay_image_step,
-    add_parametric_eq_chain, add_raw_filter_step, add_setpts_after_trim, audio_buffersrc_args,
-    create_hw_filter, hw_accel_to_device_type, video_buffersrc_args,
+    add_and_link_step, add_atempo_chain, add_fit_to_aspect_pad, add_join_with_dissolve_step,
+    add_overlay_image_step, add_parametric_eq_chain, add_raw_filter_step, add_setpts_after_trim,
+    audio_buffersrc_args, create_hw_filter, hw_accel_to_device_type, video_buffersrc_args,
 };
 use convert::{
     audio_pts_ticks, av_frame_to_audio_frame, av_frame_to_video_frame, copy_audio_planes_to_av,
@@ -420,6 +420,34 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // JoinWithDissolve is a compound step that expands to:
+            //   prev → trim_a → setpts_a → xfade[0]
+            //   in1  → trim_b → setpts_b → xfade[1]
+            // It bypasses the standard add_and_link_step path entirely.
+            if let FilterStep::JoinWithDissolve {
+                clip_a_end,
+                clip_b_start,
+                dissolve_dur,
+            } = step
+            {
+                let Some(b_src) = src_ctxs.get(1).and_then(|o| *o) else {
+                    bail!(FilterError::BuildFailed)
+                };
+                prev_ctx = match add_join_with_dissolve_step(
+                    graph,
+                    prev_ctx,
+                    b_src.as_ptr(),
+                    *clip_a_end,
+                    *clip_b_start,
+                    *dissolve_dur,
+                    i,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
             prev_ctx = match add_and_link_step(graph, prev_ctx, step, i, "step") {
                 Ok(ctx) => ctx,
                 Err(e) => bail!(e),
@@ -616,11 +644,17 @@ impl FilterGraphInner {
 
     /// Returns the number of video input slots required by the configured steps.
     ///
-    /// Returns 2 when [`FilterStep::Overlay`] is present (needs a main stream
-    /// on slot 0 and a secondary stream on slot 1), 1 otherwise.
+    /// Returns 2 when [`FilterStep::Overlay`], [`FilterStep::XFade`], or
+    /// [`FilterStep::JoinWithDissolve`] is present (each needs a main stream on
+    /// slot 0 and a secondary stream on slot 1), 1 otherwise.
     fn video_input_count(&self) -> usize {
         for step in &self.steps {
-            if matches!(step, FilterStep::Overlay { .. } | FilterStep::XFade { .. }) {
+            if matches!(
+                step,
+                FilterStep::Overlay { .. }
+                    | FilterStep::XFade { .. }
+                    | FilterStep::JoinWithDissolve { .. }
+            ) {
                 return 2;
             }
             if let FilterStep::ConcatVideo { n } = step {
@@ -790,7 +824,12 @@ impl FilterGraphInner {
         let mut prev_ctx = first_src_ctx.as_ptr();
         for (i, step) in steps.iter().enumerate() {
             // Video-only steps; skip them in the audio graph.
-            if matches!(step, FilterStep::Reverse | FilterStep::ConcatVideo { .. }) {
+            if matches!(
+                step,
+                FilterStep::Reverse
+                    | FilterStep::ConcatVideo { .. }
+                    | FilterStep::JoinWithDissolve { .. }
+            ) {
                 continue;
             }
 
