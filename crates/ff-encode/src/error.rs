@@ -101,17 +101,17 @@ pub enum EncodeError {
         hint: String,
     },
 
-    /// Video dimensions are outside the supported range (2–32768 per axis).
-    #[error("invalid video dimensions: {width}x{height} (must be 2–32768)")]
+    /// Video dimensions are outside the supported range [2, 32768].
+    #[error("dimensions {width}x{height} out of range [2, 32768]")]
     InvalidDimensions {
-        /// Requested width in pixels.
+        /// Requested frame width.
         width: u32,
-        /// Requested height in pixels.
+        /// Requested frame height.
         height: u32,
     },
 
-    /// Bitrate exceeds the supported ceiling (800 Mbps).
-    #[error("invalid bitrate: {bitrate} bps exceeds maximum 800 Mbps")]
+    /// Target bitrate exceeds the 800 Mbps maximum.
+    #[error("bitrate {bitrate} bps exceeds maximum 800 Mbps (800,000,000 bps)")]
     InvalidBitrate {
         /// Requested bitrate in bits per second.
         bitrate: u64,
@@ -177,5 +177,49 @@ mod tests {
         let err = EncodeError::from_ffmpeg_error(ff_sys::error_codes::EOF);
         assert!(matches!(err, EncodeError::Ffmpeg { .. }));
         assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn invalid_dimensions_display_should_contain_dimension_string() {
+        let err = EncodeError::InvalidDimensions {
+            width: 0,
+            height: 720,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("0x720"), "expected '0x720' in '{msg}'");
+    }
+
+    #[test]
+    fn invalid_dimensions_display_should_contain_range_hint() {
+        let err = EncodeError::InvalidDimensions {
+            width: 99999,
+            height: 99999,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[2, 32768]"),
+            "expected '[2, 32768]' in '{msg}'"
+        );
+    }
+
+    #[test]
+    fn invalid_bitrate_display_should_contain_bitrate_value() {
+        let err = EncodeError::InvalidBitrate {
+            bitrate: 900_000_000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("900000000"), "expected '900000000' in '{msg}'");
+    }
+
+    #[test]
+    fn invalid_bitrate_display_should_contain_maximum_hint() {
+        let err = EncodeError::InvalidBitrate {
+            bitrate: 900_000_000,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("800,000,000"),
+            "expected '800,000,000' in '{msg}'"
+        );
     }
 }
