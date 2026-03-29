@@ -3006,3 +3006,71 @@ fn builder_concat_audio_with_n0_should_return_invalid_config() {
         "expected InvalidConfig for n=0, got {result:?}"
     );
 }
+
+#[test]
+fn filter_step_join_with_dissolve_should_have_correct_filter_name() {
+    let step = FilterStep::JoinWithDissolve {
+        clip_a_end: 4.0,
+        clip_b_start: 1.0,
+        dissolve_dur: 1.0,
+    };
+    assert_eq!(step.filter_name(), "xfade");
+}
+
+#[test]
+fn filter_step_join_with_dissolve_should_produce_correct_args() {
+    let step = FilterStep::JoinWithDissolve {
+        clip_a_end: 4.0,
+        clip_b_start: 1.0,
+        dissolve_dur: 1.0,
+    };
+    assert_eq!(
+        step.args(),
+        "transition=dissolve:duration=1:offset=4",
+        "args must match xfade format for join_with_dissolve"
+    );
+}
+
+#[test]
+fn builder_join_with_dissolve_valid_should_build_successfully() {
+    let result = FilterGraph::builder()
+        .join_with_dissolve(4.0, 1.0, 1.0)
+        .build();
+    assert!(
+        result.is_ok(),
+        "join_with_dissolve(4.0, 1.0, 1.0) must build successfully, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_join_with_dissolve_with_zero_dissolve_dur_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .join_with_dissolve(4.0, 1.0, 0.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for dissolve_dur=0.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_join_with_dissolve_with_negative_dissolve_dur_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .join_with_dissolve(4.0, 1.0, -1.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for dissolve_dur=-1.0, got {result:?}"
+    );
+}
+
+#[test]
+fn builder_join_with_dissolve_with_zero_clip_a_end_should_return_invalid_config() {
+    let result = FilterGraph::builder()
+        .join_with_dissolve(0.0, 1.0, 1.0)
+        .build();
+    assert!(
+        matches!(result, Err(FilterError::InvalidConfig { .. })),
+        "expected InvalidConfig for clip_a_end=0.0, got {result:?}"
+    );
+}

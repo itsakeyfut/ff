@@ -517,6 +517,34 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Join two video streams with a cross-dissolve transition.
+    ///
+    /// Requires two video input slots: push clip A frames to slot 0 and clip B
+    /// frames to slot 1.  Internally expands to
+    /// `trim` + `setpts` → `xfade` ← `setpts` + `trim`.
+    ///
+    /// - `clip_a_end_sec`: timestamp (seconds) where clip A ends. Must be > 0.0.
+    /// - `clip_b_start_sec`: timestamp (seconds) where clip B content starts
+    ///   (before the overlap region).
+    /// - `dissolve_dur_sec`: cross-dissolve overlap length in seconds. Must be > 0.0.
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `dissolve_dur_sec ≤ 0.0` or `clip_a_end_sec ≤ 0.0`.
+    #[must_use]
+    pub fn join_with_dissolve(
+        mut self,
+        clip_a_end_sec: f64,
+        clip_b_start_sec: f64,
+        dissolve_dur_sec: f64,
+    ) -> Self {
+        self.steps.push(FilterStep::JoinWithDissolve {
+            clip_a_end: clip_a_end_sec,
+            clip_b_start: clip_b_start_sec,
+            dissolve_dur: dissolve_dur_sec,
+        });
+        self
+    }
+
     /// Change playback speed by `factor`.
     ///
     /// `factor > 1.0` = fast motion (e.g. `2.0` = double speed).
@@ -945,6 +973,25 @@ impl FilterGraphBuilder {
                 return Err(FilterError::InvalidConfig {
                     reason: format!("xfade duration {duration} must be > 0.0"),
                 });
+            }
+            if let FilterStep::JoinWithDissolve {
+                dissolve_dur,
+                clip_a_end,
+                ..
+            } = step
+            {
+                if *dissolve_dur <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "join_with_dissolve dissolve_dur={dissolve_dur} must be > 0.0"
+                        ),
+                    });
+                }
+                if *clip_a_end <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("join_with_dissolve clip_a_end={clip_a_end} must be > 0.0"),
+                    });
+                }
             }
             if let FilterStep::ANoiseGate {
                 attack_ms,
