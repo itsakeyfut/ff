@@ -85,6 +85,12 @@ pub const ENETUNREACH: i32 = -101;
 /// I/O error (`EIO`). Same value on all POSIX platforms.
 pub const EIO: i32 = -5;
 
+/// Invalid data found when processing input (`AVERROR_INVALIDDATA`).
+///
+/// This is `FFERRTAG(0xF8,'I','N','V')` — a tag-based code, not an errno,
+/// so it has the same value on all platforms.
+pub const AVERROR_INVALIDDATA: i32 = -1_447_971_320;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +101,17 @@ mod tests {
         assert!(EOF < 0);
         assert!(ENOMEM < 0);
         assert!(EINVAL < 0);
+    }
+
+    #[test]
+    fn averror_invaliddata_should_be_negative_and_distinct_from_einval() {
+        assert!(AVERROR_INVALIDDATA < 0);
+        assert_ne!(AVERROR_INVALIDDATA, EINVAL);
+    }
+
+    #[test]
+    fn averror_invaliddata_should_have_expected_value() {
+        // FFERRTAG(0xF8,'I','N','V') = -(0xF8 | 'I'<<8 | 'N'<<16 | 'V'<<24)
+        assert_eq!(AVERROR_INVALIDDATA, -1_447_971_320);
     }
 }
