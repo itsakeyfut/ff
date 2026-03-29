@@ -1050,6 +1050,19 @@ impl VideoDecoderInner {
                     // Check if this is a hardware frame and transfer to CPU memory if needed
                     self.transfer_hardware_frame_if_needed()?;
 
+                    // SAFETY: self.frame is valid and non-null after avcodec_receive_frame succeeded.
+                    let w = (*self.frame).width as u32;
+                    let h = (*self.frame).height as u32;
+                    if w > 32_768 || h > 32_768 {
+                        log::warn!(
+                            "frame rejected reason=unsupported_resolution width={w} height={h}"
+                        );
+                        return Err(DecodeError::UnsupportedResolution {
+                            width: w,
+                            height: h,
+                        });
+                    }
+
                     let video_frame = self.convert_frame_to_video_frame()?;
 
                     // Update position based on frame timestamp

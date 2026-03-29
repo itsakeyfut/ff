@@ -198,6 +198,15 @@ pub enum DecodeError {
     /// `is_live()` returns `true`.
     #[error("seek is not supported on live streams")]
     SeekNotSupported,
+
+    /// A decoded frame exceeds the supported resolution limit.
+    #[error("unsupported resolution {width}x{height}: exceeds 32768 in one or both axes")]
+    UnsupportedResolution {
+        /// Frame width.
+        width: u32,
+        /// Frame height.
+        height: u32,
+    },
 }
 
 impl DecodeError {
@@ -363,7 +372,8 @@ impl DecodeError {
             | Self::ConnectionFailed { .. }
             | Self::Io(_)
             | Self::Ffmpeg { .. }
-            | Self::SeekNotSupported => false,
+            | Self::SeekNotSupported
+            | Self::UnsupportedResolution { .. } => false,
         }
     }
 
@@ -415,7 +425,8 @@ impl DecodeError {
             | Self::NetworkTimeout { .. }
             | Self::StreamInterrupted { .. }
             | Self::Ffmpeg { .. }
-            | Self::SeekNotSupported => false,
+            | Self::SeekNotSupported
+            | Self::UnsupportedResolution { .. } => false,
         }
     }
 }
@@ -713,6 +724,36 @@ mod tests {
     #[test]
     fn seek_not_supported_should_be_neither_fatal_nor_recoverable() {
         let e = DecodeError::SeekNotSupported;
+        assert!(!e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn unsupported_resolution_display_should_contain_width_x_height() {
+        let e = DecodeError::UnsupportedResolution {
+            width: 40000,
+            height: 480,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("40000x480"), "expected '40000x480' in '{msg}'");
+    }
+
+    #[test]
+    fn unsupported_resolution_display_should_contain_axes_hint() {
+        let e = DecodeError::UnsupportedResolution {
+            width: 640,
+            height: 40000,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("32768"), "expected '32768' limit in '{msg}'");
+    }
+
+    #[test]
+    fn unsupported_resolution_should_be_neither_fatal_nor_recoverable() {
+        let e = DecodeError::UnsupportedResolution {
+            width: 40000,
+            height: 40000,
+        };
         assert!(!e.is_fatal());
         assert!(!e.is_recoverable());
     }
