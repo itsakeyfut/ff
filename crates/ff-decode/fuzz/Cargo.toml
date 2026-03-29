@@ -1,0 +1,19 @@
+[package]
+name = "ff-decode-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "open_video"
+path = "fuzz_targets/open_video.rs"
+test = false
+doc = false
+
+[dependencies]
+libfuzzer-sys = "0.4.12"
+ff-decode = { path = ".." }
+tempfile = "3.27.0"

@@ -1,0 +1,47 @@
+name: Fuzz
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 1'   # weekly on Monday at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    name: Fuzz targets
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Install FFmpeg development libraries
+        run: sudo apt-get update && sudo apt-get install -y libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libclang-dev pkg-config
+
+      - name: Fuzz ff-decode open_video
+        run: cargo fuzz run open_video -- -max_total_time=60
+        working-directory: crates/ff-decode
+
+      - name: Fuzz ff-probe probe_open
+        run: cargo fuzz run probe_open -- -max_total_time=60
+        working-directory: crates/ff-probe
+
+      - name: Fuzz ff-encode encode_video
+        run: cargo fuzz run encode_video -- -max_total_time=60
+        working-directory: crates/ff-encode
+
+      - name: Upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crates/ff-decode/fuzz/artifacts/
+            crates/ff-probe/fuzz/artifacts/
+            crates/ff-encode/fuzz/artifacts/
