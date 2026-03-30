@@ -14,16 +14,16 @@ to only the capabilities you need via feature flags.
 ```toml
 [dependencies]
 # Default: probe + decode + encode
-avio = "0.7"
+avio = "0.9"
 
 # Add filtering
-avio = { version = "0.7", features = ["filter"] }
+avio = { version = "0.9", features = ["filter"] }
 
 # Full stack (implies filter + pipeline)
-avio = { version = "0.7", features = ["stream"] }
+avio = { version = "0.9", features = ["stream"] }
 
 # Async decode/encode (requires tokio runtime)
-avio = { version = "0.7", features = ["tokio"] }
+avio = { version = "0.9", features = ["tokio"] }
 ```
 
 ## Feature Flags

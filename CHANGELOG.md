@@ -9,6 +9,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.9.0] - 2026-03-30
+
+### Added
+
+#### ff-format
+- Subtitle format parser for SRT, ASS/SSA, and WebVTT ([#676](https://github.com/itsakeyfut/avio/issues/676))
+- Subtitle format writer for SRT, ASS, and WebVTT ([#677](https://github.com/itsakeyfut/avio/issues/677))
+
+#### ff-filter — color grading & image quality
+- `lut3d` filter step for 3D LUT colour grading from `.cube`/`.3dl` files ([#237](https://github.com/itsakeyfut/avio/issues/237))
+- `eq` filter step for brightness, contrast, and saturation adjustment ([#239](https://github.com/itsakeyfut/avio/issues/239))
+- `curves` filter step for per-channel RGB tone curves ([#240](https://github.com/itsakeyfut/avio/issues/240))
+- `white_balance` filter step for colour temperature correction ([#241](https://github.com/itsakeyfut/avio/issues/241))
+- `hue` filter step for hue rotation ([#242](https://github.com/itsakeyfut/avio/issues/242))
+- `gamma` filter step for per-channel gamma correction ([#243](https://github.com/itsakeyfut/avio/issues/243))
+- `three_way_cc` filter step for lift/gamma/gain colour grading ([#244](https://github.com/itsakeyfut/avio/issues/244))
+- `vignette` filter step for configurable radius and strength ([#245](https://github.com/itsakeyfut/avio/issues/245))
+- `gblur` filter step for Gaussian blur ([#252](https://github.com/itsakeyfut/avio/issues/252))
+- `unsharp` filter step for sharpening and blurring ([#253](https://github.com/itsakeyfut/avio/issues/253))
+- `hqdn3d` filter step for temporal and spatial noise reduction ([#254](https://github.com/itsakeyfut/avio/issues/254))
+- `nlmeans` filter step for non-local means noise reduction ([#255](https://github.com/itsakeyfut/avio/issues/255))
+
+#### ff-filter — geometry & transforms
+- `ScaleAlgorithm` enum for `scale` step: `Fast`, `Bilinear`, `Bicubic`, `Lanczos` ([#249](https://github.com/itsakeyfut/avio/issues/249))
+- `hflip` and `vflip` filter steps ([#248](https://github.com/itsakeyfut/avio/issues/248))
+- Configurable fill color for `rotate` step ([#247](https://github.com/itsakeyfut/avio/issues/247))
+- Zero-dimension validation for `crop` step ([#246](https://github.com/itsakeyfut/avio/issues/246))
+- `pad` filter step for letterbox/pillarbox with configurable color ([#250](https://github.com/itsakeyfut/avio/issues/250))
+- `fit_to_aspect` filter step for automatic letterbox/pillarbox to target resolution ([#251](https://github.com/itsakeyfut/avio/issues/251))
+
+#### ff-filter — transitions & temporal
+- `yadif` deinterlacing filter step with `YadifMode` enum ([#256](https://github.com/itsakeyfut/avio/issues/256))
+- `fade_in` / `fade_out` now accept a configurable `start_sec` parameter ([#257](https://github.com/itsakeyfut/avio/issues/257))
+- `fade_in_white` / `fade_out_white` filter steps for white fade ([#258](https://github.com/itsakeyfut/avio/issues/258))
+- `xfade` cross-dissolve transition step with `XfadeTransition` enum ([#259](https://github.com/itsakeyfut/avio/issues/259))
+- `reverse` (video) and `areverse` (audio) playback reversal steps ([#267](https://github.com/itsakeyfut/avio/issues/267))
+- `speed` filter step for playback speed change via `setpts` + `atempo` ([#266](https://github.com/itsakeyfut/avio/issues/266))
+- `freeze_frame` step to hold a frame for a configurable duration ([#268](https://github.com/itsakeyfut/avio/issues/268))
+- `concat_video` step for multi-clip video concatenation ([#279](https://github.com/itsakeyfut/avio/issues/279))
+- `concat_audio` step for multi-clip audio concatenation ([#280](https://github.com/itsakeyfut/avio/issues/280))
+- `join_with_dissolve` step for cross-dissolve clip transitions ([#282](https://github.com/itsakeyfut/avio/issues/282))
+
+#### ff-filter — text & overlay
+- `drawtext` filter step for text overlay with `DrawTextOptions` ([#260](https://github.com/itsakeyfut/avio/issues/260))
+- `DrawTextOptions` background box support ([#261](https://github.com/itsakeyfut/avio/issues/261))
+- `ticker` filter step for scrolling news-ticker text overlay ([#265](https://github.com/itsakeyfut/avio/issues/265))
+- `subtitles_srt` filter step for hard SRT subtitle burn-in ([#262](https://github.com/itsakeyfut/avio/issues/262))
+- `subtitles_ass` filter step for hard ASS/SSA subtitle burn-in ([#263](https://github.com/itsakeyfut/avio/issues/263))
+- `overlay_image` filter step for PNG watermark compositing ([#264](https://github.com/itsakeyfut/avio/issues/264))
+
+#### ff-filter — audio effects
+- `afade_in` / `afade_out` audio fade steps ([#272](https://github.com/itsakeyfut/avio/issues/272))
+- `loudness_normalize` step for EBU R128 two-pass loudness normalization ([#269](https://github.com/itsakeyfut/avio/issues/269))
+- `normalize_peak` step for two-pass peak level normalization ([#270](https://github.com/itsakeyfut/avio/issues/270))
+- `equalizer` replaced by multi-band `ParametricEq` with `EqBand` type ([#273](https://github.com/itsakeyfut/avio/issues/273))
+- `agate` noise gate step with threshold, attack, and release ([#274](https://github.com/itsakeyfut/avio/issues/274))
+- `compressor` dynamic range compressor step ([#275](https://github.com/itsakeyfut/avio/issues/275))
+- `stereo_to_mono` downmix step ([#276](https://github.com/itsakeyfut/avio/issues/276))
+- `channel_map` step for arbitrary audio channel remapping ([#277](https://github.com/itsakeyfut/avio/issues/277))
+- `audio_delay` step for A/V sync correction via `adelay`/`atrim` ([#278](https://github.com/itsakeyfut/avio/issues/278))
+
+#### ff-encode
+- `StreamCopyTrimmer` for lossless clip trimming via stream copy ([#281](https://github.com/itsakeyfut/avio/issues/281))
+- `EncodeError::InvalidDimensions` and `EncodeError::InvalidBitrate` error variants ([#284](https://github.com/itsakeyfut/avio/issues/284))
+- Input validation for frame dimensions (2–32768 px), bitrate (≤800 Mbps), and fps (≤1000) ([#283](https://github.com/itsakeyfut/avio/issues/283))
+- `EncodeError::InvalidChannelCount` and `EncodeError::InvalidSampleRate` with audio encoder validation ([#286](https://github.com/itsakeyfut/avio/issues/286))
+
+#### ff-decode
+- Corrupt stream recovery: skip `AVERROR_INVALIDDATA` packets with warn log ([#287](https://github.com/itsakeyfut/avio/issues/287))
+- `DecodeError::StreamCorrupted` after 32 consecutive invalid packets ([#288](https://github.com/itsakeyfut/avio/issues/288))
+- `DecodeError::UnsupportedResolution` when decoded frame dimensions exceed limits ([#285](https://github.com/itsakeyfut/avio/issues/285))
+
+#### Security & reliability
+- `cargo-fuzz` target for `VideoDecoder::open` with arbitrary bytes ([#289](https://github.com/itsakeyfut/avio/issues/289))
+- `cargo-fuzz` target for `ff_probe::open` with arbitrary bytes ([#290](https://github.com/itsakeyfut/avio/issues/290))
+- `cargo-fuzz` target for `VideoEncoder` with arbitrary frame data ([#291](https://github.com/itsakeyfut/avio/issues/291))
+- CI fuzz job: 60 seconds per target on every PR ([#292](https://github.com/itsakeyfut/avio/issues/292))
+
+#### Integration tests
+- LUT application verified against reference image ([#293](https://github.com/itsakeyfut/avio/issues/293))
+- Audio effects on reference sine wave ([#294](https://github.com/itsakeyfut/avio/issues/294))
+- Full filter chain (colour grade + overlay + audio) ([#295](https://github.com/itsakeyfut/avio/issues/295))
+
+#### avio — examples
+- `video_effects.rs`: fade, rotate, tone mapping, xfade, speed, freeze
+- `color_grade.rs`: LUT3D, eq, curves, white balance, hue, gamma, three-way CC
+- `text_overlay.rs`: drawtext, ticker, subtitle burn-in
+- `audio_filters.rs`: volume, parametric EQ, noise gate, compressor
+- `clip_operations.rs`: concat, join with dissolve, reverse, StreamCopyTrimmer
+- `deinterlace.rs`: yadif modes
+- `noise_reduction.rs`: gblur, unsharp, hqdn3d, nlmeans
+
 ### Changed
 
 #### ff-encode — breaking
