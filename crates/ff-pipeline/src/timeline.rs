@@ -8,10 +8,14 @@
 use std::path::Path;
 
 use ff_decode::VideoDecoder;
+use ff_encode::VideoEncoder;
+use ff_filter::{AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoLayer};
+use ff_format::ChannelLayout;
 
 use crate::clip::Clip;
 use crate::encoder_config::EncoderConfig;
 use crate::error::PipelineError;
+use crate::pipeline::hwaccel_to_hardware_encoder;
 
 /// An ordered layout of [`Clip`] instances across video and audio tracks.
 ///
@@ -90,13 +94,97 @@ impl Timeline {
     /// - [`PipelineError::TimelineRenderFailed`] — other structural failure
     pub fn render(
         self,
-        _output: impl AsRef<Path>,
-        _config: EncoderConfig,
+        output: impl AsRef<Path>,
+        config: EncoderConfig,
     ) -> Result<(), PipelineError> {
-        // TODO(#675): implement timeline rendering
-        Err(PipelineError::TimelineRenderFailed {
-            reason: "not yet implemented".to_string(),
-        })
+        let output = output.as_ref();
+        let nv = self.video_tracks.len();
+        let na = self.audio_tracks.len();
+
+        // 1. Pre-check: all clip sources must exist on disk.
+        for track in self.video_tracks.iter().chain(self.audio_tracks.iter()) {
+            for clip in track {
+                if !clip.source.exists() {
+                    return Err(PipelineError::ClipNotFound {
+                        path: clip.source.to_string_lossy().into_owned(),
+                    });
+                }
+            }
+        }
+
+        // 2. Build video composition graph.
+        let mut video_graph = None;
+        if !self.video_tracks.is_empty() {
+            let mut composer = MultiTrackComposer::new(self.canvas_width, self.canvas_height);
+            for (track_idx, track) in self.video_tracks.iter().enumerate() {
+                for clip in track {
+                    composer = composer.add_layer(VideoLayer {
+                        source: clip.source.clone(),
+                        x: 0,
+                        y: 0,
+                        scale: 1.0,
+                        opacity: 1.0,
+                        z_order: u32::try_from(track_idx).unwrap_or(u32::MAX),
+                        time_offset: clip.timeline_offset,
+                        in_point: clip.in_point,
+                        out_point: clip.out_point,
+                    });
+                }
+            }
+            video_graph = Some(composer.build().map_err(PipelineError::Filter)?);
+        }
+
+        // 3. Build audio mix graph.
+        let mut audio_graph = None;
+        if !self.audio_tracks.is_empty() {
+            let mut mixer = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo);
+            for track in &self.audio_tracks {
+                for clip in track {
+                    mixer = mixer.add_track(AudioTrack {
+                        source: clip.source.clone(),
+                        volume_db: 0.0,
+                        pan: 0.0,
+                        time_offset: clip.timeline_offset,
+                    });
+                }
+            }
+            audio_graph = Some(mixer.build().map_err(PipelineError::Filter)?);
+        }
+
+        // 4. Build encoder.
+        let hw = hwaccel_to_hardware_encoder(config.hardware);
+        let mut enc_builder = VideoEncoder::create(output)
+            .video(self.canvas_width, self.canvas_height, self.frame_rate)
+            .video_codec(config.video_codec)
+            .bitrate_mode(config.bitrate_mode)
+            .hardware_encoder(hw);
+        if audio_graph.is_some() {
+            enc_builder = enc_builder.audio(48_000, 2).audio_codec(config.audio_codec);
+        }
+        let mut encoder = enc_builder.build().map_err(PipelineError::Encode)?;
+
+        // 5. Drain video graph → encoder.
+        if let Some(mut vgraph) = video_graph {
+            while let Some(frame) = vgraph.pull_video().map_err(PipelineError::Filter)? {
+                encoder.push_video(&frame).map_err(PipelineError::Encode)?;
+            }
+        }
+
+        // 6. Drain audio graph → encoder.
+        if let Some(mut agraph) = audio_graph {
+            while let Some(frame) = agraph.pull_audio().map_err(PipelineError::Filter)? {
+                encoder.push_audio(&frame).map_err(PipelineError::Encode)?;
+            }
+        }
+
+        // 7. Flush encoder.
+        encoder.finish().map_err(PipelineError::Encode)?;
+
+        log::info!(
+            "timeline render complete output={} video_tracks={nv} audio_tracks={na}",
+            output.display()
+        );
+        Ok(())
     }
 }
 
