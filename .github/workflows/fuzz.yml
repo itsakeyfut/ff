@@ -25,15 +25,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libclang-dev pkg-config
 
       - name: Fuzz ff-decode open_video
-        run: cargo fuzz run open_video -- -max_total_time=60
+        run: cargo +nightly fuzz run open_video -- -max_total_time=60
         working-directory: crates/ff-decode
 
       - name: Fuzz ff-probe probe_open
-        run: cargo fuzz run probe_open -- -max_total_time=60
+        run: cargo +nightly fuzz run probe_open -- -max_total_time=60
         working-directory: crates/ff-probe
 
       - name: Fuzz ff-encode encode_video
-        run: cargo fuzz run encode_video -- -max_total_time=60
+        run: cargo +nightly fuzz run encode_video -- -max_total_time=60
         working-directory: crates/ff-encode
 
       - name: Upload crash inputs
