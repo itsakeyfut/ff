@@ -37,6 +37,7 @@ pub mod graph;
 
 pub use error::FilterError;
 pub use graph::{
-    DrawTextOptions, EqBand, FilterGraph, FilterGraphBuilder, HwAccel, Rgb, ScaleAlgorithm,
-    ToneMap, XfadeTransition, YadifMode,
+    AudioTrack, DrawTextOptions, EqBand, FilterGraph, FilterGraphBuilder, HwAccel,
+    MultiTrackAudioMixer, MultiTrackComposer, Rgb, ScaleAlgorithm, ToneMap, VideoLayer,
+    XfadeTransition, YadifMode,
 };
