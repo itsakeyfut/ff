@@ -126,9 +126,18 @@ impl MultiTrackComposer {
     ///
     /// # Errors
     ///
-    /// - [`FilterError::CompositionFailed`] — no layers were added, or an
-    ///   underlying `FFmpeg` graph-construction call failed.
+    /// - [`FilterError::CompositionFailed`] — canvas width or height is zero,
+    ///   no layers were added, or an underlying `FFmpeg` graph-construction
+    ///   call failed.
     pub fn build(self) -> Result<FilterGraph, FilterError> {
+        if self.canvas_width == 0 || self.canvas_height == 0 {
+            return Err(FilterError::CompositionFailed {
+                reason: format!(
+                    "canvas dimensions must be non-zero: {}x{}",
+                    self.canvas_width, self.canvas_height
+                ),
+            });
+        }
         if self.layers.is_empty() {
             return Err(FilterError::CompositionFailed {
                 reason: "no layers".to_string(),
@@ -822,6 +831,77 @@ unsafe fn build_audio_mix(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composer_zero_canvas_size_should_err() {
+        // width = 0
+        let result = MultiTrackComposer::new(0, 1080)
+            .add_layer(VideoLayer {
+                source: "clip.mp4".into(),
+                x: 0,
+                y: 0,
+                scale: 1.0,
+                opacity: 1.0,
+                z_order: 0,
+                time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
+            })
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::CompositionFailed { .. })),
+            "expected CompositionFailed for zero width, got {result:?}"
+        );
+
+        // height = 0
+        let result = MultiTrackComposer::new(1920, 0)
+            .add_layer(VideoLayer {
+                source: "clip.mp4".into(),
+                x: 0,
+                y: 0,
+                scale: 1.0,
+                opacity: 1.0,
+                z_order: 0,
+                time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
+            })
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::CompositionFailed { .. })),
+            "expected CompositionFailed for zero height, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn composer_canvas_larger_than_track_should_succeed() {
+        // A 1920×1080 canvas is larger than a typical 640×480 source track.
+        // Canvas size is independent of layer resolution — placement at (x, y)
+        // is handled by the overlay filter; no auto-scale is applied.
+        // The validation guard must not reject non-zero canvas dimensions.
+        // If the build fails it must be for an FFmpeg reason (e.g. source file
+        // not found), not because of canvas size.
+        let result = MultiTrackComposer::new(1920, 1080)
+            .add_layer(VideoLayer {
+                source: "nonexistent_640x480.mp4".into(),
+                x: 100,
+                y: 100,
+                scale: 1.0,
+                opacity: 1.0,
+                z_order: 0,
+                time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
+            })
+            .build();
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("canvas") && !reason.contains("zero"),
+                "build failed due to canvas size, which must not happen for 1920x1080: {reason}"
+            );
+        }
+        // Ok(_) is also acceptable if the movie source happened to be present.
+    }
 
     #[test]
     fn composer_empty_layers_should_return_err() {
