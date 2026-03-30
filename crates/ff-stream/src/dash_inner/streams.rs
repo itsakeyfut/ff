@@ -1,0 +1,114 @@
+//! Video/audio stream helpers: encoder selection, AAC encoder open, FPS detection.
+
+use std::ffi::CString;
+use std::ptr;
+
+use ff_sys::{AVCodecContext, AVFormatContext};
+
+use crate::error::StreamError;
+
+use super::ffmpeg_err;
+use super::ffmpeg_err_msg;
+
+// ============================================================================
+// Helper: select best available H.264 encoder
+// ============================================================================
+
+pub(super) unsafe fn select_h264_encoder() -> Option<*const ff_sys::AVCodec> {
+    let candidates = [
+        "h264_nvenc",
+        "h264_qsv",
+        "h264_amf",
+        "h264_videotoolbox",
+        "libx264",
+        "mpeg4",
+    ];
+    for name in candidates {
+        if let Ok(c_name) = CString::new(name)
+            && let Some(codec) = ff_sys::avcodec::find_encoder_by_name(c_name.as_ptr())
+        {
+            log::info!("dash selected video encoder encoder={name}");
+            return Some(codec);
+        }
+    }
+    None
+}
+
+// ============================================================================
+// Helper: open AAC encoder
+// ============================================================================
+
+pub(super) unsafe fn open_aac_encoder(
+    sample_rate: i32,
+    nb_channels: i32,
+) -> Result<*mut AVCodecContext, StreamError> {
+    let codec = ff_sys::avcodec::find_encoder_by_name(c"aac".as_ptr())
+        .or_else(|| ff_sys::avcodec::find_encoder_by_name(c"libfdk_aac".as_ptr()))
+        .ok_or_else(|| ffmpeg_err_msg("no AAC encoder available"))?;
+
+    let mut ctx = ff_sys::avcodec::alloc_context3(codec).map_err(ffmpeg_err)?;
+
+    (*ctx).sample_rate = sample_rate;
+    (*ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
+    (*ctx).bit_rate = 192_000;
+    (*ctx).time_base.num = 1;
+    (*ctx).time_base.den = sample_rate;
+    ff_sys::swresample::channel_layout::set_default(&mut (*ctx).ch_layout, nb_channels);
+
+    ff_sys::avcodec::open2(ctx, codec, ptr::null_mut()).map_err(|e| {
+        ff_sys::avcodec::free_context(&mut ctx as *mut *mut _);
+        ffmpeg_err(e)
+    })?;
+
+    log::info!("dash aac encoder opened sample_rate={sample_rate} channels={nb_channels}");
+    Ok(ctx)
+}
+
+// ============================================================================
+// FPS detection
+// ============================================================================
+
+#[allow(clippy::cast_precision_loss)]
+pub(super) unsafe fn detect_fps(
+    stream: *mut ff_sys::AVStream,
+    fmt_ctx: *mut AVFormatContext,
+) -> f64 {
+    const MIN_FPS: f64 = 1.0;
+    const MAX_FPS: f64 = 240.0;
+
+    let try_rational = |num: i32, den: i32| -> Option<f64> {
+        if den <= 0 || num <= 0 {
+            return None;
+        }
+        let fps = num as f64 / den as f64;
+        if (MIN_FPS..=MAX_FPS).contains(&fps) {
+            Some(fps)
+        } else {
+            None
+        }
+    };
+
+    // 1. avg_frame_rate — reliable for most containers
+    let avg = (*stream).avg_frame_rate;
+    if let Some(fps) = try_rational(avg.num, avg.den) {
+        return fps;
+    }
+
+    // 2. r_frame_rate — constant-framerate indicator
+    let rfr = (*stream).r_frame_rate;
+    if let Some(fps) = try_rational(rfr.num, rfr.den) {
+        return fps;
+    }
+
+    // 3. Derive from nb_frames and total duration (robust for MPEG-4 Part 2)
+    let nb = (*stream).nb_frames;
+    let dur = (*fmt_ctx).duration; // in AV_TIME_BASE (1 000 000) microseconds
+    if nb > 0 && dur > 0 {
+        let fps = nb as f64 / (dur as f64 / 1_000_000.0);
+        if (MIN_FPS..=MAX_FPS).contains(&fps) {
+            return fps;
+        }
+    }
+
+    25.0 // sane default
+}
