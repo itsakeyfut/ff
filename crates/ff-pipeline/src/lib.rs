@@ -58,6 +58,7 @@ pub mod error;
 pub mod pipeline;
 pub mod progress;
 pub mod thumbnail;
+pub mod timeline;
 pub mod video_pipeline;
 
 pub use audio_pipeline::AudioPipeline;
@@ -67,4 +68,5 @@ pub use error::PipelineError;
 pub use pipeline::{Pipeline, PipelineBuilder};
 pub use progress::{Progress, ProgressCallback};
 pub use thumbnail::ThumbnailPipeline;
+pub use timeline::{Timeline, TimelineBuilder};
 pub use video_pipeline::VideoPipeline;
