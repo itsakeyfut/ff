@@ -254,8 +254,9 @@ pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 // ── filter feature ────────────────────────────────────────────────────────────
 #[cfg(feature = "filter")]
 pub use ff_filter::{
-    DrawTextOptions, EqBand, FilterError, FilterGraph, FilterGraphBuilder, HwAccel, Rgb,
-    ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+    AudioTrack, DrawTextOptions, EqBand, FilterError, FilterGraph, FilterGraphBuilder, HwAccel,
+    MultiTrackAudioMixer, MultiTrackComposer, Rgb, ScaleAlgorithm, ToneMap, VideoLayer,
+    XfadeTransition, YadifMode,
 };
 
 // ── pipeline feature ──────────────────────────────────────────────────────────
@@ -264,8 +265,9 @@ pub use ff_filter::{
 // Progress / ProgressCallback are re-exported here as the canonical source.
 #[cfg(feature = "pipeline")]
 pub use ff_pipeline::{
-    AudioPipeline, EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder, PipelineError,
-    Progress, ProgressCallback, ThumbnailPipeline, VideoPipeline,
+    AudioPipeline, Clip, EncoderConfig, EncoderConfigBuilder, Pipeline, PipelineBuilder,
+    PipelineError, Progress, ProgressCallback, ThumbnailPipeline, Timeline, TimelineBuilder,
+    VideoPipeline,
 };
 
 // ── stream feature ────────────────────────────────────────────────────────────
