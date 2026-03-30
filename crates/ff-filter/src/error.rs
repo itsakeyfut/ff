@@ -38,6 +38,17 @@ pub enum FilterError {
         /// Human-readable description of the error.
         message: String,
     },
+
+    /// A multi-track composition or mixing operation failed.
+    ///
+    /// Returned by [`MultiTrackComposer::build`](crate::MultiTrackComposer::build) and
+    /// [`MultiTrackAudioMixer::build`](crate::MultiTrackAudioMixer::build) when the
+    /// `FFmpeg` filter graph cannot be constructed.
+    #[error("composition failed: {reason}")]
+    CompositionFailed {
+        /// Human-readable reason for the failure.
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -76,6 +87,14 @@ mod tests {
             message: "Invalid argument".to_string(),
         };
         assert_eq!(err.to_string(), "ffmpeg error: Invalid argument (code=-22)");
+    }
+
+    #[test]
+    fn composition_failed_should_display_reason() {
+        let err = FilterError::CompositionFailed {
+            reason: "no layers".to_string(),
+        };
+        assert_eq!(err.to_string(), "composition failed: no layers");
     }
 
     #[test]

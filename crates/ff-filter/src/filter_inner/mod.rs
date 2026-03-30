@@ -166,6 +166,62 @@ impl FilterGraphInner {
             peak_pass2_done: false,
         }
     }
+
+    /// Creates a pre-initialised inner for a source-only video composition graph.
+    ///
+    /// `graph` and `vsink_ctx` are owned by the returned struct and freed on drop
+    /// via the existing `Drop` impl.  No `buffersrc` is needed — all input comes
+    /// from self-contained filter sources (`color`, `movie`, etc.).
+    pub(crate) fn with_prebuilt_video_graph(
+        graph: NonNull<ff_sys::AVFilterGraph>,
+        vsink_ctx: NonNull<ff_sys::AVFilterContext>,
+    ) -> Self {
+        Self {
+            graph: Some(graph),
+            src_ctxs: Vec::new(),
+            vsink_ctx: Some(vsink_ctx),
+            asink_ctx: None,
+            steps: Vec::new(),
+            hw: None,
+            hw_device_ctx: None,
+            loudness_buf: Vec::new(),
+            loudness_output: Vec::new(),
+            loudness_output_idx: 0,
+            loudness_pass2_done: false,
+            peak_buf: Vec::new(),
+            peak_output: Vec::new(),
+            peak_output_idx: 0,
+            peak_pass2_done: false,
+        }
+    }
+
+    /// Creates a pre-initialised inner for a source-only audio mix graph.
+    ///
+    /// `graph` and `asink_ctx` are owned by the returned struct and freed on drop
+    /// via the existing `Drop` impl.  No `abuffersrc` is needed — all input comes
+    /// from self-contained filter sources (`amovie`, etc.).
+    pub(crate) fn with_prebuilt_audio_graph(
+        graph: NonNull<ff_sys::AVFilterGraph>,
+        asink_ctx: NonNull<ff_sys::AVFilterContext>,
+    ) -> Self {
+        Self {
+            graph: Some(graph),
+            src_ctxs: Vec::new(),
+            vsink_ctx: None,
+            asink_ctx: Some(asink_ctx),
+            steps: Vec::new(),
+            hw: None,
+            hw_device_ctx: None,
+            loudness_buf: Vec::new(),
+            loudness_output: Vec::new(),
+            loudness_output_idx: 0,
+            loudness_pass2_done: false,
+            peak_buf: Vec::new(),
+            peak_output: Vec::new(),
+            peak_output_idx: 0,
+            peak_pass2_done: false,
+        }
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

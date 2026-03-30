@@ -50,6 +50,18 @@ impl FilterGraph {
         FilterGraphBuilder::new()
     }
 
+    /// Creates a `FilterGraph` from a pre-built [`FilterGraphInner`].
+    ///
+    /// Used by [`MultiTrackComposer`](crate::MultiTrackComposer) and
+    /// [`MultiTrackAudioMixer`](crate::MultiTrackAudioMixer) to wrap
+    /// source-only filter graphs that need no external `buffersrc`.
+    pub(crate) fn from_prebuilt(inner: FilterGraphInner) -> Self {
+        Self {
+            inner,
+            output_resolution: None,
+        }
+    }
+
     /// Returns the output resolution produced by this graph's `scale` filter step,
     /// if one was configured.
     ///
