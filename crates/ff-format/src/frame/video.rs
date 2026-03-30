@@ -1438,4 +1438,40 @@ mod tests {
             FrameError::UnsupportedPixelFormat(PixelFormat::Other(999))
         );
     }
+
+    #[test]
+    fn video_frame_clone_should_have_identical_data() {
+        let width = 320u32;
+        let height = 240u32;
+        let stride = width as usize;
+        let y_data = vec![42u8; stride * height as usize];
+        let uv_stride = (width / 2) as usize;
+        let uv_data = vec![128u8; uv_stride * (height / 2) as usize];
+        let ts = Timestamp::new(1000, Rational::new(1, 1000));
+
+        let original = VideoFrame::new(
+            vec![
+                PooledBuffer::standalone(y_data.clone()),
+                PooledBuffer::standalone(uv_data.clone()),
+                PooledBuffer::standalone(uv_data.clone()),
+            ],
+            vec![stride, uv_stride, uv_stride],
+            width,
+            height,
+            PixelFormat::Yuv420p,
+            ts,
+            false,
+        )
+        .unwrap();
+
+        let clone = original.clone();
+
+        assert_eq!(clone.width(), original.width());
+        assert_eq!(clone.height(), original.height());
+        assert_eq!(clone.format(), original.format());
+        assert_eq!(clone.timestamp(), original.timestamp());
+        assert_eq!(clone.is_key_frame(), original.is_key_frame());
+        assert_eq!(clone.num_planes(), original.num_planes());
+        assert_eq!(clone.plane(0), original.plane(0));
+    }
 }

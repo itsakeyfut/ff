@@ -480,6 +480,19 @@ mod tests {
         assert_eq!(buffer2.data(), &[99, 2, 3]);
     }
 
+    #[test]
+    fn pooled_buffer_clone_should_be_independent_of_source() {
+        let mut original = PooledBuffer::standalone(vec![1, 2, 3]);
+        let clone = original.clone();
+
+        // Mutate the original after cloning
+        original.data_mut()[0] = 99;
+
+        // Clone must be unaffected (deep copy)
+        assert_eq!(clone.data(), &[1, 2, 3]);
+        assert_eq!(original.data(), &[99, 2, 3]);
+    }
+
     // ── VecPool tests ─────────────────────────────────────────────────────────
 
     #[test]
