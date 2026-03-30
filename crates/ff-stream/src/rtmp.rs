@@ -1,6 +1,6 @@
 //! Frame-push RTMP output.
 //!
-//! [`RtmpOutput`] receives pre-decoded [`VideoFrame`] / [`AudioFrame`] values
+//! [`RtmpOutput`] receives pre-decoded [`ff_format::VideoFrame`] / [`ff_format::AudioFrame`] values
 //! from the caller, encodes them with H.264/AAC, and pushes the stream to an
 //! RTMP ingest endpoint using `FFmpeg`'s built-in RTMP support.
 //!
@@ -24,15 +24,10 @@
 //! Box::new(out).finish()?;
 //! ```
 
-use ff_format::{AudioCodec, AudioFrame, VideoCodec, VideoFrame};
+use ff_format::{AudioCodec, VideoCodec};
 
 use crate::error::StreamError;
-use crate::output::StreamOutput;
 use crate::rtmp_inner::RtmpInner;
-
-// ============================================================================
-// RtmpOutput — safe builder + StreamOutput impl
-// ============================================================================
 
 /// Live RTMP output: encodes frames and pushes them to an RTMP ingest endpoint.
 ///
@@ -40,9 +35,9 @@ use crate::rtmp_inner::RtmpInner;
 /// [`build`](Self::build) to open the `FFmpeg` context and establish the
 /// RTMP connection. After `build()`:
 ///
-/// - [`push_video`](Self::push_video) and [`push_audio`](Self::push_audio) encode and
+/// - `push_video` and `push_audio` encode and
 ///   transmit frames in real time.
-/// - [`StreamOutput::finish`] flushes all encoders, sends the FLV end-of-stream
+/// - [`crate::StreamOutput::finish`] flushes all encoders, sends the FLV end-of-stream
 ///   marker, and closes the RTMP connection.
 ///
 /// RTMP/FLV requires H.264 video and AAC audio; [`build`](Self::build) returns
@@ -91,67 +86,6 @@ impl RtmpOutput {
             inner: None,
             finished: false,
         }
-    }
-
-    /// Set the video encoding parameters.
-    ///
-    /// This method **must** be called before [`build`](Self::build).
-    #[must_use]
-    pub fn video(mut self, width: u32, height: u32, fps: f64) -> Self {
-        self.video_width = Some(width);
-        self.video_height = Some(height);
-        self.fps = Some(fps);
-        self
-    }
-
-    /// Set the audio sample rate and channel count.
-    ///
-    /// Defaults: 44 100 Hz, 2 channels (stereo).
-    #[must_use]
-    pub fn audio(mut self, sample_rate: u32, channels: u32) -> Self {
-        self.sample_rate = sample_rate;
-        self.channels = channels;
-        self
-    }
-
-    /// Set the video codec.
-    ///
-    /// Default: [`VideoCodec::H264`]. Only `H264` is accepted by
-    /// [`build`](Self::build); any other value returns
-    /// [`StreamError::UnsupportedCodec`].
-    #[must_use]
-    pub fn video_codec(mut self, codec: VideoCodec) -> Self {
-        self.video_codec = codec;
-        self
-    }
-
-    /// Set the audio codec.
-    ///
-    /// Default: [`AudioCodec::Aac`]. Only `Aac` is accepted by
-    /// [`build`](Self::build); any other value returns
-    /// [`StreamError::UnsupportedCodec`].
-    #[must_use]
-    pub fn audio_codec(mut self, codec: AudioCodec) -> Self {
-        self.audio_codec = codec;
-        self
-    }
-
-    /// Set the video encoder target bit rate in bits/s.
-    ///
-    /// Default: 4 000 000 (4 Mbit/s).
-    #[must_use]
-    pub fn video_bitrate(mut self, bitrate: u64) -> Self {
-        self.video_bitrate = bitrate;
-        self
-    }
-
-    /// Set the audio encoder target bit rate in bits/s.
-    ///
-    /// Default: 128 000 (128 kbit/s).
-    #[must_use]
-    pub fn audio_bitrate(mut self, bitrate: u64) -> Self {
-        self.audio_bitrate = bitrate;
-        self
     }
 
     /// Open the `FFmpeg` context and establish the RTMP connection.
@@ -217,61 +151,8 @@ impl RtmpOutput {
     }
 }
 
-// ============================================================================
-// StreamOutput impl
-// ============================================================================
-
-impl StreamOutput for RtmpOutput {
-    fn push_video(&mut self, frame: &VideoFrame) -> Result<(), StreamError> {
-        if self.finished {
-            return Err(StreamError::InvalidConfig {
-                reason: "push_video called after finish()".into(),
-            });
-        }
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| StreamError::InvalidConfig {
-                reason: "push_video called before build()".into(),
-            })?;
-        inner.push_video(frame)
-    }
-
-    fn push_audio(&mut self, frame: &AudioFrame) -> Result<(), StreamError> {
-        if self.finished {
-            return Err(StreamError::InvalidConfig {
-                reason: "push_audio called after finish()".into(),
-            });
-        }
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| StreamError::InvalidConfig {
-                reason: "push_audio called before build()".into(),
-            })?;
-        inner.push_audio(frame);
-        Ok(())
-    }
-
-    fn finish(mut self: Box<Self>) -> Result<(), StreamError> {
-        if self.finished {
-            return Ok(());
-        }
-        self.finished = true;
-        let inner = self
-            .inner
-            .take()
-            .ok_or_else(|| StreamError::InvalidConfig {
-                reason: "finish() called before build()".into(),
-            })?;
-        inner.flush_and_close();
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Unit tests
-// ============================================================================
+impl_live_stream_setters!(RtmpOutput, required_audio);
+impl_frame_push_stream_output!(RtmpOutput);
 
 #[cfg(test)]
 mod tests {

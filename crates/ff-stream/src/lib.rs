@@ -69,6 +69,9 @@
 
 #![warn(missing_docs)]
 
+#[macro_use]
+mod builder_macros;
+
 pub mod abr;
 pub(crate) mod codec_utils;
 pub mod dash;
