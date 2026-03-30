@@ -1,15 +1,19 @@
 //! Async audio encoder backed by a bounded `tokio::sync::mpsc` channel.
 
 use ff_format::AudioFrame;
-use tokio::sync::mpsc;
 
 use super::builder::{AudioEncoder, AudioEncoderBuilder};
 use crate::EncodeError;
+use crate::async_encoder::{AsyncEncoder, SyncEncoder};
 
-/// Messages sent from the async front-end to the worker thread.
-enum WorkerMsg {
-    Frame(AudioFrame),
-    Finish,
+impl SyncEncoder<AudioFrame> for AudioEncoder {
+    fn push_frame(&mut self, frame: &AudioFrame) -> Result<(), EncodeError> {
+        self.push(frame)
+    }
+
+    fn drain_and_finish(self) -> Result<(), EncodeError> {
+        self.finish()
+    }
 }
 
 /// Async wrapper around [`AudioEncoder`].
@@ -44,8 +48,7 @@ enum WorkerMsg {
 ///
 /// [`push`]: AsyncAudioEncoder::push
 pub struct AsyncAudioEncoder {
-    sender: mpsc::Sender<WorkerMsg>,
-    join_handle: Option<std::thread::JoinHandle<Result<(), EncodeError>>>,
+    inner: AsyncEncoder<AudioFrame>,
 }
 
 impl std::fmt::Debug for AsyncAudioEncoder {
@@ -67,25 +70,8 @@ impl AsyncAudioEncoder {
     /// the output file cannot be created.
     pub fn from_builder(builder: AudioEncoderBuilder) -> Result<Self, EncodeError> {
         let encoder = builder.build()?;
-        let (tx, rx) = mpsc::channel::<WorkerMsg>(8);
-
-        let handle = std::thread::spawn(move || -> Result<(), EncodeError> {
-            let mut encoder: AudioEncoder = encoder;
-            let mut rx = rx;
-            #[allow(clippy::while_let_loop)]
-            loop {
-                match rx.blocking_recv() {
-                    Some(WorkerMsg::Frame(frame)) => encoder.push(&frame)?,
-                    Some(WorkerMsg::Finish) | None => break,
-                }
-            }
-            // Flush remaining frames and write the container trailer.
-            encoder.finish()
-        });
-
         Ok(Self {
-            sender: tx,
-            join_handle: Some(handle),
+            inner: AsyncEncoder::new(encoder),
         })
     }
 
@@ -99,10 +85,7 @@ impl AsyncAudioEncoder {
     /// Returns [`EncodeError::WorkerPanicked`] if the worker thread has
     /// exited unexpectedly.
     pub async fn push(&mut self, frame: AudioFrame) -> Result<(), EncodeError> {
-        self.sender
-            .send(WorkerMsg::Frame(frame))
-            .await
-            .map_err(|_| EncodeError::WorkerPanicked)
+        self.inner.push(frame).await
     }
 
     /// Signals end-of-stream, flushes remaining frames, and writes the file trailer.
@@ -116,27 +99,7 @@ impl AsyncAudioEncoder {
     /// Returns [`EncodeError`] if encoding fails during flush or if the
     /// worker thread panicked.
     pub async fn finish(self) -> Result<(), EncodeError> {
-        let Self {
-            sender,
-            join_handle,
-        } = self;
-        // Send the Finish sentinel so the worker exits its loop cleanly, then
-        // drop the sender to close the channel.
-        sender
-            .send(WorkerMsg::Finish)
-            .await
-            .map_err(|_| EncodeError::WorkerPanicked)?;
-        drop(sender);
-        if let Some(handle) = join_handle {
-            // Join on a spawn_blocking thread so the async executor is not blocked.
-            tokio::task::spawn_blocking(move || {
-                handle.join().map_err(|_| EncodeError::WorkerPanicked)?
-            })
-            .await
-            .map_err(|_| EncodeError::WorkerPanicked)?
-        } else {
-            Ok(())
-        }
+        self.inner.finish().await
     }
 }
 

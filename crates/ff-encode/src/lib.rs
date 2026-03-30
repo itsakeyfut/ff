@@ -192,6 +192,8 @@
 //! println!("LGPL compliant: {}", encoder.is_lgpl_compliant());
 //! ```
 
+#[cfg(feature = "tokio")]
+mod async_encoder;
 mod audio;
 mod bitrate;
 mod codec;

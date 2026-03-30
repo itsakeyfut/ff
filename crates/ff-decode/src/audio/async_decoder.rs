@@ -1,11 +1,11 @@
 //! Async audio decoder backed by `tokio::task::spawn_blocking`.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use ff_format::AudioFrame;
 use futures::stream::{self, Stream};
 
+use crate::async_decoder::AsyncDecoder;
 use crate::audio::builder::AudioDecoder;
 use crate::error::DecodeError;
 
@@ -27,7 +27,7 @@ use crate::error::DecodeError;
 /// }
 /// ```
 pub struct AsyncAudioDecoder {
-    inner: Arc<Mutex<AudioDecoder>>,
+    inner: AsyncDecoder<AudioDecoder>,
 }
 
 impl AsyncAudioDecoder {
@@ -49,7 +49,7 @@ impl AsyncAudioDecoder {
                 message: format!("spawn_blocking panicked: {e}"),
             })??;
         Ok(Self {
-            inner: Arc::new(Mutex::new(decoder)),
+            inner: AsyncDecoder::new(decoder),
         })
     }
 
@@ -64,21 +64,7 @@ impl AsyncAudioDecoder {
     ///
     /// Returns [`DecodeError`] on codec or I/O errors.
     pub async fn decode_frame(&mut self) -> Result<Option<AudioFrame>, DecodeError> {
-        let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
-            inner
-                .lock()
-                .map_err(|_| DecodeError::Ffmpeg {
-                    code: 0,
-                    message: "mutex poisoned".to_string(),
-                })?
-                .decode_one()
-        })
-        .await
-        .map_err(|e| DecodeError::Ffmpeg {
-            code: 0,
-            message: format!("spawn_blocking panicked: {e}"),
-        })?
+        self.inner.with(AudioDecoder::decode_one).await
     }
 
     /// Converts this decoder into a [`Stream`] of audio frames.
