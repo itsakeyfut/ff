@@ -1,0 +1,603 @@
+//! [`FilterGraphBuilder`] — consuming builder for filter graphs.
+
+use std::path::Path;
+
+pub(super) use super::FilterGraph;
+pub(super) use super::filter_step::FilterStep;
+pub(super) use super::types::{
+    DrawTextOptions, EqBand, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
+};
+pub(super) use crate::error::FilterError;
+use crate::filter_inner::FilterGraphInner;
+
+mod audio;
+mod video;
+
+// ── FilterGraphBuilder ────────────────────────────────────────────────────────
+
+/// Builder for constructing a [`FilterGraph`].
+///
+/// Create one with [`FilterGraph::builder()`], chain the desired filter
+/// methods, then call [`build`](Self::build) to obtain the graph.
+///
+/// # Examples
+///
+/// ```ignore
+/// use ff_filter::{FilterGraph, ToneMap};
+///
+/// let graph = FilterGraph::builder()
+///     .scale(1280, 720)
+///     .tone_map(ToneMap::Hable)
+///     .build()?;
+/// ```
+#[derive(Debug, Default)]
+pub struct FilterGraphBuilder {
+    pub(super) steps: Vec<FilterStep>,
+    pub(super) hw: Option<HwAccel>,
+}
+
+impl FilterGraphBuilder {
+    /// Creates an empty builder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Enable hardware-accelerated filtering.
+    ///
+    /// When set, `hwupload` and `hwdownload` filters are inserted around the
+    /// filter chain automatically.
+    #[must_use]
+    pub fn hardware(mut self, hw: HwAccel) -> Self {
+        self.hw = Some(hw);
+        self
+    }
+
+    // ── Build ─────────────────────────────────────────────────────────────────
+
+    /// Build the [`FilterGraph`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::BuildFailed`] if `steps` is empty (there is
+    /// nothing to filter). The actual `FFmpeg` graph is constructed lazily on the
+    /// first [`push_video`](FilterGraph::push_video) or
+    /// [`push_audio`](FilterGraph::push_audio) call.
+    pub fn build(self) -> Result<FilterGraph, FilterError> {
+        if self.steps.is_empty() {
+            return Err(FilterError::BuildFailed);
+        }
+
+        // Validate overlay coordinates: negative x or y places the overlay
+        // entirely off-screen, which is almost always a misconfiguration
+        // (e.g. a watermark larger than the video). Catch it early with a
+        // descriptive error rather than silently producing invisible output.
+        for step in &self.steps {
+            if let FilterStep::ParametricEq { bands } = step
+                && bands.is_empty()
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "equalizer bands must not be empty".to_string(),
+                });
+            }
+            if let FilterStep::Speed { factor } = step
+                && !(0.1..=100.0).contains(factor)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("speed factor {factor} out of range [0.1, 100.0]"),
+                });
+            }
+            if let FilterStep::LoudnessNormalize {
+                target_lufs,
+                true_peak_db,
+                lra,
+            } = step
+            {
+                if *target_lufs >= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "loudness_normalize target_lufs {target_lufs} must be < 0.0"
+                        ),
+                    });
+                }
+                if *true_peak_db > 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "loudness_normalize true_peak_db {true_peak_db} must be <= 0.0"
+                        ),
+                    });
+                }
+                if *lra <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("loudness_normalize lra {lra} must be > 0.0"),
+                    });
+                }
+            }
+            if let FilterStep::NormalizePeak { target_db } = step
+                && *target_db > 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("normalize_peak target_db {target_db} must be <= 0.0"),
+                });
+            }
+            if let FilterStep::FreezeFrame { pts, duration } = step {
+                if *pts < 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("freeze_frame pts {pts} must be >= 0.0"),
+                    });
+                }
+                if *duration <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("freeze_frame duration {duration} must be > 0.0"),
+                    });
+                }
+            }
+            if let FilterStep::Crop { width, height, .. } = step
+                && (*width == 0 || *height == 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "crop width and height must be > 0".to_string(),
+                });
+            }
+            if let FilterStep::FadeIn { duration, .. }
+            | FilterStep::FadeOut { duration, .. }
+            | FilterStep::FadeInWhite { duration, .. }
+            | FilterStep::FadeOutWhite { duration, .. } = step
+                && *duration <= 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("fade duration {duration} must be > 0.0"),
+                });
+            }
+            if let FilterStep::AFadeIn { duration, .. } | FilterStep::AFadeOut { duration, .. } =
+                step
+                && *duration <= 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("afade duration {duration} must be > 0.0"),
+                });
+            }
+            if let FilterStep::XFade { duration, .. } = step
+                && *duration <= 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("xfade duration {duration} must be > 0.0"),
+                });
+            }
+            if let FilterStep::JoinWithDissolve {
+                dissolve_dur,
+                clip_a_end,
+                ..
+            } = step
+            {
+                if *dissolve_dur <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "join_with_dissolve dissolve_dur={dissolve_dur} must be > 0.0"
+                        ),
+                    });
+                }
+                if *clip_a_end <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("join_with_dissolve clip_a_end={clip_a_end} must be > 0.0"),
+                    });
+                }
+            }
+            if let FilterStep::ANoiseGate {
+                attack_ms,
+                release_ms,
+                ..
+            } = step
+            {
+                if *attack_ms <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("agate attack_ms {attack_ms} must be > 0.0"),
+                    });
+                }
+                if *release_ms <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("agate release_ms {release_ms} must be > 0.0"),
+                    });
+                }
+            }
+            if let FilterStep::ACompressor {
+                ratio,
+                attack_ms,
+                release_ms,
+                ..
+            } = step
+            {
+                if *ratio < 1.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("compressor ratio {ratio} must be >= 1.0"),
+                    });
+                }
+                if *attack_ms <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("compressor attack_ms {attack_ms} must be > 0.0"),
+                    });
+                }
+                if *release_ms <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("compressor release_ms {release_ms} must be > 0.0"),
+                    });
+                }
+            }
+            if let FilterStep::ChannelMap { mapping } = step
+                && mapping.is_empty()
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "channel_map mapping must not be empty".to_string(),
+                });
+            }
+            if let FilterStep::ConcatVideo { n } = step
+                && *n < 2
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("concat_video n={n} must be >= 2"),
+                });
+            }
+            if let FilterStep::ConcatAudio { n } = step
+                && *n < 2
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("concat_audio n={n} must be >= 2"),
+                });
+            }
+            if let FilterStep::DrawText { opts } = step {
+                if opts.text.is_empty() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: "drawtext text must not be empty".to_string(),
+                    });
+                }
+                if !(0.0..=1.0).contains(&opts.opacity) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "drawtext opacity {} out of range [0.0, 1.0]",
+                            opts.opacity
+                        ),
+                    });
+                }
+            }
+            if let FilterStep::Ticker {
+                text,
+                speed_px_per_sec,
+                ..
+            } = step
+            {
+                if text.is_empty() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: "ticker text must not be empty".to_string(),
+                    });
+                }
+                if *speed_px_per_sec <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("ticker speed_px_per_sec {speed_px_per_sec} must be > 0.0"),
+                    });
+                }
+            }
+            if let FilterStep::Overlay { x, y } = step
+                && (*x < 0 || *y < 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!(
+                        "overlay position ({x}, {y}) is off-screen; \
+                         ensure the watermark fits within the video dimensions"
+                    ),
+                });
+            }
+            if let FilterStep::Lut3d { path } = step {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if !matches!(ext, "cube" | "3dl") {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("unsupported LUT format: .{ext}; expected .cube or .3dl"),
+                    });
+                }
+                if !Path::new(path).exists() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("LUT file not found: {path}"),
+                    });
+                }
+            }
+            if let FilterStep::SubtitlesSrt { path } = step {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if ext != "srt" {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("unsupported subtitle format: .{ext}; expected .srt"),
+                    });
+                }
+                if !Path::new(path).exists() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("subtitle file not found: {path}"),
+                    });
+                }
+            }
+            if let FilterStep::SubtitlesAss { path } = step {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if !matches!(ext, "ass" | "ssa") {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "unsupported subtitle format: .{ext}; expected .ass or .ssa"
+                        ),
+                    });
+                }
+                if !Path::new(path).exists() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("subtitle file not found: {path}"),
+                    });
+                }
+            }
+            if let FilterStep::OverlayImage { path, opacity, .. } = step {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if ext != "png" {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("unsupported image format: .{ext}; expected .png"),
+                    });
+                }
+                if !(0.0..=1.0).contains(opacity) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("overlay_image opacity {opacity} out of range [0.0, 1.0]"),
+                    });
+                }
+                if !Path::new(path).exists() {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("overlay image not found: {path}"),
+                    });
+                }
+            }
+            if let FilterStep::Eq {
+                brightness,
+                contrast,
+                saturation,
+            } = step
+            {
+                if !(-1.0..=1.0).contains(brightness) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq brightness {brightness} out of range [-1.0, 1.0]"),
+                    });
+                }
+                if !(0.0..=3.0).contains(contrast) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq contrast {contrast} out of range [0.0, 3.0]"),
+                    });
+                }
+                if !(0.0..=3.0).contains(saturation) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq saturation {saturation} out of range [0.0, 3.0]"),
+                    });
+                }
+            }
+            if let FilterStep::Curves { master, r, g, b } = step {
+                for (channel, pts) in [
+                    ("master", master.as_slice()),
+                    ("r", r.as_slice()),
+                    ("g", g.as_slice()),
+                    ("b", b.as_slice()),
+                ] {
+                    for &(x, y) in pts {
+                        if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                            return Err(FilterError::InvalidConfig {
+                                reason: format!(
+                                    "curves {channel} control point ({x}, {y}) out of range [0.0, 1.0]"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            if let FilterStep::WhiteBalance {
+                temperature_k,
+                tint,
+            } = step
+            {
+                if !(1000..=40000).contains(temperature_k) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "white_balance temperature_k {temperature_k} out of range [1000, 40000]"
+                        ),
+                    });
+                }
+                if !(-1.0..=1.0).contains(tint) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("white_balance tint {tint} out of range [-1.0, 1.0]"),
+                    });
+                }
+            }
+            if let FilterStep::Hue { degrees } = step
+                && !(-360.0..=360.0).contains(degrees)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("hue degrees {degrees} out of range [-360.0, 360.0]"),
+                });
+            }
+            if let FilterStep::Gamma { r, g, b } = step {
+                for (channel, val) in [("r", r), ("g", g), ("b", b)] {
+                    if !(0.1..=10.0).contains(val) {
+                        return Err(FilterError::InvalidConfig {
+                            reason: format!("gamma {channel} {val} out of range [0.1, 10.0]"),
+                        });
+                    }
+                }
+            }
+            if let FilterStep::ThreeWayCC { gamma, .. } = step {
+                for (channel, val) in [("r", gamma.r), ("g", gamma.g), ("b", gamma.b)] {
+                    if val <= 0.0 {
+                        return Err(FilterError::InvalidConfig {
+                            reason: format!("three_way_cc gamma.{channel} {val} must be > 0.0"),
+                        });
+                    }
+                }
+            }
+            if let FilterStep::Vignette { angle, .. } = step
+                && !((0.0)..=std::f32::consts::FRAC_PI_2).contains(angle)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("vignette angle {angle} out of range [0.0, π/2]"),
+                });
+            }
+            if let FilterStep::Pad { width, height, .. } = step
+                && (*width == 0 || *height == 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "pad width and height must be > 0".to_string(),
+                });
+            }
+            if let FilterStep::FitToAspect { width, height, .. } = step
+                && (*width == 0 || *height == 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "fit_to_aspect width and height must be > 0".to_string(),
+                });
+            }
+            if let FilterStep::GBlur { sigma } = step
+                && *sigma < 0.0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("gblur sigma {sigma} must be >= 0.0"),
+                });
+            }
+            if let FilterStep::Unsharp {
+                luma_strength,
+                chroma_strength,
+            } = step
+            {
+                if !(-1.5..=1.5).contains(luma_strength) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "unsharp luma_strength {luma_strength} out of range [-1.5, 1.5]"
+                        ),
+                    });
+                }
+                if !(-1.5..=1.5).contains(chroma_strength) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "unsharp chroma_strength {chroma_strength} out of range [-1.5, 1.5]"
+                        ),
+                    });
+                }
+            }
+            if let FilterStep::Hqdn3d {
+                luma_spatial,
+                chroma_spatial,
+                luma_tmp,
+                chroma_tmp,
+            } = step
+            {
+                for (name, val) in [
+                    ("luma_spatial", luma_spatial),
+                    ("chroma_spatial", chroma_spatial),
+                    ("luma_tmp", luma_tmp),
+                    ("chroma_tmp", chroma_tmp),
+                ] {
+                    if *val < 0.0 {
+                        return Err(FilterError::InvalidConfig {
+                            reason: format!("hqdn3d {name} {val} must be >= 0.0"),
+                        });
+                    }
+                }
+            }
+            if let FilterStep::Nlmeans { strength } = step
+                && (*strength < 1.0 || *strength > 30.0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("nlmeans strength {strength} out of range [1.0, 30.0]"),
+                });
+            }
+        }
+
+        crate::filter_inner::validate_filter_steps(&self.steps)?;
+        let output_resolution = self.steps.iter().rev().find_map(|s| {
+            if let FilterStep::Scale { width, height, .. } = s {
+                Some((*width, *height))
+            } else {
+                None
+            }
+        });
+        Ok(FilterGraph {
+            inner: FilterGraphInner::new(self.steps, self.hw),
+            output_resolution,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_empty_steps_should_return_error() {
+        let result = FilterGraph::builder().build();
+        assert!(
+            matches!(result, Err(FilterError::BuildFailed)),
+            "expected BuildFailed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_steps_should_accumulate_in_order() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .scale(1280, 720, ScaleAlgorithm::Fast)
+            .volume(-3.0)
+            .build();
+        assert!(
+            result.is_ok(),
+            "builder with multiple valid steps must succeed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn builder_with_valid_steps_should_succeed() {
+        let result = FilterGraph::builder()
+            .scale(1280, 720, ScaleAlgorithm::Fast)
+            .build();
+        assert!(
+            result.is_ok(),
+            "builder with a known filter step must succeed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn output_resolution_should_be_none_when_no_scale() {
+        let fg = FilterGraph::builder().trim(0.0, 5.0).build().unwrap();
+        assert_eq!(fg.output_resolution(), None);
+    }
+
+    #[test]
+    fn output_resolution_should_be_last_scale_dimensions() {
+        let fg = FilterGraph::builder()
+            .scale(1280, 720, ScaleAlgorithm::Fast)
+            .build()
+            .unwrap();
+        assert_eq!(fg.output_resolution(), Some((1280, 720)));
+    }
+
+    #[test]
+    fn output_resolution_should_use_last_scale_when_multiple_present() {
+        let fg = FilterGraph::builder()
+            .scale(1920, 1080, ScaleAlgorithm::Fast)
+            .scale(1280, 720, ScaleAlgorithm::Bicubic)
+            .build()
+            .unwrap();
+        assert_eq!(fg.output_resolution(), Some((1280, 720)));
+    }
+
+    #[test]
+    fn rgb_neutral_constant_should_have_all_channels_one() {
+        assert_eq!(Rgb::NEUTRAL.r, 1.0);
+        assert_eq!(Rgb::NEUTRAL.g, 1.0);
+        assert_eq!(Rgb::NEUTRAL.b, 1.0);
+    }
+}
