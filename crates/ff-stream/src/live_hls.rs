@@ -1,6 +1,6 @@
 //! Frame-push live HLS output.
 //!
-//! [`LiveHlsOutput`] receives pre-decoded [`VideoFrame`] / [`AudioFrame`] values
+//! [`LiveHlsOutput`] receives pre-decoded [`ff_format::VideoFrame`] / [`ff_format::AudioFrame`] values
 //! from the caller, encodes them with H.264/AAC, and muxes them into a sliding-
 //! window HLS playlist (`index.m3u8`) backed by `.ts` segment files.
 //!
@@ -28,25 +28,20 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ff_format::{AudioCodec, AudioFrame, VideoCodec, VideoFrame};
+use ff_format::{AudioCodec, VideoCodec};
 
 use crate::error::StreamError;
 use crate::hls::HlsSegmentFormat;
 use crate::live_hls_inner::LiveHlsInner;
-use crate::output::StreamOutput;
-
-// ============================================================================
-// LiveHlsOutput — safe builder + StreamOutput impl
-// ============================================================================
 
 /// Live HLS output: receives frames and writes a sliding-window `.m3u8` playlist.
 ///
 /// Build with [`LiveHlsOutput::new`], chain setter methods, then call
 /// [`build`](Self::build) to open the `FFmpeg` contexts. After `build()`:
 ///
-/// - [`push_video`](Self::push_video) and [`push_audio`](Self::push_audio) encode and
+/// - `push_video` and `push_audio` encode and
 ///   mux frames in real time.
-/// - [`StreamOutput::finish`] flushes all encoders and writes the HLS trailer.
+/// - [`crate::StreamOutput::finish`] flushes all encoders and writes the HLS trailer.
 ///
 /// The output directory is created automatically by `build()` if it does not exist.
 pub struct LiveHlsOutput {
@@ -100,27 +95,6 @@ impl LiveHlsOutput {
         }
     }
 
-    /// Set the video encoding parameters.
-    ///
-    /// This method **must** be called before [`build`](Self::build).
-    #[must_use]
-    pub fn video(mut self, width: u32, height: u32, fps: f64) -> Self {
-        self.video_width = Some(width);
-        self.video_height = Some(height);
-        self.fps = Some(fps);
-        self
-    }
-
-    /// Enable audio output with the given sample rate and channel count.
-    ///
-    /// If this method is not called, audio is disabled.
-    #[must_use]
-    pub fn audio(mut self, sample_rate: u32, channels: u32) -> Self {
-        self.sample_rate = Some(sample_rate);
-        self.channels = Some(channels);
-        self
-    }
-
     /// Set the target HLS segment duration.
     ///
     /// Default: 6 seconds.
@@ -136,42 +110,6 @@ impl LiveHlsOutput {
     #[must_use]
     pub fn playlist_size(mut self, size: u32) -> Self {
         self.playlist_size = size;
-        self
-    }
-
-    /// Set the video codec.
-    ///
-    /// Default: [`VideoCodec::H264`].
-    #[must_use]
-    pub fn video_codec(mut self, codec: VideoCodec) -> Self {
-        self.video_codec = codec;
-        self
-    }
-
-    /// Set the audio codec.
-    ///
-    /// Default: [`AudioCodec::Aac`].
-    #[must_use]
-    pub fn audio_codec(mut self, codec: AudioCodec) -> Self {
-        self.audio_codec = codec;
-        self
-    }
-
-    /// Set the video encoder target bit rate in bits/s.
-    ///
-    /// Default: 2 000 000 (2 Mbit/s).
-    #[must_use]
-    pub fn video_bitrate(mut self, bitrate: u64) -> Self {
-        self.video_bitrate = bitrate;
-        self
-    }
-
-    /// Set the audio encoder target bit rate in bits/s.
-    ///
-    /// Default: 128 000 (128 kbit/s).
-    #[must_use]
-    pub fn audio_bitrate(mut self, bitrate: u64) -> Self {
-        self.audio_bitrate = bitrate;
         self
     }
 
@@ -251,61 +189,8 @@ impl LiveHlsOutput {
     }
 }
 
-// ============================================================================
-// StreamOutput impl
-// ============================================================================
-
-impl StreamOutput for LiveHlsOutput {
-    fn push_video(&mut self, frame: &VideoFrame) -> Result<(), StreamError> {
-        if self.finished {
-            return Err(StreamError::InvalidConfig {
-                reason: "push_video called after finish()".into(),
-            });
-        }
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| StreamError::InvalidConfig {
-                reason: "push_video called before build()".into(),
-            })?;
-        inner.push_video(frame)
-    }
-
-    fn push_audio(&mut self, frame: &AudioFrame) -> Result<(), StreamError> {
-        if self.finished {
-            return Err(StreamError::InvalidConfig {
-                reason: "push_audio called after finish()".into(),
-            });
-        }
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| StreamError::InvalidConfig {
-                reason: "push_audio called before build()".into(),
-            })?;
-        inner.push_audio(frame);
-        Ok(())
-    }
-
-    fn finish(mut self: Box<Self>) -> Result<(), StreamError> {
-        if self.finished {
-            return Ok(());
-        }
-        self.finished = true;
-        let inner = self
-            .inner
-            .take()
-            .ok_or_else(|| StreamError::InvalidConfig {
-                reason: "finish() called before build()".into(),
-            })?;
-        inner.flush_and_close();
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Unit tests
-// ============================================================================
+impl_live_stream_setters!(LiveHlsOutput, optional_audio);
+impl_frame_push_stream_output!(LiveHlsOutput);
 
 #[cfg(test)]
 mod tests {
