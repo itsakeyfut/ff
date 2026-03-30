@@ -1,88 +1,30 @@
-//! Internal DASH muxing implementation using `FFmpeg` directly.
-//!
-//! This module implements the decode → encode → DASH-mux loop that powers
-//! [`DashOutput::write`](crate::dash::DashOutput::write).  All `unsafe` code is
-//! isolated here; `dash.rs` is purely safe Rust.
-
-// This module is intentionally unsafe — it drives the FFmpeg C API directly.
-#![allow(unsafe_code)]
-// Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
-#![allow(unsafe_op_in_unsafe_fn)]
-// FFmpeg C API frequently requires raw pointer casting and borrows-as-ptr
-#![allow(clippy::ptr_as_ptr)]
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::cast_sign_loss)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_lossless)]
-#![allow(clippy::too_many_lines)]
-// `&mut ptr` to get `*mut *mut T` is the standard FFmpeg double-pointer pattern
-#![allow(clippy::borrow_as_ptr)]
-// `&mut foo as *mut *mut _` is the standard way to pass double-pointers in FFmpeg
-#![allow(clippy::ref_as_ptr)]
-// ABR ladder uses multiple per-rendition fields
-#![allow(clippy::struct_field_names)]
+//! Packet writing loop and segment management for single-rendition and ABR DASH output.
 
 use std::ffi::CString;
-use std::path::Path;
 use std::ptr;
 
 use ff_sys::{
-    AVCodecContext, AVFormatContext, AVFrame, AVPictureType_AV_PICTURE_TYPE_I,
-    AVPictureType_AV_PICTURE_TYPE_NONE, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_YUV420P,
-    AVRational, SwrContext, SwsContext, av_frame_alloc, av_frame_free, av_frame_get_buffer,
-    av_frame_unref, av_opt_set, av_packet_alloc, av_packet_free, av_packet_unref, av_rescale_q,
-    av_write_trailer, avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
-    avformat_write_header,
+    AVCodecContext, AVFormatContext, AVPictureType_AV_PICTURE_TYPE_I,
+    AVPictureType_AV_PICTURE_TYPE_NONE, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, SwrContext,
+    av_frame_alloc, av_frame_get_buffer, av_frame_unref, av_opt_set, av_packet_alloc,
+    av_packet_free, av_packet_unref, av_rescale_q, av_write_trailer,
+    avformat_alloc_output_context2, avformat_new_stream, avformat_write_header,
 };
 
 use crate::error::StreamError;
 
-// ============================================================================
-// Helper: map an FFmpeg error code to StreamError::Ffmpeg
-// ============================================================================
-
-fn ffmpeg_err(code: i32) -> StreamError {
-    StreamError::Ffmpeg {
-        code,
-        message: ff_sys::av_error_string(code),
-    }
-}
-
-fn ffmpeg_err_msg(msg: &str) -> StreamError {
-    StreamError::Ffmpeg {
-        code: 0,
-        message: msg.to_owned(),
-    }
-}
+use super::context::{
+    RenditionState, cleanup_decoders, cleanup_encoders, cleanup_output_ctx, cleanup_renditions,
+    free_frames,
+};
+use super::streams::{detect_fps, open_aac_encoder, select_h264_encoder};
+use super::{ffmpeg_err, ffmpeg_err_msg};
 
 // ============================================================================
-// Public entry point (safe wrapper)
+// Single-rendition DASH write loop
 // ============================================================================
 
-/// Write a DASH segmented stream for the given input file.
-///
-/// Creates `output_dir/manifest.mpd` and initialization/media segment files
-/// (`init-stream0.m4s`, `chunk-stream0-NNNNN.m4s`, …).
-///
-/// # Errors
-///
-/// Returns [`StreamError::Ffmpeg`] when any `FFmpeg` operation fails, or
-/// [`StreamError::Io`] when directory creation fails.
-pub(crate) fn write_dash(
-    input_path: &str,
-    output_dir: &str,
-    segment_duration_secs: f64,
-) -> Result<(), StreamError> {
-    std::fs::create_dir_all(output_dir)?;
-    // SAFETY: All FFmpeg resources are allocated and freed within this call.
-    unsafe { write_dash_unsafe(input_path, output_dir, segment_duration_secs) }
-}
-
-// ============================================================================
-// Unsafe implementation
-// ============================================================================
-
-unsafe fn write_dash_unsafe(
+pub(super) unsafe fn write_dash_unsafe(
     input_path: &str,
     output_dir: &str,
     segment_duration_secs: f64,
@@ -90,7 +32,8 @@ unsafe fn write_dash_unsafe(
     ff_sys::ensure_initialized();
 
     // ── 1. Open input ─────────────────────────────────────────────────────────
-    let mut input_ctx = ff_sys::avformat::open_input(Path::new(input_path)).map_err(ffmpeg_err)?;
+    let mut input_ctx =
+        ff_sys::avformat::open_input(std::path::Path::new(input_path)).map_err(ffmpeg_err)?;
 
     ff_sys::avformat::find_stream_info(input_ctx).map_err(|e| {
         ff_sys::avformat::close_input(&mut input_ctx);
@@ -343,7 +286,7 @@ unsafe fn write_dash_unsafe(
 
     // ── 11. Open output file and write header ─────────────────────────────────
     let pb = ff_sys::avformat::open_output(
-        Path::new(&manifest_path),
+        std::path::Path::new(&manifest_path),
         ff_sys::avformat::avio_flags::WRITE,
     )
     .map_err(|e| {
@@ -407,8 +350,8 @@ unsafe fn write_dash_unsafe(
     // ── 13. Decode–encode loop ─────────────────────────────────────────────────
     let mut video_frame_count: u64 = 0;
     let mut audio_sample_count: i64 = 0;
-    let mut sws_ctx: *mut SwsContext = ptr::null_mut();
-    let mut last_src_fmt: Option<AVPixelFormat> = None;
+    let mut sws_ctx: *mut ff_sys::SwsContext = ptr::null_mut();
+    let mut last_src_fmt: Option<ff_sys::AVPixelFormat> = None;
     let mut last_src_w: Option<i32> = None;
     let mut last_src_h: Option<i32> = None;
 
@@ -702,218 +645,10 @@ unsafe fn write_dash_unsafe(
 }
 
 // ============================================================================
-// Helper: select best available H.264 encoder
+// ABR multi-representation DASH write loop
 // ============================================================================
 
-unsafe fn select_h264_encoder() -> Option<*const ff_sys::AVCodec> {
-    let candidates = [
-        "h264_nvenc",
-        "h264_qsv",
-        "h264_amf",
-        "h264_videotoolbox",
-        "libx264",
-        "mpeg4",
-    ];
-    for name in candidates {
-        if let Ok(c_name) = CString::new(name)
-            && let Some(codec) = ff_sys::avcodec::find_encoder_by_name(c_name.as_ptr())
-        {
-            log::info!("dash selected video encoder encoder={name}");
-            return Some(codec);
-        }
-    }
-    None
-}
-
-// ============================================================================
-// Helper: open AAC encoder
-// ============================================================================
-
-unsafe fn open_aac_encoder(
-    sample_rate: i32,
-    nb_channels: i32,
-) -> Result<*mut AVCodecContext, StreamError> {
-    let codec = ff_sys::avcodec::find_encoder_by_name(c"aac".as_ptr())
-        .or_else(|| ff_sys::avcodec::find_encoder_by_name(c"libfdk_aac".as_ptr()))
-        .ok_or_else(|| ffmpeg_err_msg("no AAC encoder available"))?;
-
-    let mut ctx = ff_sys::avcodec::alloc_context3(codec).map_err(ffmpeg_err)?;
-
-    (*ctx).sample_rate = sample_rate;
-    (*ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
-    (*ctx).bit_rate = 192_000;
-    (*ctx).time_base.num = 1;
-    (*ctx).time_base.den = sample_rate;
-    ff_sys::swresample::channel_layout::set_default(&mut (*ctx).ch_layout, nb_channels);
-
-    ff_sys::avcodec::open2(ctx, codec, ptr::null_mut()).map_err(|e| {
-        ff_sys::avcodec::free_context(&mut ctx as *mut *mut _);
-        ffmpeg_err(e)
-    })?;
-
-    log::info!("dash aac encoder opened sample_rate={sample_rate} channels={nb_channels}");
-    Ok(ctx)
-}
-
-// ============================================================================
-// FPS detection
-// ============================================================================
-
-#[allow(clippy::cast_precision_loss)]
-unsafe fn detect_fps(stream: *mut ff_sys::AVStream, fmt_ctx: *mut AVFormatContext) -> f64 {
-    const MIN_FPS: f64 = 1.0;
-    const MAX_FPS: f64 = 240.0;
-
-    let try_rational = |num: i32, den: i32| -> Option<f64> {
-        if den <= 0 || num <= 0 {
-            return None;
-        }
-        let fps = num as f64 / den as f64;
-        if (MIN_FPS..=MAX_FPS).contains(&fps) {
-            Some(fps)
-        } else {
-            None
-        }
-    };
-
-    // 1. avg_frame_rate — reliable for most containers
-    let avg = (*stream).avg_frame_rate;
-    if let Some(fps) = try_rational(avg.num, avg.den) {
-        return fps;
-    }
-
-    // 2. r_frame_rate — constant-framerate indicator
-    let rfr = (*stream).r_frame_rate;
-    if let Some(fps) = try_rational(rfr.num, rfr.den) {
-        return fps;
-    }
-
-    // 3. Derive from nb_frames and total duration (robust for MPEG-4 Part 2)
-    let nb = (*stream).nb_frames;
-    let dur = (*fmt_ctx).duration; // in AV_TIME_BASE (1 000 000) microseconds
-    if nb > 0 && dur > 0 {
-        let fps = nb as f64 / (dur as f64 / 1_000_000.0);
-        if (MIN_FPS..=MAX_FPS).contains(&fps) {
-            return fps;
-        }
-    }
-
-    25.0 // sane default
-}
-
-// Cleanup helpers (safe to call with null pointers)
-// ============================================================================
-
-unsafe fn cleanup_decoders(
-    mut vid_dec_ctx: *mut AVCodecContext,
-    mut aud_dec_ctx: *mut AVCodecContext,
-    input_ctx: *mut *mut AVFormatContext,
-) {
-    if !vid_dec_ctx.is_null() {
-        ff_sys::avcodec::free_context(&mut vid_dec_ctx as *mut *mut _);
-    }
-    if !aud_dec_ctx.is_null() {
-        ff_sys::avcodec::free_context(&mut aud_dec_ctx as *mut *mut _);
-    }
-    ff_sys::avformat::close_input(input_ctx);
-}
-
-unsafe fn cleanup_encoders(
-    mut vid_enc_ctx: *mut AVCodecContext,
-    mut aud_enc_ctx: *mut AVCodecContext,
-    mut swr_ctx: *mut SwrContext,
-) {
-    if !vid_enc_ctx.is_null() {
-        ff_sys::avcodec::free_context(&mut vid_enc_ctx as *mut *mut _);
-    }
-    if !aud_enc_ctx.is_null() {
-        ff_sys::avcodec::free_context(&mut aud_enc_ctx as *mut *mut _);
-    }
-    if !swr_ctx.is_null() {
-        ff_sys::swresample::free(&mut swr_ctx);
-    }
-}
-
-unsafe fn cleanup_output_ctx(mut out_ctx: *mut AVFormatContext) {
-    if !out_ctx.is_null() {
-        avformat_free_context(out_ctx);
-        out_ctx = ptr::null_mut();
-        let _ = out_ctx; // suppress unused warning
-    }
-}
-
-unsafe fn free_frames(
-    mut vid_dec: *mut AVFrame,
-    mut vid_enc: *mut AVFrame,
-    mut aud_dec: *mut AVFrame,
-    mut aud_enc: *mut AVFrame,
-) {
-    if !vid_dec.is_null() {
-        av_frame_free(&mut vid_dec as *mut *mut _);
-    }
-    if !vid_enc.is_null() {
-        av_frame_free(&mut vid_enc as *mut *mut _);
-    }
-    if !aud_dec.is_null() {
-        av_frame_free(&mut aud_dec as *mut *mut _);
-    }
-    if !aud_enc.is_null() {
-        av_frame_free(&mut aud_enc as *mut *mut _);
-    }
-}
-
-// ============================================================================
-// ABR multi-representation DASH output
-// ============================================================================
-
-/// Per-rendition encoder state for the ABR DASH mux loop.
-struct RenditionState {
-    vid_enc_ctx: *mut AVCodecContext,
-    vid_out_stream_idx: i32,
-    enc_width: i32,
-    enc_height: i32,
-    sws_ctx: *mut SwsContext,
-    last_src_fmt: Option<AVPixelFormat>,
-    last_src_w: Option<i32>,
-    last_src_h: Option<i32>,
-}
-
-/// Free all encoder contexts and `SwsContext`s in `states`.
-///
-/// Safe to call at any point after the Vec starts being populated.
-unsafe fn cleanup_renditions(states: &mut Vec<RenditionState>) {
-    for state in states.iter_mut() {
-        if !state.vid_enc_ctx.is_null() {
-            ff_sys::avcodec::free_context(&mut state.vid_enc_ctx as *mut *mut _);
-        }
-        if !state.sws_ctx.is_null() {
-            ff_sys::swscale::free_context(state.sws_ctx);
-            state.sws_ctx = ptr::null_mut();
-        }
-    }
-    states.clear();
-}
-
-/// Write a single DASH manifest with one `Representation` per rendition.
-///
-/// Creates `output_dir/manifest.mpd` and associated segment files.
-///
-/// # Errors
-///
-/// Returns [`StreamError::Ffmpeg`] when any `FFmpeg` operation fails, or
-/// [`StreamError::Io`] when directory creation fails.
-pub(crate) fn write_dash_abr(
-    input_path: &str,
-    output_dir: &str,
-    segment_duration_secs: f64,
-    renditions: &[(i64, i32, i32)], // (bitrate_bps, width, height)
-) -> Result<(), StreamError> {
-    std::fs::create_dir_all(output_dir)?;
-    // SAFETY: All FFmpeg resources are allocated and freed within this call.
-    unsafe { write_dash_abr_unsafe(input_path, output_dir, segment_duration_secs, renditions) }
-}
-
-unsafe fn write_dash_abr_unsafe(
+pub(super) unsafe fn write_dash_abr_unsafe(
     input_path: &str,
     output_dir: &str,
     segment_duration_secs: f64,
