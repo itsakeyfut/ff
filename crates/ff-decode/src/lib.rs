@@ -104,20 +104,20 @@
 pub(crate) mod async_decoder;
 pub mod audio;
 pub mod error;
-mod hardware;
 pub mod image;
-pub(crate) mod network;
-mod seek;
+mod shared;
 pub mod video;
+
+// Preserve crate::network path used throughout decoder_inner modules.
+pub(crate) use shared::network;
 
 // Re-exports for convenience
 pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
 pub use ff_common::{FramePool, PooledBuffer};
 pub use ff_format::ContainerInfo;
-pub use hardware::HardwareAccel;
 pub use image::{ImageDecoder, ImageDecoderBuilder};
-pub use seek::SeekMode;
+pub use shared::{HardwareAccel, SeekMode};
 pub use video::{VideoDecoder, VideoDecoderBuilder};
 
 #[cfg(feature = "tokio")]
