@@ -1866,4 +1866,33 @@ mod tests {
         assert_eq!(pcm[2], i16::MAX);
         assert_eq!(pcm[3], -i16::MAX);
     }
+
+    #[test]
+    fn audio_frame_clone_should_have_identical_data() {
+        let samples = 512;
+        let channels = 2u32;
+        let bytes_per_sample = 4; // F32
+        let plane_data = vec![7u8; samples * bytes_per_sample];
+        let ts = Timestamp::new(500, Rational::new(1, 1000));
+
+        let original = AudioFrame::new(
+            vec![plane_data.clone()],
+            samples,
+            channels,
+            44100,
+            SampleFormat::F32,
+            ts,
+        )
+        .unwrap();
+
+        let clone = original.clone();
+
+        assert_eq!(clone.samples(), original.samples());
+        assert_eq!(clone.channels(), original.channels());
+        assert_eq!(clone.sample_rate(), original.sample_rate());
+        assert_eq!(clone.format(), original.format());
+        assert_eq!(clone.timestamp(), original.timestamp());
+        assert_eq!(clone.num_planes(), original.num_planes());
+        assert_eq!(clone.plane(0), original.plane(0));
+    }
 }
