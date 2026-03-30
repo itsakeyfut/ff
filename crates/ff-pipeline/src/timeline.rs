@@ -145,6 +145,7 @@ impl Timeline {
                         volume_db: 0.0,
                         pan: 0.0,
                         time_offset: clip.timeline_offset,
+                        effects: vec![],
                     });
                 }
             }

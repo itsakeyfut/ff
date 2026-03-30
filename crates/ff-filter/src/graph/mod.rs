@@ -9,10 +9,8 @@ pub mod types;
 
 pub use builder::FilterGraphBuilder;
 pub use composition::{AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoLayer};
+pub use filter_step::FilterStep;
 pub use graph::FilterGraph;
 pub use types::{
     DrawTextOptions, EqBand, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
-
-// Re-export FilterStep for use by filter_inner
-pub(crate) use filter_step::FilterStep;

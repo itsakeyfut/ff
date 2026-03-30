@@ -6,12 +6,12 @@ use super::types::{
 
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
-/// A single step in a filter chain, constructed by the builder methods.
+/// A single step in a filter chain.
 ///
-/// This is an internal representation; users interact with it only via the
-/// [`FilterGraphBuilder`] API.
+/// Used by [`crate::FilterGraphBuilder`] to build pipeline filter graphs, and by
+/// [`crate::AudioTrack::effects`] to attach per-track effects in a multi-track mix.
 #[derive(Debug, Clone)]
-pub(crate) enum FilterStep {
+pub enum FilterStep {
     /// Trim: keep only frames in `[start, end)` seconds.
     Trim { start: f64, end: f64 },
     /// Scale to a new resolution using the given resampling algorithm.
