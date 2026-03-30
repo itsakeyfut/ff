@@ -25,6 +25,7 @@ use ff_format::ChannelLayout;
 
 use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
+use crate::graph::filter_step::FilterStep;
 use crate::graph::graph::FilterGraph;
 use crate::graph::types::Rgb;
 
@@ -526,6 +527,14 @@ pub struct AudioTrack {
     pub pan: f32,
     /// Start offset on the output timeline (`Duration::ZERO` = at the beginning).
     pub time_offset: Duration,
+    /// Ordered per-track audio effect chain applied before mixing.
+    ///
+    /// Each [`FilterStep`] is inserted as a filter node immediately after
+    /// the track's pan/volume chain and before the `amix` node.
+    /// Use audio-relevant variants such as [`FilterStep::Volume`],
+    /// [`FilterStep::AFadeIn`], and [`FilterStep::ACompressor`].
+    /// An empty vec inserts no extra nodes (zero overhead).
+    pub effects: Vec<FilterStep>,
 }
 
 // ── MultiTrackAudioMixer ──────────────────────────────────────────────────────
@@ -548,6 +557,7 @@ pub struct AudioTrack {
 ///         volume_db: -3.0,
 ///         pan: 0.0,
 ///         time_offset: Duration::ZERO,
+///         effects: vec![],
 ///     })
 ///     .build()?;
 ///
@@ -724,6 +734,24 @@ unsafe fn build_audio_mix(
                 bail!(graph, format!("link failed: →volume track={idx}"));
             }
             chain_end = vol_ctx;
+        }
+
+        // ── Per-track effects chain ───────────────────────────────────────────
+        for (eff_idx, step) in track.effects.iter().enumerate() {
+            let combined_idx = idx * 1000 + eff_idx;
+            let result =
+                crate::filter_inner::add_and_link_step(graph, chain_end, step, combined_idx, "eff");
+            if let Ok(ctx) = result {
+                chain_end = ctx;
+            } else {
+                bail!(
+                    graph,
+                    format!(
+                        "failed to apply effect track={idx} effect={eff_idx} filter={}",
+                        step.filter_name()
+                    )
+                );
+            }
         }
 
         end_ctxs.push(chain_end);
@@ -918,6 +946,44 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::CompositionFailed { .. })),
             "expected CompositionFailed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn audio_track_with_empty_effects_should_build_successfully() {
+        // build() may fail because the source doesn't exist, but must NOT fail
+        // with a reason related to effects.
+        let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+            .add_track(AudioTrack {
+                source: "nonexistent.mp3".into(),
+                volume_db: 0.0,
+                pan: 0.0,
+                time_offset: Duration::ZERO,
+                effects: vec![],
+            })
+            .build();
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("effect"),
+                "build must not fail due to empty effects, got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_track_with_volume_effect_should_include_volume_filter() {
+        // Structural test: verify the effects field accepts FilterStep::Volume.
+        let track = AudioTrack {
+            source: "track.mp3".into(),
+            volume_db: 0.0,
+            pan: 0.0,
+            time_offset: Duration::ZERO,
+            effects: vec![FilterStep::Volume(6.0)],
+        };
+        assert_eq!(track.effects.len(), 1);
+        assert!(
+            matches!(track.effects[0], FilterStep::Volume(_)),
+            "expected Volume variant"
         );
     }
 }

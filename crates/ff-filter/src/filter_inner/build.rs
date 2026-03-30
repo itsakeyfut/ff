@@ -95,7 +95,7 @@ pub(super) unsafe fn create_hw_filter(
 ///
 /// `graph` and `prev_ctx` must be valid pointers owned by the same
 /// `AVFilterGraph`.
-pub(super) unsafe fn add_and_link_step(
+pub(crate) unsafe fn add_and_link_step(
     graph: *mut ff_sys::AVFilterGraph,
     prev_ctx: *mut ff_sys::AVFilterContext,
     step: &FilterStep,

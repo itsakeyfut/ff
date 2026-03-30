@@ -17,6 +17,8 @@ mod convert;
 mod normalize;
 mod push_pull;
 
+pub(crate) use build::add_and_link_step;
+
 use std::ptr::NonNull;
 
 use ff_format::AudioFrame;
