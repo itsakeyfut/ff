@@ -52,6 +52,7 @@
 #![warn(missing_docs)]
 
 pub mod audio_pipeline;
+pub mod clip;
 pub mod encoder_config;
 pub mod error;
 pub mod pipeline;
@@ -60,6 +61,7 @@ pub mod thumbnail;
 pub mod video_pipeline;
 
 pub use audio_pipeline::AudioPipeline;
+pub use clip::Clip;
 pub use encoder_config::{EncoderConfig, EncoderConfigBuilder};
 pub use error::PipelineError;
 pub use pipeline::{Pipeline, PipelineBuilder};
