@@ -100,6 +100,8 @@
 #![warn(clippy::pedantic)]
 
 // Module declarations
+#[cfg(feature = "tokio")]
+pub(crate) mod async_decoder;
 pub mod audio;
 pub mod error;
 mod hardware;
