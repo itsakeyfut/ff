@@ -195,14 +195,9 @@
 #[cfg(feature = "tokio")]
 mod async_encoder;
 mod audio;
-mod bitrate;
-mod codec;
-mod container;
 mod error;
-mod hardware;
 mod image;
-mod preset;
-mod progress;
+mod shared;
 mod trim;
 mod video;
 
@@ -210,14 +205,12 @@ pub use audio::{
     AacOptions, AacProfile, AudioCodecOptions, AudioEncoder, AudioEncoderBuilder, FlacOptions,
     Mp3Options, Mp3Quality, OpusApplication, OpusOptions,
 };
-pub use bitrate::{BitrateMode, CRF_MAX};
-pub use codec::{AudioCodec, VideoCodec, VideoCodecEncodeExt};
-pub use container::OutputContainer;
 pub use error::EncodeError;
-pub use hardware::HardwareEncoder;
 pub use image::{ImageEncoder, ImageEncoderBuilder};
-pub use preset::Preset;
-pub use progress::{EncodeProgress, EncodeProgressCallback};
+pub use shared::{
+    AudioCodec, BitrateMode, CRF_MAX, EncodeProgress, EncodeProgressCallback, HardwareEncoder,
+    OutputContainer, Preset, VideoCodec, VideoCodecEncodeExt,
+};
 pub use trim::StreamCopyTrimmer;
 pub use video::{
     Av1Options, Av1Usage, DnxhdOptions, DnxhdVariant, H264Options, H264Preset, H264Profile,
