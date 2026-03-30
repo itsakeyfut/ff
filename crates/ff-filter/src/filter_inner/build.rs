@@ -1,9 +1,13 @@
 //! Graph-building helpers: hardware acceleration and filter linking.
 
-use super::{AUDIO_TIME_BASE_NUM, VIDEO_TIME_BASE_DEN, VIDEO_TIME_BASE_NUM};
+use super::{
+    AUDIO_TIME_BASE_NUM, BuildResult, FilterCtxVec, VIDEO_TIME_BASE_DEN, VIDEO_TIME_BASE_NUM,
+    VideoGraphResult, ffmpeg_err,
+};
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::types::{EqBand, HwAccel};
+use std::ptr::NonNull;
 
 // ── Hardware acceleration helpers ─────────────────────────────────────────────
 
@@ -764,4 +768,499 @@ pub(super) unsafe fn add_join_with_dissolve_step(
         "filter join_with_dissolve expanded dissolve_dur={dissolve_dur} offset={clip_a_end}"
     );
     Ok(xfade_ctx)
+}
+
+// ── Graph orchestrators ───────────────────────────────────────────────────────
+
+use super::FilterGraphInner;
+
+impl FilterGraphInner {
+    /// Build the `AVFilterGraph` for video, returning `(src_ctxs, vsink_ctx)`.
+    ///
+    /// `num_inputs` buffersrc contexts are created (`in0`..`inN-1`).  For
+    /// multi-input filters like `overlay`, the extra sources are linked to the
+    /// appropriate input pads after the main chain link is established.
+    ///
+    /// # Safety
+    ///
+    /// `graph_nn` must be a valid, freshly-allocated `AVFilterGraph`.
+    pub(super) unsafe fn build_video_graph(
+        graph_nn: NonNull<ff_sys::AVFilterGraph>,
+        buffersrc_args: &str,
+        num_inputs: usize,
+        steps: &[FilterStep],
+        hw: Option<&HwAccel>,
+    ) -> VideoGraphResult {
+        let graph = graph_nn.as_ptr();
+
+        // 0. When hardware acceleration is requested, create a device context
+        //    and disable automatic pixel-format conversion so FFmpeg does not
+        //    insert implicit hwupload/scale filters that would conflict with the
+        //    explicit ones we add below.
+        let hw_device_ctx: Option<*mut ff_sys::AVBufferRef> = if let Some(hw) = hw {
+            let device_type = hw_accel_to_device_type(*hw);
+            let mut raw_hw_ctx: *mut ff_sys::AVBufferRef = std::ptr::null_mut();
+            let ret = ff_sys::av_hwdevice_ctx_create(
+                &raw mut raw_hw_ctx,
+                device_type,
+                std::ptr::null(),     // device: null = system default
+                std::ptr::null_mut(), // opts: null = defaults
+                0,
+            );
+            if ret < 0 {
+                log::warn!("av_hwdevice_ctx_create failed hw={hw:?} code={ret}");
+                return Err(FilterError::BuildFailed);
+            }
+            // AVFILTER_AUTO_CONVERT_NONE = 0: hardware filters must receive
+            // frames in exactly the format they expect.
+            ff_sys::avfilter_graph_set_auto_convert(graph, 0u32);
+            log::debug!("hw device context created hw={hw:?}");
+            Some(raw_hw_ctx)
+        } else {
+            None
+        };
+
+        // Helper closure: free hw_device_ctx and return an error.  Used at
+        // every early-return failure point that occurs *after* the device
+        // context has been allocated so it is not leaked.
+        macro_rules! bail {
+            ($err:expr) => {{
+                if let Some(mut hw_ctx) = hw_device_ctx {
+                    ff_sys::av_buffer_unref(std::ptr::addr_of_mut!(hw_ctx));
+                }
+                return Err($err);
+            }};
+        }
+
+        // SAFETY: `avfilter_get_by_name` returns a borrowed pointer valid for
+        // the process lifetime; we never free it.
+        let buffersrc = ff_sys::avfilter_get_by_name(c"buffer".as_ptr());
+        if buffersrc.is_null() {
+            bail!(FilterError::BuildFailed);
+        }
+
+        let Ok(src_args) = std::ffi::CString::new(buffersrc_args) else {
+            bail!(FilterError::BuildFailed)
+        };
+        let mut src_ctxs: FilterCtxVec = Vec::with_capacity(num_inputs);
+
+        // 1. Create in0 (always present).
+        let mut raw_ctx0: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut raw_ctx0,
+            buffersrc,
+            c"in0".as_ptr(),
+            src_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(FilterError::BuildFailed);
+        }
+        log::debug!("filter added name=buffersrc slot=0");
+        // SAFETY: ret >= 0 guarantees non-null.
+        src_ctxs.push(Some(NonNull::new_unchecked(raw_ctx0)));
+
+        // Create in1..inN-1 (for overlay etc.)
+        for slot in 1..num_inputs {
+            let Ok(ctx_name) = std::ffi::CString::new(format!("in{slot}")) else {
+                bail!(FilterError::BuildFailed)
+            };
+            let mut raw_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut raw_ctx,
+                buffersrc,
+                ctx_name.as_ptr(),
+                src_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(FilterError::BuildFailed);
+            }
+            log::debug!("filter added name=buffersrc slot={slot}");
+            // SAFETY: ret >= 0 guarantees non-null.
+            src_ctxs.push(Some(NonNull::new_unchecked(raw_ctx)));
+        }
+
+        // 2. Create buffersink ("buffersink").
+        let buffersink = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+        if buffersink.is_null() {
+            bail!(FilterError::BuildFailed);
+        }
+
+        let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut sink_ctx,
+            buffersink,
+            c"out".as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(FilterError::BuildFailed);
+        }
+
+        // 3. Insert hwupload/hwupload_cuda BEFORE the filter steps so that
+        //    subsequent filters receive hardware (CUDA/VAAPI/VTB) frames.
+        let mut prev_ctx: *mut ff_sys::AVFilterContext = raw_ctx0;
+        if let (Some(hw_ctx), Some(hw_backend)) = (hw_device_ctx, hw) {
+            let upload_name = match hw_backend {
+                HwAccel::Cuda => c"hwupload_cuda",
+                HwAccel::VideoToolbox | HwAccel::Vaapi => c"hwupload",
+            };
+            prev_ctx = match create_hw_filter(graph, prev_ctx, upload_name, c"hwupload0", hw_ctx) {
+                Ok(ctx) => ctx,
+                Err(e) => bail!(e),
+            };
+        }
+
+        // 4-5. Add each `FilterStep`, link the main chain (in0 → step[0] → …),
+        // and wire extra input pads for multi-input filters.
+        for (i, step) in steps.iter().enumerate() {
+            // Audio-only steps; skip them in the video graph.
+            if matches!(
+                step,
+                FilterStep::AReverse
+                    | FilterStep::AFadeIn { .. }
+                    | FilterStep::AFadeOut { .. }
+                    | FilterStep::ParametricEq { .. }
+                    | FilterStep::ANoiseGate { .. }
+                    | FilterStep::ACompressor { .. }
+                    | FilterStep::StereoToMono
+                    | FilterStep::ChannelMap { .. }
+                    | FilterStep::AudioDelay { .. }
+                    | FilterStep::ConcatAudio { .. }
+            ) {
+                continue;
+            }
+
+            // LoudnessNormalize is audio-only and handled via two-pass in
+            // push_audio / pull_audio rather than through the filter graph.
+            if matches!(step, FilterStep::LoudnessNormalize { .. }) {
+                continue;
+            }
+
+            // NormalizePeak is audio-only and handled via two-pass buffering in
+            // push_audio / pull_audio.
+            if matches!(step, FilterStep::NormalizePeak { .. }) {
+                continue;
+            }
+
+            // OverlayImage is a compound step (movie → lut → overlay).  It
+            // creates its own internal source node via the `movie` filter and
+            // does not consume a buffersrc slot, so it must bypass the standard
+            // `add_and_link_step` path which assumes a single filter per step.
+            if let FilterStep::OverlayImage {
+                path,
+                x,
+                y,
+                opacity,
+            } = step
+            {
+                prev_ctx = match add_overlay_image_step(graph, prev_ctx, path, x, y, *opacity, i) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            // JoinWithDissolve is a compound step that expands to:
+            //   prev → trim_a → setpts_a → xfade[0]
+            //   in1  → trim_b → setpts_b → xfade[1]
+            // It bypasses the standard add_and_link_step path entirely.
+            if let FilterStep::JoinWithDissolve {
+                clip_a_end,
+                clip_b_start,
+                dissolve_dur,
+            } = step
+            {
+                let Some(b_src) = src_ctxs.get(1).and_then(|o| *o) else {
+                    bail!(FilterError::BuildFailed)
+                };
+                prev_ctx = match add_join_with_dissolve_step(
+                    graph,
+                    prev_ctx,
+                    b_src.as_ptr(),
+                    *clip_a_end,
+                    *clip_b_start,
+                    *dissolve_dur,
+                    i,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            prev_ctx = match add_and_link_step(graph, prev_ctx, step, i, "step") {
+                Ok(ctx) => ctx,
+                Err(e) => bail!(e),
+            };
+
+            // After trim, insert setpts=PTS-STARTPTS so the output timestamps
+            // are reset to start at zero.
+            if matches!(step, FilterStep::Trim { .. }) {
+                prev_ctx = match add_setpts_after_trim(graph, prev_ctx, i) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+            }
+
+            // FitToAspect is a compound step: the scale filter (added by
+            // add_and_link_step above) preserves the source aspect ratio; the
+            // pad filter added here centres the scaled frame on the target canvas.
+            if let FilterStep::FitToAspect {
+                width,
+                height,
+                color,
+            } = step
+            {
+                prev_ctx = match add_fit_to_aspect_pad(graph, prev_ctx, *width, *height, color, i) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+            }
+
+            // Overlay and xfade both consume a second input on pad 1.
+            if matches!(step, FilterStep::Overlay { .. } | FilterStep::XFade { .. })
+                && let Some(Some(extra_src)) = src_ctxs.get(1)
+            {
+                let ret = ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, 1);
+                if ret < 0 {
+                    bail!(FilterError::BuildFailed);
+                }
+                log::debug!("filter linked extra_input=in1 to two-input filter pad=1");
+            }
+
+            // ConcatVideo consumes n input pads; link src_ctxs[1..n-1] to pads 1..n-1.
+            if let FilterStep::ConcatVideo { n } = step {
+                for slot in 1..*n as usize {
+                    if let Some(Some(extra_src)) = src_ctxs.get(slot) {
+                        let ret =
+                            ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, slot as u32);
+                        if ret < 0 {
+                            bail!(FilterError::BuildFailed);
+                        }
+                        log::debug!("filter linked extra_input=in{slot} to concat pad={slot}");
+                    }
+                }
+            }
+        }
+
+        // 6. Insert hwdownload AFTER all filter steps so output frames are
+        //    downloaded back to system memory before reaching the buffersink.
+        if let Some(hw_ctx) = hw_device_ctx {
+            prev_ctx =
+                match create_hw_filter(graph, prev_ctx, c"hwdownload", c"hwdownload0", hw_ctx) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+        }
+
+        // Link last filter to sink.
+        let ret = ff_sys::avfilter_link(prev_ctx, 0, sink_ctx, 0);
+        if ret < 0 {
+            bail!(FilterError::BuildFailed);
+        }
+
+        // 7. Configure the graph.
+        let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+        if ret < 0 {
+            log::warn!("avfilter_graph_config failed code={ret}");
+            // If there is a crop step the most likely cause is the rectangle
+            // extending beyond the source frame dimensions.
+            if let Some(FilterStep::Crop {
+                x,
+                y,
+                width,
+                height,
+            }) = steps.iter().find(|s| matches!(s, FilterStep::Crop { .. }))
+            {
+                bail!(FilterError::InvalidConfig {
+                    reason: format!(
+                        "crop rect {x},{y}+{width}x{height} exceeds source frame dimensions"
+                    ),
+                });
+            }
+            bail!(ffmpeg_err(ret));
+        }
+
+        // SAFETY: `avfilter_graph_create_filter` with ret >= 0 guarantees
+        // non-null pointers.
+        let sink_nn = NonNull::new_unchecked(sink_ctx);
+        Ok((src_ctxs, sink_nn, hw_device_ctx))
+    }
+
+    /// Build the `AVFilterGraph` for audio, returning `(src_ctxs, asink_ctx)`.
+    ///
+    /// # Safety
+    ///
+    /// `graph_nn` must be a valid, freshly-allocated `AVFilterGraph`.
+    pub(super) unsafe fn build_audio_graph(
+        graph_nn: NonNull<ff_sys::AVFilterGraph>,
+        buffersrc_args: &str,
+        num_inputs: usize,
+        steps: &[FilterStep],
+        _hw: Option<&HwAccel>,
+    ) -> BuildResult {
+        let graph = graph_nn.as_ptr();
+        let mut src_ctxs = Vec::with_capacity(num_inputs);
+
+        // 1. Create abuffer sources, one per input slot.
+        let abuffer = ff_sys::avfilter_get_by_name(c"abuffer".as_ptr());
+        if abuffer.is_null() {
+            return Err(FilterError::BuildFailed);
+        }
+        let src_args =
+            std::ffi::CString::new(buffersrc_args).map_err(|_| FilterError::BuildFailed)?;
+
+        // First input slot.
+        let first_src_ctx = {
+            let mut raw_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut raw_ctx,
+                abuffer,
+                c"in0".as_ptr(),
+                src_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                return Err(FilterError::BuildFailed);
+            }
+            log::debug!("filter added name=abuffersrc slot=0");
+            // SAFETY: ret >= 0 means raw_ctx is non-null.
+            let nn = NonNull::new_unchecked(raw_ctx);
+            src_ctxs.push(Some(nn));
+            nn
+        };
+
+        // Additional input slots for amix.
+        for slot in 1..num_inputs {
+            let ctx_name = std::ffi::CString::new(format!("in{slot}"))
+                .map_err(|_| FilterError::BuildFailed)?;
+            let mut raw_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut raw_ctx,
+                abuffer,
+                ctx_name.as_ptr(),
+                src_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                return Err(FilterError::BuildFailed);
+            }
+            log::debug!("filter added name=abuffersrc slot={slot}");
+            // SAFETY: ret >= 0 means raw_ctx is non-null.
+            src_ctxs.push(Some(NonNull::new_unchecked(raw_ctx)));
+        }
+
+        // 2. Create abuffersink.
+        let abuffersink = ff_sys::avfilter_get_by_name(c"abuffersink".as_ptr());
+        if abuffersink.is_null() {
+            return Err(FilterError::BuildFailed);
+        }
+
+        let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut sink_ctx,
+            abuffersink,
+            c"aout".as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            return Err(FilterError::BuildFailed);
+        }
+
+        // 3-5. Add each `FilterStep` (audio-relevant steps) and link.
+        let mut prev_ctx = first_src_ctx.as_ptr();
+        for (i, step) in steps.iter().enumerate() {
+            // Video-only steps; skip them in the audio graph.
+            if matches!(
+                step,
+                FilterStep::Reverse
+                    | FilterStep::ConcatVideo { .. }
+                    | FilterStep::JoinWithDissolve { .. }
+            ) {
+                continue;
+            }
+
+            // LoudnessNormalize is handled via two-pass buffering in
+            // push_audio / pull_audio; the regular audio graph is never built
+            // when this step is present, so this guard is defensive only.
+            if matches!(step, FilterStep::LoudnessNormalize { .. }) {
+                continue;
+            }
+
+            // NormalizePeak is handled via two-pass buffering in
+            // push_audio / pull_audio; same reasoning as LoudnessNormalize.
+            if matches!(step, FilterStep::NormalizePeak { .. }) {
+                continue;
+            }
+
+            // Speed uses `setpts` for video but `atempo` for audio.  Bypass the
+            // standard `add_and_link_step` path and insert the atempo chain here.
+            if let FilterStep::Speed { factor } = step {
+                prev_ctx = add_atempo_chain(graph, prev_ctx, *factor, i)?;
+                continue;
+            }
+
+            // ParametricEq generates one filter node per band; bypass the
+            // single-node `add_and_link_step` path.
+            if let FilterStep::ParametricEq { bands } = step {
+                prev_ctx = add_parametric_eq_chain(graph, prev_ctx, bands, i)?;
+                continue;
+            }
+
+            // AudioDelay dispatches to adelay (positive/zero) or atrim (negative).
+            if let FilterStep::AudioDelay { ms } = step {
+                let (filter_name, args) = if *ms >= 0.0 {
+                    ("adelay".to_string(), format!("delays={ms}:all=1"))
+                } else {
+                    ("atrim".to_string(), format!("start={}", -ms / 1000.0))
+                };
+                // SAFETY: graph and prev_ctx are valid pointers in the same graph.
+                prev_ctx = add_raw_filter_step(graph, prev_ctx, &filter_name, &args, i, "adelay")?;
+                continue;
+            }
+
+            prev_ctx = add_and_link_step(graph, prev_ctx, step, i, "astep")?;
+
+            // ConcatAudio consumes n input pads; link src_ctxs[1..n-1] to pads 1..n-1.
+            if let FilterStep::ConcatAudio { n } = step {
+                for slot in 1..*n as usize {
+                    if let Some(Some(extra_src)) = src_ctxs.get(slot) {
+                        let ret =
+                            ff_sys::avfilter_link(extra_src.as_ptr(), 0, prev_ctx, slot as u32);
+                        if ret < 0 {
+                            return Err(FilterError::BuildFailed);
+                        }
+                        log::debug!("filter linked extra_input=in{slot} to concat pad={slot}");
+                    }
+                }
+            }
+        }
+
+        // Link last filter to sink.
+        let ret = ff_sys::avfilter_link(prev_ctx, 0, sink_ctx, 0);
+        if ret < 0 {
+            return Err(FilterError::BuildFailed);
+        }
+
+        // 6. Configure the graph.
+        let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+        if ret < 0 {
+            log::warn!("avfilter_graph_config failed code={ret}");
+            return Err(ffmpeg_err(ret));
+        }
+
+        // SAFETY: sink_ctx is non-null (ret >= 0 above).
+        let sink_nn = NonNull::new_unchecked(sink_ctx);
+        Ok((src_ctxs, sink_nn))
+    }
 }
