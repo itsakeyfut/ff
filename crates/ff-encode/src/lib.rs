@@ -208,7 +208,7 @@ pub use audio::{
 };
 pub use error::EncodeError;
 pub use image::{ImageEncoder, ImageEncoderBuilder};
-pub use media_ops::AudioReplacement;
+pub use media_ops::{AudioExtractor, AudioReplacement};
 pub use shared::{
     AudioCodec, BitrateMode, CRF_MAX, EncodeProgress, EncodeProgressCallback, HardwareEncoder,
     OutputContainer, Preset, VideoCodec, VideoCodecEncodeExt,
