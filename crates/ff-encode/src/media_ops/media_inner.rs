@@ -1,4 +1,4 @@
-//! Unsafe FFmpeg calls for audio stream replacement (remux operations).
+//! Unsafe FFmpeg calls for audio stream operations (replacement, extraction).
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -361,6 +361,267 @@ unsafe fn run_audio_replacement_unsafe(
     ff_sys::avformat::close_input(&mut pa);
 
     log::info!("audio replaced output={}", output.display());
+
+    match loop_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+// ── Audio extraction ──────────────────────────────────────────────────────────
+
+/// Demux the audio track at `stream_index` (or the first audio stream when
+/// `stream_index` is `None`) from `input` and write it to `output`.
+///
+/// The audio bitstream is stream-copied (no decode/encode cycle).
+///
+/// # Safety
+///
+/// All FFmpeg pointer invariants are maintained internally.  The public
+/// `AudioExtractor::run` wraps this function safely.
+pub(crate) fn run_audio_extraction(
+    input: &Path,
+    output: &Path,
+    stream_index: Option<usize>,
+) -> Result<(), EncodeError> {
+    // SAFETY: All pointers are validated (null-checked) before use; resources
+    //         are freed on every exit path.
+    unsafe { run_audio_extraction_unsafe(input, output, stream_index) }
+}
+
+unsafe fn run_audio_extraction_unsafe(
+    input: &Path,
+    output: &Path,
+    requested_idx: Option<usize>,
+) -> Result<(), EncodeError> {
+    // ── Step 1: open input ────────────────────────────────────────────────────
+    // SAFETY: input is a caller-supplied path; open_input returns Err on failure.
+    let in_ctx = ff_sys::avformat::open_input(input).map_err(EncodeError::from_ffmpeg_error)?;
+
+    // ── Step 2: find stream info ──────────────────────────────────────────────
+    // SAFETY: in_ctx is non-null (open_input succeeded).
+    if let Err(e) = ff_sys::avformat::find_stream_info(in_ctx) {
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&mut p);
+        return Err(EncodeError::from_ffmpeg_error(e));
+    }
+
+    // ── Step 3: locate the audio stream ──────────────────────────────────────
+    // SAFETY: nb_streams is the valid count; streams is a valid array of that length.
+    let nb_streams = (*in_ctx).nb_streams as usize;
+    let audio_stream_idx = if let Some(idx) = requested_idx {
+        // Validate that the requested index is actually an audio stream.
+        if idx >= nb_streams {
+            let mut p = in_ctx;
+            ff_sys::avformat::close_input(&mut p);
+            return Err(EncodeError::MediaOperationFailed {
+                reason: format!("stream index {idx} out of range (input has {nb_streams} streams)"),
+            });
+        }
+        let stream = *(*in_ctx).streams.add(idx);
+        if (*(*stream).codecpar).codec_type != ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO {
+            let mut p = in_ctx;
+            ff_sys::avformat::close_input(&mut p);
+            return Err(EncodeError::MediaOperationFailed {
+                reason: format!("stream index {idx} is not an audio stream"),
+            });
+        }
+        idx
+    } else {
+        // Find the first audio stream.
+        let mut found: Option<usize> = None;
+        for i in 0..nb_streams {
+            let stream = *(*in_ctx).streams.add(i);
+            if (*(*stream).codecpar).codec_type == ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO {
+                found = Some(i);
+                break;
+            }
+        }
+        match found {
+            Some(idx) => idx,
+            None => {
+                let mut p = in_ctx;
+                ff_sys::avformat::close_input(&mut p);
+                return Err(EncodeError::MediaOperationFailed {
+                    reason: format!("no audio stream found in input path={}", input.display()),
+                });
+            }
+        }
+    };
+
+    // ── Step 4: allocate output context ──────────────────────────────────────
+    let Some(output_str) = output.to_str() else {
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&mut p);
+        return Err(EncodeError::Ffmpeg {
+            code: 0,
+            message: "output path is not valid UTF-8".to_string(),
+        });
+    };
+    let Ok(c_output) = std::ffi::CString::new(output_str) else {
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&mut p);
+        return Err(EncodeError::Ffmpeg {
+            code: 0,
+            message: "output path contains null bytes".to_string(),
+        });
+    };
+
+    let mut out_ctx: *mut ff_sys::AVFormatContext = std::ptr::null_mut();
+    // SAFETY: c_output is a valid null-terminated C string; format is auto-detected from ext.
+    let ret = ff_sys::avformat_alloc_output_context2(
+        &mut out_ctx,
+        std::ptr::null_mut(),
+        std::ptr::null(),
+        c_output.as_ptr(),
+    );
+    if ret < 0 || out_ctx.is_null() {
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&mut p);
+        return Err(EncodeError::from_ffmpeg_error(ret));
+    }
+
+    // ── Step 5: copy audio stream parameters to output ────────────────────────
+    // SAFETY: audio_stream_idx < nb_streams; streams is a valid array.
+    let in_stream = *(*in_ctx).streams.add(audio_stream_idx);
+    // SAFETY: out_ctx is non-null (avformat_alloc_output_context2 succeeded).
+    let out_stream = ff_sys::avformat_new_stream(out_ctx, std::ptr::null());
+    if out_stream.is_null() {
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat_free_context(out_ctx);
+        return Err(EncodeError::Ffmpeg {
+            code: 0,
+            message: "avformat_new_stream failed".to_string(),
+        });
+    }
+    // SAFETY: both codecpar pointers are non-null (created by FFmpeg).
+    let ret = ff_sys::avcodec_parameters_copy((*out_stream).codecpar, (*in_stream).codecpar);
+    if ret < 0 {
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&mut p);
+        ff_sys::avformat_free_context(out_ctx);
+        return Err(EncodeError::from_ffmpeg_error(ret));
+    }
+    // Clear codec_tag so the muxer assigns the correct value for the container.
+    (*(*out_stream).codecpar).codec_tag = 0;
+
+    // ── Step 6: open output file ──────────────────────────────────────────────
+    // SAFETY: output is a valid path; WRITE opens the file for writing.
+    let pb = match ff_sys::avformat::open_output(output, ff_sys::avformat::avio_flags::WRITE) {
+        Ok(pb) => pb,
+        Err(e) => {
+            let mut p = in_ctx;
+            ff_sys::avformat::close_input(&mut p);
+            ff_sys::avformat_free_context(out_ctx);
+            return Err(EncodeError::from_ffmpeg_error(e));
+        }
+    };
+    // SAFETY: out_ctx is non-null; pb is a valid AVIOContext.
+    (*out_ctx).pb = pb;
+
+    // ── Step 7: write header ──────────────────────────────────────────────────
+    // A non-zero return here usually means the codec is incompatible with the
+    // chosen output container.  Wrap it as MediaOperationFailed with a clear
+    // message so callers know what went wrong.
+    // SAFETY: out_ctx is fully configured with the stream and pb set.
+    let ret = ff_sys::avformat_write_header(out_ctx, std::ptr::null_mut());
+    if ret < 0 {
+        // SAFETY: (*out_ctx).pb was set above and is non-null.
+        ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
+        ff_sys::avformat_free_context(out_ctx);
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&mut p);
+        return Err(EncodeError::MediaOperationFailed {
+            reason: format!(
+                "codec incompatible with output container: {}",
+                ff_sys::av_error_string(ret)
+            ),
+        });
+    }
+
+    // Read time bases after avformat_write_header — the muxer may adjust them.
+    // SAFETY: stream pointers remain valid for the lifetime of their parent contexts.
+    let in_tb = (*in_stream).time_base;
+    let out_tb = (*out_stream).time_base;
+
+    log::debug!(
+        "audio extraction header written audio_stream_idx={audio_stream_idx} \
+         output={}",
+        output.display()
+    );
+
+    // ── Step 8: allocate packet ───────────────────────────────────────────────
+    // SAFETY: av_packet_alloc never returns null in practice (aborts on OOM).
+    let pkt = ff_sys::av_packet_alloc();
+    if pkt.is_null() {
+        ff_sys::av_write_trailer(out_ctx);
+        ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
+        ff_sys::avformat_free_context(out_ctx);
+        let mut p = in_ctx;
+        ff_sys::avformat::close_input(&mut p);
+        return Err(EncodeError::Ffmpeg {
+            code: 0,
+            message: "av_packet_alloc failed".to_string(),
+        });
+    }
+
+    // ── Step 9: packet copy loop (audio stream only) ──────────────────────────
+    let mut loop_err: Option<EncodeError> = None;
+
+    'read: loop {
+        // SAFETY: in_ctx and pkt are valid non-null pointers.
+        match ff_sys::avformat::read_frame(in_ctx, pkt) {
+            Err(e) if e == ff_sys::error_codes::EOF => break 'read,
+            Err(e) => {
+                loop_err = Some(EncodeError::from_ffmpeg_error(e));
+                break 'read;
+            }
+            Ok(()) => {}
+        }
+
+        if (*pkt).stream_index as usize != audio_stream_idx {
+            // Skip non-audio packets.
+            ff_sys::av_packet_unref(pkt);
+            continue 'read;
+        }
+
+        // Rescale timestamps to the output stream's time base and remap index.
+        // SAFETY: pkt, in_tb, out_tb are valid plain-data values.
+        ff_sys::av_packet_rescale_ts(pkt, in_tb, out_tb);
+        (*pkt).stream_index = 0;
+
+        // SAFETY: out_ctx and pkt are valid.
+        let ret = ff_sys::av_interleaved_write_frame(out_ctx, pkt);
+        // av_interleaved_write_frame takes the packet's buf reference; unref to clear.
+        ff_sys::av_packet_unref(pkt);
+        if ret < 0 {
+            loop_err = Some(EncodeError::from_ffmpeg_error(ret));
+            break 'read;
+        }
+    }
+
+    // SAFETY: pkt was allocated by av_packet_alloc above and is still valid.
+    let mut pkt_ptr = pkt;
+    ff_sys::av_packet_free(&mut pkt_ptr);
+
+    // ── Step 10: write trailer ────────────────────────────────────────────────
+    // SAFETY: out_ctx is valid; write_header was called successfully.
+    ff_sys::av_write_trailer(out_ctx);
+
+    // ── Step 11: cleanup ──────────────────────────────────────────────────────
+    // SAFETY: (*out_ctx).pb is non-null (opened above; still set after write_header).
+    ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
+    // SAFETY: out_ctx is non-null and was allocated by avformat_alloc_output_context2.
+    ff_sys::avformat_free_context(out_ctx);
+    // SAFETY: in_ctx is non-null (open_input succeeded).
+    let mut p = in_ctx;
+    ff_sys::avformat::close_input(&mut p);
+
+    log::info!(
+        "audio extracted output={} stream_index={audio_stream_idx}",
+        output.display()
+    );
 
     match loop_err {
         Some(e) => Err(e),

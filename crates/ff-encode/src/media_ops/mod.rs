@@ -1,4 +1,4 @@
-//! Media stream operations — audio replacement via stream-copy remux.
+//! Media stream operations — audio replacement and extraction via stream-copy remux.
 
 mod media_inner;
 
@@ -64,6 +64,71 @@ impl AudioReplacement {
     }
 }
 
+// ── AudioExtractor ────────────────────────────────────────────────────────────
+
+/// Demux an audio track from a media file and write it to a standalone audio file.
+///
+/// The audio bitstream is stream-copied (no decode/encode cycle).  By default
+/// the first audio stream is selected; call [`stream_index`](Self::stream_index)
+/// to pick a specific one.
+///
+/// Returns [`EncodeError::MediaOperationFailed`] when:
+/// - no audio stream is found (or `stream_index` points to a non-audio stream), or
+/// - the audio codec is incompatible with the output container.
+///
+/// # Example
+///
+/// ```ignore
+/// use ff_encode::AudioExtractor;
+///
+/// AudioExtractor::new("source.mp4", "audio.mp3").run()?;
+/// ```
+pub struct AudioExtractor {
+    input: PathBuf,
+    output: PathBuf,
+    stream_index: Option<usize>,
+}
+
+impl AudioExtractor {
+    /// Create a new `AudioExtractor`.
+    ///
+    /// - `input`  — source media file.
+    /// - `output` — destination audio file (format auto-detected from extension).
+    pub fn new(input: impl Into<PathBuf>, output: impl Into<PathBuf>) -> Self {
+        Self {
+            input: input.into(),
+            output: output.into(),
+            stream_index: None,
+        }
+    }
+
+    /// Select a specific audio stream by index (0-based over all streams in
+    /// the container).  Defaults to the first audio stream when not set.
+    #[must_use]
+    pub fn stream_index(mut self, idx: usize) -> Self {
+        self.stream_index = Some(idx);
+        self
+    }
+
+    /// Execute the audio extraction operation.
+    ///
+    /// # Errors
+    ///
+    /// - [`EncodeError::MediaOperationFailed`] if no audio stream is found,
+    ///   the requested stream index is invalid or not audio, or the codec is
+    ///   incompatible with the output container.
+    /// - [`EncodeError::Ffmpeg`] if any FFmpeg API call fails.
+    pub fn run(self) -> Result<(), EncodeError> {
+        log::debug!(
+            "audio extraction start input={} output={} stream_index={:?}",
+            self.input.display(),
+            self.output.display(),
+            self.stream_index,
+        );
+        media_inner::run_audio_extraction(&self.input, &self.output, self.stream_index)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +141,15 @@ mod tests {
         assert!(
             result.is_err(),
             "expected error for nonexistent video input, got Ok(())"
+        );
+    }
+
+    #[test]
+    fn audio_extractor_run_with_nonexistent_input_should_fail() {
+        let result = AudioExtractor::new("nonexistent_input.mp4", "out.mp3").run();
+        assert!(
+            result.is_err(),
+            "expected error for nonexistent input, got Ok(())"
         );
     }
 }
