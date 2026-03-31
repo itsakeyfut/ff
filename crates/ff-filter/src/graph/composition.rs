@@ -535,6 +535,18 @@ pub struct AudioTrack {
     /// [`FilterStep::AFadeIn`], and [`FilterStep::ACompressor`].
     /// An empty vec inserts no extra nodes (zero overhead).
     pub effects: Vec<FilterStep>,
+    /// Sample rate of the source audio in Hz (e.g. `44_100` or `48_000`).
+    ///
+    /// When this differs from the mixer's output sample rate an `aresample`
+    /// filter is inserted automatically.  Set to the mixer's output rate to
+    /// skip resampling.
+    pub sample_rate: u32,
+    /// Channel layout of the source audio.
+    ///
+    /// When this differs from the mixer's output layout an `aformat` filter
+    /// is inserted automatically.  Set to the mixer's output layout to skip
+    /// format conversion.
+    pub channel_layout: ChannelLayout,
 }
 
 // ── MultiTrackAudioMixer ──────────────────────────────────────────────────────
@@ -558,6 +570,8 @@ pub struct AudioTrack {
 ///         pan: 0.0,
 ///         time_offset: Duration::ZERO,
 ///         effects: vec![],
+///         sample_rate: 48000,
+///         channel_layout: ChannelLayout::Stereo,
 ///     })
 ///     .build()?;
 ///
@@ -666,6 +680,86 @@ unsafe fn build_audio_mix(
         }
         log::debug!("audio mix track={idx} amovie source path={path}");
         let mut chain_end = amovie_ctx;
+
+        // ── Optional aresample (sample rate conversion) ───────────────────────
+        if track.sample_rate != sample_rate {
+            let src_rate = track.sample_rate;
+            let aresample_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
+            if aresample_filter.is_null() {
+                bail!(graph, "filter not found: aresample");
+            }
+            let Ok(ar_name) = CString::new(format!("aresample{idx}")) else {
+                bail!(graph, "CString::new failed for aresample name");
+            };
+            let Ok(ar_args) = CString::new(format!("{sample_rate}")) else {
+                bail!(graph, "CString::new failed for aresample args");
+            };
+            let mut ar_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut ar_ctx,
+                aresample_filter,
+                ar_name.as_ptr(),
+                ar_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create aresample filter track={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, ar_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: amovie→aresample track={idx}"));
+            }
+            chain_end = ar_ctx;
+            log::info!(
+                "audio track resampled track={idx} source_rate={src_rate} target_rate={sample_rate}"
+            );
+        }
+
+        // ── Optional aformat (channel layout conversion) ──────────────────────
+        if track.channel_layout != channel_layout {
+            let af_args_str = match channel_layout {
+                ChannelLayout::Other(_) => format!("sample_rates={sample_rate}"),
+                _ => format!("channel_layouts={}", channel_layout.name()),
+            };
+            let aformat_filter = ff_sys::avfilter_get_by_name(c"aformat".as_ptr());
+            if aformat_filter.is_null() {
+                bail!(graph, "filter not found: aformat");
+            }
+            let Ok(af_name) = CString::new(format!("aformat_layout{idx}")) else {
+                bail!(graph, "CString::new failed for aformat layout name");
+            };
+            let Ok(af_args) = CString::new(af_args_str.as_str()) else {
+                bail!(graph, "CString::new failed for aformat layout args");
+            };
+            let mut af_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut af_ctx,
+                aformat_filter,
+                af_name.as_ptr(),
+                af_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create aformat layout filter track={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, af_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: →aformat_layout track={idx}"));
+            }
+            chain_end = af_ctx;
+            log::debug!(
+                "audio track reformatted track={idx} layout={}",
+                channel_layout.name()
+            );
+        }
 
         // ── Optional timeline offset ──────────────────────────────────────────
         if track.time_offset > Duration::ZERO {
@@ -960,6 +1054,8 @@ mod tests {
                 pan: 0.0,
                 time_offset: Duration::ZERO,
                 effects: vec![],
+                sample_rate: 48_000,
+                channel_layout: ChannelLayout::Stereo,
             })
             .build();
         if let Err(FilterError::CompositionFailed { ref reason }) = result {
@@ -979,11 +1075,67 @@ mod tests {
             pan: 0.0,
             time_offset: Duration::ZERO,
             effects: vec![FilterStep::Volume(6.0)],
+            sample_rate: 48_000,
+            channel_layout: ChannelLayout::Stereo,
         };
         assert_eq!(track.effects.len(), 1);
         assert!(
             matches!(track.effects[0], FilterStep::Volume(_)),
             "expected Volume variant"
         );
+    }
+
+    #[test]
+    fn mixer_mismatched_sample_rate_should_insert_aresample() {
+        // Track is 44100 Hz, output is 48000 Hz → build_audio_mix must attempt
+        // to create an aresample node.  With a nonexistent file the graph fails
+        // at avfilter_graph_config, NOT at "filter not found: aresample", which
+        // proves the node was created successfully before the config step.
+        let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+            .add_track(AudioTrack {
+                source: "nonexistent.mp3".into(),
+                volume_db: 0.0,
+                pan: 0.0,
+                time_offset: Duration::ZERO,
+                effects: vec![],
+                sample_rate: 44_100, // mismatch → aresample should be inserted
+                channel_layout: ChannelLayout::Stereo,
+            })
+            .build();
+        assert!(result.is_err(), "expected error from nonexistent file");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("filter not found: aresample"),
+                "aresample filter must exist in FFmpeg and be created; got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixer_matching_format_should_not_insert_extra_filters() {
+        // Track format matches output → no aresample or aformat should be
+        // inserted.  Build fails only because the source file does not exist.
+        let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+            .add_track(AudioTrack {
+                source: "nonexistent.mp3".into(),
+                volume_db: 0.0,
+                pan: 0.0,
+                time_offset: Duration::ZERO,
+                effects: vec![],
+                sample_rate: 48_000, // matches output → no aresample
+                channel_layout: ChannelLayout::Stereo, // matches output → no aformat
+            })
+            .build();
+        assert!(result.is_err(), "expected error from nonexistent file");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("aresample"),
+                "aresample must not appear for matching format; got: {reason}"
+            );
+            assert!(
+                !reason.contains("filter not found: aformat"),
+                "aformat must not appear for matching format; got: {reason}"
+            );
+        }
     }
 }
