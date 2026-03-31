@@ -146,6 +146,8 @@ impl Timeline {
                         pan: 0.0,
                         time_offset: clip.timeline_offset,
                         effects: vec![],
+                        sample_rate: 48_000,
+                        channel_layout: ff_format::ChannelLayout::Stereo,
                     });
                 }
             }
