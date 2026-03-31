@@ -1,6 +1,7 @@
 //! Stream-copy trimming — cut a media file to a time range without re-encoding.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::error::EncodeError;
 
@@ -75,6 +76,81 @@ impl StreamCopyTrimmer {
     }
 }
 
+// ── StreamCopyTrim ────────────────────────────────────────────────────────────
+
+/// Trim a media file to a time range using stream copy (no re-encode).
+///
+/// Equivalent to [`StreamCopyTrimmer`] but accepts [`Duration`] for `start` and
+/// `end` instead of raw seconds, and returns
+/// [`EncodeError::MediaOperationFailed`] when the time range is invalid.
+///
+/// # Example
+///
+/// ```ignore
+/// use ff_encode::StreamCopyTrim;
+/// use std::time::Duration;
+///
+/// StreamCopyTrim::new(
+///     "input.mp4",
+///     Duration::from_secs(2),
+///     Duration::from_secs(7),
+///     "output.mp4",
+/// )
+/// .run()?;
+/// ```
+pub struct StreamCopyTrim {
+    input: PathBuf,
+    start: Duration,
+    end: Duration,
+    output: PathBuf,
+}
+
+impl StreamCopyTrim {
+    /// Create a new `StreamCopyTrim`.
+    ///
+    /// `start` and `end` are absolute timestamps measured from the start of
+    /// the source file.  [`run`](Self::run) returns
+    /// [`EncodeError::MediaOperationFailed`] if `start >= end`.
+    pub fn new(
+        input: impl Into<PathBuf>,
+        start: Duration,
+        end: Duration,
+        output: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            input: input.into(),
+            start,
+            end,
+            output: output.into(),
+        }
+    }
+
+    /// Execute the trim operation.
+    ///
+    /// # Errors
+    ///
+    /// - [`EncodeError::MediaOperationFailed`] if `start >= end`.
+    /// - [`EncodeError::Ffmpeg`] if any FFmpeg API call fails.
+    pub fn run(self) -> Result<(), EncodeError> {
+        if self.start >= self.end {
+            return Err(EncodeError::MediaOperationFailed {
+                reason: format!(
+                    "start ({:?}) must be less than end ({:?})",
+                    self.start, self.end
+                ),
+            });
+        }
+        let start_sec = self.start.as_secs_f64();
+        let end_sec = self.end.as_secs_f64();
+        log::debug!(
+            "stream copy trim start input={} output={} start_sec={start_sec} end_sec={end_sec}",
+            self.input.display(),
+            self.output.display(),
+        );
+        trim_inner::run_trim(&self.input, &self.output, start_sec, end_sec)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +170,36 @@ mod tests {
         assert!(
             matches!(result, Err(EncodeError::InvalidConfig { .. })),
             "expected InvalidConfig for start == end, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stream_copy_trim_should_reject_start_greater_than_end() {
+        let result = StreamCopyTrim::new(
+            "input.mp4",
+            Duration::from_secs(7),
+            Duration::from_secs(2),
+            "output.mp4",
+        )
+        .run();
+        assert!(
+            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
+            "expected MediaOperationFailed for start > end, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stream_copy_trim_should_reject_equal_start_and_end() {
+        let result = StreamCopyTrim::new(
+            "input.mp4",
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            "output.mp4",
+        )
+        .run();
+        assert!(
+            matches!(result, Err(EncodeError::MediaOperationFailed { .. })),
+            "expected MediaOperationFailed for start == end, got {result:?}"
         );
     }
 }

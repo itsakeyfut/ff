@@ -211,7 +211,7 @@ pub use shared::{
     AudioCodec, BitrateMode, CRF_MAX, EncodeProgress, EncodeProgressCallback, HardwareEncoder,
     OutputContainer, Preset, VideoCodec, VideoCodecEncodeExt,
 };
-pub use trim::StreamCopyTrimmer;
+pub use trim::{StreamCopyTrim, StreamCopyTrimmer};
 pub use video::{
     Av1Options, Av1Usage, DnxhdOptions, DnxhdVariant, H264Options, H264Preset, H264Profile,
     H264Tune, H265Options, H265Profile, H265Tier, ProResOptions, ProResProfile, SvtAv1Options,

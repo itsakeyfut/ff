@@ -3,4 +3,4 @@
 mod trim_inner;
 mod trimmer;
 
-pub use trimmer::StreamCopyTrimmer;
+pub use trimmer::{StreamCopyTrim, StreamCopyTrimmer};
