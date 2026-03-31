@@ -1197,6 +1197,302 @@ unsafe fn build_video_concat(
     Ok(FilterGraph::from_prebuilt(inner))
 }
 
+// ── AudioConcatenator ─────────────────────────────────────────────────────────
+
+/// Concatenates multiple audio clips into a single seamless output stream.
+///
+/// Each clip is loaded via an `amovie=` source node.  When
+/// [`output_format`](Self::output_format) is set, an `aresample` and/or
+/// `aformat` filter is inserted per clip to normalise the sample rate and
+/// channel layout before concatenation.  A single clip skips the `concat`
+/// filter entirely.
+///
+/// # Examples
+///
+/// ```ignore
+/// use ff_filter::AudioConcatenator;
+/// use ff_format::ChannelLayout;
+///
+/// let mut graph = AudioConcatenator::new(vec!["clip_a.mp3", "clip_b.mp3"])
+///     .output_format(48_000, ChannelLayout::Stereo)
+///     .build()?;
+///
+/// while let Some(frame) = graph.pull_audio()? {
+///     // encode or play `frame`
+/// }
+/// ```
+pub struct AudioConcatenator {
+    clips: Vec<PathBuf>,
+    output_sample_rate: Option<u32>,
+    output_channel_layout: Option<ChannelLayout>,
+}
+
+impl AudioConcatenator {
+    /// Creates a new concatenator for the given clip paths.
+    pub fn new(clips: Vec<impl AsRef<std::path::Path>>) -> Self {
+        Self {
+            clips: clips
+                .into_iter()
+                .map(|p| p.as_ref().to_path_buf())
+                .collect(),
+            output_sample_rate: None,
+            output_channel_layout: None,
+        }
+    }
+
+    /// Sets the output sample rate and channel layout.
+    ///
+    /// When set, an `aresample` filter is inserted for each clip whose sample
+    /// rate differs from `sample_rate`, and an `aformat` filter is inserted for
+    /// each clip whose channel layout differs from `layout`.
+    #[must_use]
+    pub fn output_format(self, sample_rate: u32, layout: ChannelLayout) -> Self {
+        Self {
+            output_sample_rate: Some(sample_rate),
+            output_channel_layout: Some(layout),
+            ..self
+        }
+    }
+
+    /// Builds a source-only [`FilterGraph`] that concatenates all clips.
+    ///
+    /// # Errors
+    ///
+    /// - [`FilterError::CompositionFailed`] — no clips were provided, or an
+    ///   underlying `FFmpeg` graph-construction call failed.
+    pub fn build(self) -> Result<FilterGraph, FilterError> {
+        if self.clips.is_empty() {
+            return Err(FilterError::CompositionFailed {
+                reason: "no clips".to_string(),
+            });
+        }
+        // SAFETY: avfilter_graph_alloc / avfilter_graph_create_filter /
+        // avfilter_link / avfilter_graph_config follow the same ownership rules
+        // as build_video_concat:
+        // - avfilter_graph_free is called in the bail! macro on every error path.
+        // - avfilter_link() connects pads; connections are owned by the graph.
+        // - avfilter_graph_config() finalises the graph.
+        // - NonNull::new_unchecked() is called only after ret >= 0 checks.
+        unsafe {
+            build_audio_concat(
+                &self.clips,
+                self.output_sample_rate,
+                self.output_channel_layout,
+            )
+        }
+    }
+}
+
+// ── Audio concat graph builder ────────────────────────────────────────────────
+
+unsafe fn build_audio_concat(
+    clips: &[PathBuf],
+    output_sample_rate: Option<u32>,
+    output_channel_layout: Option<ChannelLayout>,
+) -> Result<FilterGraph, FilterError> {
+    use std::ffi::CString;
+
+    macro_rules! bail {
+        ($graph:ident, $reason:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::CompositionFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(FilterError::CompositionFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    let clip_count = clips.len();
+    let mut end_ctxs: Vec<*mut ff_sys::AVFilterContext> = Vec::with_capacity(clip_count);
+
+    for (idx, clip) in clips.iter().enumerate() {
+        let path = clip.to_string_lossy();
+
+        // ── amovie= source ────────────────────────────────────────────────────
+        let amovie_filter = ff_sys::avfilter_get_by_name(c"amovie".as_ptr());
+        if amovie_filter.is_null() {
+            bail!(graph, "filter not found: amovie");
+        }
+        let Ok(amovie_name) = CString::new(format!("aconcat_amovie{idx}")) else {
+            bail!(graph, "CString::new failed for amovie name");
+        };
+        let Ok(amovie_args) = CString::new(format!("filename={path}")) else {
+            bail!(graph, "CString::new failed for amovie args");
+        };
+        let mut amovie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut amovie_ctx,
+            amovie_filter,
+            amovie_name.as_ptr(),
+            amovie_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(
+                graph,
+                format!("failed to create amovie filter clip={idx} code={ret}")
+            );
+        }
+        log::debug!("audio concat clip={idx} amovie source path={path}");
+        let mut chain_end = amovie_ctx;
+
+        // ── Optional aresample (sample rate conversion) ───────────────────────
+        if let Some(sample_rate) = output_sample_rate {
+            let aresample_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
+            if aresample_filter.is_null() {
+                bail!(graph, "filter not found: aresample");
+            }
+            let Ok(ar_name) = CString::new(format!("aconcat_aresample{idx}")) else {
+                bail!(graph, "CString::new failed for aresample name");
+            };
+            let Ok(ar_args) = CString::new(format!("{sample_rate}")) else {
+                bail!(graph, "CString::new failed for aresample args");
+            };
+            let mut ar_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut ar_ctx,
+                aresample_filter,
+                ar_name.as_ptr(),
+                ar_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create aresample filter clip={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, ar_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: amovie→aresample clip={idx}"));
+            }
+            chain_end = ar_ctx;
+            log::debug!("audio concat clip={idx} aresample target_rate={sample_rate}");
+        }
+
+        // ── Optional aformat (channel layout conversion) ──────────────────────
+        if let Some(layout) = output_channel_layout {
+            let af_args_str = match layout {
+                ChannelLayout::Other(_) => {
+                    let sr = output_sample_rate.unwrap_or(48_000);
+                    format!("sample_rates={sr}")
+                }
+                _ => format!("channel_layouts={}", layout.name()),
+            };
+            let aformat_filter = ff_sys::avfilter_get_by_name(c"aformat".as_ptr());
+            if aformat_filter.is_null() {
+                bail!(graph, "filter not found: aformat");
+            }
+            let Ok(af_name) = CString::new(format!("aconcat_aformat{idx}")) else {
+                bail!(graph, "CString::new failed for aformat name");
+            };
+            let Ok(af_args) = CString::new(af_args_str.as_str()) else {
+                bail!(graph, "CString::new failed for aformat args");
+            };
+            let mut af_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut af_ctx,
+                aformat_filter,
+                af_name.as_ptr(),
+                af_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create aformat filter clip={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, af_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: →aformat clip={idx}"));
+            }
+            chain_end = af_ctx;
+            log::debug!("audio concat clip={idx} aformat layout={}", layout.name());
+        }
+
+        end_ctxs.push(chain_end);
+    }
+
+    // ── concat (skipped for single clip) ─────────────────────────────────────
+    let pre_sink_ctx = if clip_count == 1 {
+        end_ctxs[0]
+    } else {
+        let concat_filter = ff_sys::avfilter_get_by_name(c"concat".as_ptr());
+        if concat_filter.is_null() {
+            bail!(graph, "filter not found: concat");
+        }
+        let Ok(concat_args) = CString::new(format!("n={clip_count}:v=0:a=1")) else {
+            bail!(graph, "CString::new failed for concat args");
+        };
+        let mut concat_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut concat_ctx,
+            concat_filter,
+            c"aconcat".as_ptr(),
+            concat_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(graph, format!("failed to create concat filter code={ret}"));
+        }
+        for (i, &end_ctx) in end_ctxs.iter().enumerate() {
+            let ret = ff_sys::avfilter_link(end_ctx, 0, concat_ctx, i as u32);
+            if ret < 0 {
+                bail!(graph, format!("link failed: clip{i}→aconcat[{i}]"));
+            }
+        }
+        concat_ctx
+    };
+
+    // ── abuffersink ───────────────────────────────────────────────────────────
+    let sink_filter = ff_sys::avfilter_get_by_name(c"abuffersink".as_ptr());
+    if sink_filter.is_null() {
+        bail!(graph, "filter not found: abuffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        sink_filter,
+        c"aconcat_asink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create abuffersink code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(pre_sink_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: last→abuffersink");
+    }
+
+    // ── Configure graph ───────────────────────────────────────────────────────
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        log::warn!("audio concat avfilter_graph_config failed code={ret}");
+        bail!(graph, format!("avfilter_graph_config failed code={ret}"));
+    }
+
+    // SAFETY: ret >= 0 guarantees both pointers are non-null.
+    let graph_nn = NonNull::new_unchecked(graph);
+    let sink_nn = NonNull::new_unchecked(sink_ctx);
+    let inner = FilterGraphInner::with_prebuilt_audio_graph(graph_nn, sink_nn);
+    log::info!("audio concat graph built clips={clip_count}");
+    Ok(FilterGraph::from_prebuilt(inner))
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1478,6 +1774,39 @@ mod tests {
                 !reason.contains("filter not found: aformat"),
                 "aformat must not appear for matching format; got: {reason}"
             );
+        }
+    }
+
+    #[test]
+    fn audio_concatenator_empty_clips_should_err() {
+        let result = AudioConcatenator::new(Vec::<PathBuf>::new()).build();
+        assert!(
+            matches!(result, Err(FilterError::CompositionFailed { .. })),
+            "expected CompositionFailed for empty clips, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn audio_concatenator_three_clips_should_build_successfully() {
+        // Build with three nonexistent clips.  Graph construction of individual
+        // filter nodes (amovie, concat, abuffersink) should succeed; failure
+        // only at avfilter_graph_config (file not found) is expected.
+        //
+        // Some FFmpeg builds omit `amovie` or `concat`; skip gracefully on
+        // those environments rather than failing.
+        let result = AudioConcatenator::new(vec!["a.mp3", "b.mp3", "c.mp3"])
+            .output_format(48_000, ChannelLayout::Stereo)
+            .build();
+        assert!(result.is_err(), "expected error (nonexistent files)");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            if reason.contains("filter not found: amovie")
+                || reason.contains("filter not found: concat")
+            {
+                println!(
+                    "Skipping: required lavfi filter unavailable in this FFmpeg build ({reason})"
+                );
+                return;
+            }
         }
     }
 

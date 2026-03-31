@@ -9,7 +9,8 @@ pub mod types;
 
 pub use builder::FilterGraphBuilder;
 pub use composition::{
-    AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoConcatenator, VideoLayer,
+    AudioConcatenator, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoConcatenator,
+    VideoLayer,
 };
 pub use filter_step::FilterStep;
 pub use graph::FilterGraph;
