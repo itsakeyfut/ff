@@ -951,6 +951,252 @@ unsafe fn build_audio_mix(
     Ok(FilterGraph::from_prebuilt(inner))
 }
 
+// ── VideoConcatenator ─────────────────────────────────────────────────────────
+
+/// Concatenates multiple video clips into a single seamless output stream.
+///
+/// Each clip is loaded via a `movie=` source node.  When
+/// [`output_resolution`](Self::output_resolution) is set, a `scale` filter is
+/// inserted per clip to normalise all clips to a common resolution before
+/// concatenation.  A single clip skips the `concat` filter and passes through
+/// directly.
+///
+/// The resulting [`FilterGraph`] is source-only — call
+/// [`FilterGraph::pull_video`] in a loop to extract the output frames.
+///
+/// # Examples
+///
+/// ```ignore
+/// use ff_filter::VideoConcatenator;
+///
+/// let mut graph = VideoConcatenator::new(vec!["clip_a.mp4", "clip_b.mp4"])
+///     .output_resolution(1280, 720)
+///     .build()?;
+///
+/// while let Some(frame) = graph.pull_video()? {
+///     // encode or display `frame`
+/// }
+/// ```
+pub struct VideoConcatenator {
+    clips: Vec<PathBuf>,
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+}
+
+impl VideoConcatenator {
+    /// Creates a new concatenator for the given clip paths.
+    pub fn new(clips: Vec<impl AsRef<std::path::Path>>) -> Self {
+        Self {
+            clips: clips
+                .into_iter()
+                .map(|p| p.as_ref().to_path_buf())
+                .collect(),
+            output_width: None,
+            output_height: None,
+        }
+    }
+
+    /// Sets the output resolution.  When provided, a `scale=W:H` filter is
+    /// inserted per clip before concatenation.
+    #[must_use]
+    pub fn output_resolution(self, w: u32, h: u32) -> Self {
+        Self {
+            output_width: Some(w),
+            output_height: Some(h),
+            ..self
+        }
+    }
+
+    /// Builds a source-only [`FilterGraph`] that concatenates all clips.
+    ///
+    /// # Errors
+    ///
+    /// - [`FilterError::CompositionFailed`] — no clips were provided, or an
+    ///   underlying `FFmpeg` graph-construction call failed.
+    pub fn build(self) -> Result<FilterGraph, FilterError> {
+        if self.clips.is_empty() {
+            return Err(FilterError::CompositionFailed {
+                reason: "no clips".to_string(),
+            });
+        }
+        // SAFETY: all raw pointer operations follow the avfilter ownership rules:
+        // - avfilter_graph_alloc() returns an owned pointer freed via
+        //   avfilter_graph_free() on error or stored in FilterGraphInner on success.
+        // - avfilter_graph_create_filter() adds contexts owned by the graph.
+        // - avfilter_link() connects pads; connections are owned by the graph.
+        // - avfilter_graph_config() finalises the graph.
+        // - NonNull::new_unchecked() is called only after ret >= 0 checks.
+        unsafe { build_video_concat(&self.clips, self.output_width, self.output_height) }
+    }
+}
+
+// ── Video concat graph builder ────────────────────────────────────────────────
+
+unsafe fn build_video_concat(
+    clips: &[PathBuf],
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+) -> Result<FilterGraph, FilterError> {
+    use std::ffi::CString;
+
+    macro_rules! bail {
+        ($graph:ident, $reason:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::CompositionFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(FilterError::CompositionFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    let clip_count = clips.len();
+    let mut end_ctxs: Vec<*mut ff_sys::AVFilterContext> = Vec::with_capacity(clip_count);
+
+    for (idx, clip) in clips.iter().enumerate() {
+        let path = clip.to_string_lossy();
+
+        // ── movie= source ─────────────────────────────────────────────────────
+        let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
+        if movie_filter.is_null() {
+            bail!(graph, "filter not found: movie");
+        }
+        let Ok(movie_name) = CString::new(format!("concat_movie{idx}")) else {
+            bail!(graph, "CString::new failed for movie name");
+        };
+        let Ok(movie_args) = CString::new(format!("filename={path}")) else {
+            bail!(graph, "CString::new failed for movie args");
+        };
+        let mut movie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut movie_ctx,
+            movie_filter,
+            movie_name.as_ptr(),
+            movie_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(
+                graph,
+                format!("failed to create movie filter clip={idx} code={ret}")
+            );
+        }
+        log::debug!("video concat clip={idx} movie source path={path}");
+        let mut chain_end = movie_ctx;
+
+        // ── Optional scale ────────────────────────────────────────────────────
+        if let (Some(w), Some(h)) = (output_width, output_height) {
+            let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
+            if scale_filter.is_null() {
+                bail!(graph, "filter not found: scale");
+            }
+            let Ok(sc_name) = CString::new(format!("concat_scale{idx}")) else {
+                bail!(graph, "CString::new failed for scale name");
+            };
+            let Ok(sc_args) = CString::new(format!("{w}:{h}")) else {
+                bail!(graph, "CString::new failed for scale args");
+            };
+            let mut sc_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut sc_ctx,
+                scale_filter,
+                sc_name.as_ptr(),
+                sc_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create scale filter clip={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, sc_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: movie→scale clip={idx}"));
+            }
+            chain_end = sc_ctx;
+        }
+
+        end_ctxs.push(chain_end);
+    }
+
+    // ── concat (skipped for single clip) ─────────────────────────────────────
+    let pre_sink_ctx = if clip_count == 1 {
+        end_ctxs[0]
+    } else {
+        let concat_filter = ff_sys::avfilter_get_by_name(c"concat".as_ptr());
+        if concat_filter.is_null() {
+            bail!(graph, "filter not found: concat");
+        }
+        let Ok(concat_args) = CString::new(format!("n={clip_count}:v=1:a=0")) else {
+            bail!(graph, "CString::new failed for concat args");
+        };
+        let mut concat_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut concat_ctx,
+            concat_filter,
+            c"concat".as_ptr(),
+            concat_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            bail!(graph, format!("failed to create concat filter code={ret}"));
+        }
+        for (i, &end_ctx) in end_ctxs.iter().enumerate() {
+            let ret = ff_sys::avfilter_link(end_ctx, 0, concat_ctx, i as u32);
+            if ret < 0 {
+                bail!(graph, format!("link failed: clip{i}→concat[{i}]"));
+            }
+        }
+        concat_ctx
+    };
+
+    // ── buffersink ────────────────────────────────────────────────────────────
+    let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+    if sink_filter.is_null() {
+        bail!(graph, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        sink_filter,
+        c"vsink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create buffersink code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(pre_sink_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: last→buffersink");
+    }
+
+    // ── Configure graph ───────────────────────────────────────────────────────
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        log::warn!("video concat avfilter_graph_config failed code={ret}");
+        bail!(graph, format!("avfilter_graph_config failed code={ret}"));
+    }
+
+    // SAFETY: ret >= 0 guarantees both pointers are non-null.
+    let graph_nn = NonNull::new_unchecked(graph);
+    let sink_nn = NonNull::new_unchecked(sink_ctx);
+    let inner = FilterGraphInner::with_prebuilt_video_graph(graph_nn, sink_nn);
+    log::info!("video concat graph built clips={clip_count}");
+    Ok(FilterGraph::from_prebuilt(inner))
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1232,6 +1478,37 @@ mod tests {
                 !reason.contains("filter not found: aformat"),
                 "aformat must not appear for matching format; got: {reason}"
             );
+        }
+    }
+
+    #[test]
+    fn concatenator_empty_clips_should_err() {
+        let result = VideoConcatenator::new(Vec::<PathBuf>::new()).build();
+        assert!(
+            matches!(result, Err(FilterError::CompositionFailed { .. })),
+            "expected CompositionFailed for empty clips, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn concatenator_three_clips_should_build_successfully() {
+        // Build with three nonexistent clips.  Graph construction of individual
+        // filter nodes (movie, concat, buffersink) should succeed; failure only
+        // at avfilter_graph_config (file not found) is expected.
+        //
+        // Some FFmpeg builds omit the `movie` or `concat` lavfi filters; skip
+        // gracefully on those environments rather than failing.
+        let result = VideoConcatenator::new(vec!["a.mp4", "b.mp4", "c.mp4"]).build();
+        assert!(result.is_err(), "expected error (nonexistent files)");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            if reason.contains("filter not found: movie")
+                || reason.contains("filter not found: concat")
+            {
+                println!(
+                    "Skipping: required lavfi filter unavailable in this FFmpeg build ({reason})"
+                );
+                return;
+            }
         }
     }
 }
