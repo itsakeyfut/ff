@@ -762,38 +762,42 @@ unsafe fn build_audio_mix(
         }
 
         // ── Optional timeline offset ──────────────────────────────────────────
+        // adelay inserts real silence samples, which is required for correct
+        // multi-track mixing via amix (unlike asetpts, which only shifts PTS).
         if track.time_offset > Duration::ZERO {
-            let offset = track.time_offset.as_secs_f64();
-            let asetpts_filter = ff_sys::avfilter_get_by_name(c"asetpts".as_ptr());
-            if asetpts_filter.is_null() {
-                bail!(graph, "filter not found: asetpts");
+            let delay_ms = track.time_offset.as_millis();
+            let adelay_filter = ff_sys::avfilter_get_by_name(c"adelay".as_ptr());
+            if adelay_filter.is_null() {
+                bail!(graph, "filter not found: adelay");
             }
-            let Ok(asp_name) = CString::new(format!("asetpts_offset{idx}")) else {
-                bail!(graph, "CString::new failed for asetpts name");
+            let Ok(ad_name) = CString::new(format!("adelay{idx}")) else {
+                bail!(graph, "CString::new failed for adelay name");
             };
-            let Ok(asp_args) = CString::new(format!("PTS+{offset}/TB")) else {
-                bail!(graph, "CString::new failed for asetpts args");
+            // all=1 applies the same delay to every channel
+            let Ok(ad_args) = CString::new(format!("{delay_ms}:all=1")) else {
+                bail!(graph, "CString::new failed for adelay args");
             };
-            let mut asp_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let mut ad_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
             let ret = ff_sys::avfilter_graph_create_filter(
-                &raw mut asp_ctx,
-                asetpts_filter,
-                asp_name.as_ptr(),
-                asp_args.as_ptr(),
+                &raw mut ad_ctx,
+                adelay_filter,
+                ad_name.as_ptr(),
+                ad_args.as_ptr(),
                 std::ptr::null_mut(),
                 graph,
             );
             if ret < 0 {
                 bail!(
                     graph,
-                    format!("failed to create asetpts offset filter track={idx} code={ret}")
+                    format!("failed to create adelay filter track={idx} code={ret}")
                 );
             }
-            let ret = ff_sys::avfilter_link(chain_end, 0, asp_ctx, 0);
+            let ret = ff_sys::avfilter_link(chain_end, 0, ad_ctx, 0);
             if ret < 0 {
-                bail!(graph, format!("link failed: amovie→asetpts track={idx}"));
+                bail!(graph, format!("link failed: →adelay track={idx}"));
             }
-            chain_end = asp_ctx;
+            chain_end = ad_ctx;
+            log::debug!("audio track delayed track={idx} delay_ms={delay_ms}");
         }
 
         // ── Optional volume ───────────────────────────────────────────────────
@@ -1107,6 +1111,98 @@ mod tests {
             assert!(
                 !reason.contains("filter not found: aresample"),
                 "aresample filter must exist in FFmpeg and be created; got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn video_layer_with_positive_offset_should_insert_setpts() {
+        // setpts_offset is inserted when time_offset > 0.
+        // Build fails (nonexistent file) but NOT at "filter not found: setpts".
+        let result = MultiTrackComposer::new(1920, 1080)
+            .add_layer(VideoLayer {
+                source: "nonexistent.mp4".into(),
+                x: 0,
+                y: 0,
+                scale: 1.0,
+                opacity: 1.0,
+                z_order: 0,
+                time_offset: Duration::from_secs(2),
+                in_point: None,
+                out_point: None,
+            })
+            .build();
+        assert!(result.is_err(), "expected error (nonexistent file)");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("filter not found: setpts"),
+                "setpts must exist in FFmpeg and be created; got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_track_with_positive_offset_should_insert_adelay() {
+        // adelay is inserted when time_offset > 0.
+        // Build fails (nonexistent file) but NOT at "filter not found: adelay".
+        let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+            .add_track(AudioTrack {
+                source: "nonexistent.mp3".into(),
+                volume_db: 0.0,
+                pan: 0.0,
+                time_offset: Duration::from_secs(2),
+                effects: vec![],
+                sample_rate: 48_000,
+                channel_layout: ChannelLayout::Stereo,
+            })
+            .build();
+        assert!(result.is_err(), "expected error (nonexistent file)");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("filter not found: adelay"),
+                "adelay must exist in FFmpeg and be created; got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_offset_should_not_insert_extra_filters() {
+        // time_offset=ZERO must not cause setpts_offset or adelay nodes.
+        let video_result = MultiTrackComposer::new(1920, 1080)
+            .add_layer(VideoLayer {
+                source: "nonexistent.mp4".into(),
+                x: 0,
+                y: 0,
+                scale: 1.0,
+                opacity: 1.0,
+                z_order: 0,
+                time_offset: Duration::ZERO,
+                in_point: None,
+                out_point: None,
+            })
+            .build();
+        if let Err(FilterError::CompositionFailed { ref reason }) = video_result {
+            assert!(
+                !reason.contains("setpts_offset"),
+                "setpts_offset must not appear for zero offset; got: {reason}"
+            );
+        }
+
+        let audio_result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+            .add_track(AudioTrack {
+                source: "nonexistent.mp3".into(),
+                volume_db: 0.0,
+                pan: 0.0,
+                time_offset: Duration::ZERO,
+                effects: vec![],
+                sample_rate: 48_000,
+                channel_layout: ChannelLayout::Stereo,
+            })
+            .build();
+        if let Err(FilterError::CompositionFailed { ref reason }) = audio_result {
+            assert!(
+                !reason.contains("adelay"),
+                "adelay must not appear for zero offset; got: {reason}"
             );
         }
     }
