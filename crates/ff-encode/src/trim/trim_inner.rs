@@ -17,7 +17,7 @@ const AV_TIME_BASE: i64 = 1_000_000;
 ///
 /// All FFmpeg pointer invariants are maintained internally.  The function is
 /// safe to call from safe Rust — the public `StreamCopyTrimmer::run` wraps it.
-pub(super) fn run_trim(
+pub(crate) fn run_trim(
     input: &Path,
     output: &Path,
     start_sec: f64,

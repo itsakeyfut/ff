@@ -138,6 +138,17 @@ pub enum EncodeError {
     /// Async encoder worker thread panicked or disconnected unexpectedly
     #[error("Async encoder worker panicked or disconnected")]
     WorkerPanicked,
+
+    /// A media operation (trim, extract, replace, …) failed.
+    ///
+    /// Returned by [`StreamCopyTrim`](crate::StreamCopyTrim) and other
+    /// `media_ops` types when a structural precondition is violated or an
+    /// FFmpeg mux/remux call fails.
+    #[error("media operation failed: {reason}")]
+    MediaOperationFailed {
+        /// Human-readable description of the failure.
+        reason: String,
+    },
 }
 
 impl EncodeError {
