@@ -216,6 +216,26 @@ pub enum DecodeError {
         /// Number of consecutive invalid packets that triggered the error.
         consecutive_invalid_packets: u32,
     },
+
+    /// No frame was found at or after the requested timestamp.
+    ///
+    /// Returned by `VideoDecoder::extract_frame()` when EOF is reached before
+    /// a frame at or after the target position is found.
+    #[error("no frame found at timestamp: {timestamp:?}")]
+    NoFrameAtTimestamp {
+        /// The timestamp that was requested.
+        timestamp: Duration,
+    },
+
+    /// An analysis operation failed for a structural reason.
+    ///
+    /// Returned by tools in [`crate::analysis`] when the operation cannot
+    /// proceed (e.g. zero interval, missing audio stream, unsupported format).
+    #[error("analysis failed: {reason}")]
+    AnalysisFailed {
+        /// Human-readable description of why the analysis failed.
+        reason: String,
+    },
 }
 
 impl DecodeError {
@@ -383,7 +403,9 @@ impl DecodeError {
             | Self::Ffmpeg { .. }
             | Self::SeekNotSupported
             | Self::UnsupportedResolution { .. }
-            | Self::StreamCorrupted { .. } => false,
+            | Self::StreamCorrupted { .. }
+            | Self::NoFrameAtTimestamp { .. }
+            | Self::AnalysisFailed { .. } => false,
         }
     }
 
@@ -430,14 +452,16 @@ impl DecodeError {
             | Self::InvalidOutputDimensions { .. }
             | Self::ConnectionFailed { .. }
             | Self::Io(_)
-            | Self::StreamCorrupted { .. } => true,
+            | Self::StreamCorrupted { .. }
+            | Self::AnalysisFailed { .. } => true,
             Self::DecodingFailed { .. }
             | Self::SeekFailed { .. }
             | Self::NetworkTimeout { .. }
             | Self::StreamInterrupted { .. }
             | Self::Ffmpeg { .. }
             | Self::SeekNotSupported
-            | Self::UnsupportedResolution { .. } => false,
+            | Self::UnsupportedResolution { .. }
+            | Self::NoFrameAtTimestamp { .. } => false,
         }
     }
 }
@@ -794,6 +818,50 @@ mod tests {
     fn stream_corrupted_should_be_fatal_and_not_recoverable() {
         let e = DecodeError::StreamCorrupted {
             consecutive_invalid_packets: 32,
+        };
+        assert!(e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn decode_error_no_frame_at_timestamp_should_display_correctly() {
+        let e = DecodeError::NoFrameAtTimestamp {
+            timestamp: Duration::from_secs(5),
+        };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("no frame found at timestamp"),
+            "unexpected message: {msg}"
+        );
+        assert!(msg.contains("5s"), "expected timestamp in message: {msg}");
+    }
+
+    #[test]
+    fn decode_error_analysis_failed_should_display_correctly() {
+        let e = DecodeError::AnalysisFailed {
+            reason: "interval must be non-zero".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("analysis failed"), "unexpected message: {msg}");
+        assert!(
+            msg.contains("interval must be non-zero"),
+            "expected reason in message: {msg}"
+        );
+    }
+
+    #[test]
+    fn no_frame_at_timestamp_should_be_neither_fatal_nor_recoverable() {
+        let e = DecodeError::NoFrameAtTimestamp {
+            timestamp: Duration::from_secs(10),
+        };
+        assert!(!e.is_fatal());
+        assert!(!e.is_recoverable());
+    }
+
+    #[test]
+    fn analysis_failed_should_be_fatal_and_not_recoverable() {
+        let e = DecodeError::AnalysisFailed {
+            reason: "zero interval".to_string(),
         };
         assert!(e.is_fatal());
         assert!(!e.is_recoverable());
