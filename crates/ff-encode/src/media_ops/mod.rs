@@ -129,6 +129,87 @@ impl AudioExtractor {
     }
 }
 
+// ── AudioAdder ────────────────────────────────────────────────────────────────
+
+/// Mux an audio track into a silent (or existing) video file.
+///
+/// The video bitstream is stream-copied (no decode/encode cycle).  When the
+/// audio source is shorter than the video and [`loop_audio`](Self::loop_audio)
+/// has been called, the audio is looped by re-seeking and advancing the PTS
+/// offset until the video is exhausted.
+///
+/// Returns [`EncodeError::MediaOperationFailed`] when no video stream is found
+/// in `video_input` or no audio stream is found in `audio_input`.
+///
+/// # Example
+///
+/// ```ignore
+/// use ff_encode::AudioAdder;
+///
+/// AudioAdder::new("silent.mp4", "soundtrack.mp3", "output.mp4")
+///     .loop_audio()
+///     .run()?;
+/// ```
+pub struct AudioAdder {
+    video_input: PathBuf,
+    audio_input: PathBuf,
+    output: PathBuf,
+    loop_audio: bool,
+}
+
+impl AudioAdder {
+    /// Create a new `AudioAdder`.
+    ///
+    /// - `video_input` — source file whose video stream is kept.
+    /// - `audio_input` — source file whose first audio stream is used.
+    /// - `output`      — path for the combined output file.
+    pub fn new(
+        video_input: impl Into<PathBuf>,
+        audio_input: impl Into<PathBuf>,
+        output: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            video_input: video_input.into(),
+            audio_input: audio_input.into(),
+            output: output.into(),
+            loop_audio: false,
+        }
+    }
+
+    /// Loop the audio when it is shorter than the video.
+    ///
+    /// The audio is re-seeked to the start and the PTS offset is advanced each
+    /// time the audio stream is exhausted, until the video ends.
+    #[must_use]
+    pub fn loop_audio(mut self) -> Self {
+        self.loop_audio = true;
+        self
+    }
+
+    /// Execute the audio addition operation.
+    ///
+    /// # Errors
+    ///
+    /// - [`EncodeError::MediaOperationFailed`] if `video_input` has no video
+    ///   stream or `audio_input` has no audio stream.
+    /// - [`EncodeError::Ffmpeg`] if any FFmpeg API call fails.
+    pub fn run(self) -> Result<(), EncodeError> {
+        log::debug!(
+            "audio addition start video_input={} audio_input={} output={} loop_audio={}",
+            self.video_input.display(),
+            self.audio_input.display(),
+            self.output.display(),
+            self.loop_audio,
+        );
+        media_inner::run_audio_addition(
+            &self.video_input,
+            &self.audio_input,
+            &self.output,
+            self.loop_audio,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +231,16 @@ mod tests {
         assert!(
             result.is_err(),
             "expected error for nonexistent input, got Ok(())"
+        );
+    }
+
+    #[test]
+    fn audio_adder_run_with_nonexistent_video_input_should_fail() {
+        let result =
+            AudioAdder::new("nonexistent_video.mp4", "nonexistent_audio.mp3", "out.mp4").run();
+        assert!(
+            result.is_err(),
+            "expected error for nonexistent video input, got Ok(())"
         );
     }
 }
