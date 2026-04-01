@@ -49,6 +49,17 @@ pub enum FilterError {
         /// Human-readable reason for the failure.
         reason: String,
     },
+
+    /// An analysis operation failed for a structural reason.
+    ///
+    /// Returned by [`LoudnessMeter::measure`](crate::analysis::LoudnessMeter::measure)
+    /// when the input file is not found, the format is unsupported, or the
+    /// `FFmpeg` filter graph cannot be constructed.
+    #[error("analysis failed: {reason}")]
+    AnalysisFailed {
+        /// Human-readable reason for the failure.
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -95,6 +106,14 @@ mod tests {
             reason: "no layers".to_string(),
         };
         assert_eq!(err.to_string(), "composition failed: no layers");
+    }
+
+    #[test]
+    fn analysis_failed_should_display_reason() {
+        let err = FilterError::AnalysisFailed {
+            reason: "file not found".to_string(),
+        };
+        assert_eq!(err.to_string(), "analysis failed: file not found");
     }
 
     #[test]
