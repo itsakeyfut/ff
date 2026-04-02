@@ -113,7 +113,7 @@ pub mod video;
 pub(crate) use shared::network;
 
 // Re-exports for convenience
-pub use analysis::{SceneDetector, WaveformAnalyzer, WaveformSample};
+pub use analysis::{KeyframeEnumerator, SceneDetector, WaveformAnalyzer, WaveformSample};
 pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
 pub use ff_common::{FramePool, PooledBuffer};
