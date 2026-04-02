@@ -221,7 +221,8 @@ pub use ff_common::VecPool;
 #[cfg(feature = "decode")]
 pub use ff_decode::{
     AudioDecoder, DecodeError, FramePool, HardwareAccel, ImageDecoder, KeyframeEnumerator,
-    SceneDetector, SeekMode, VideoDecoder, WaveformAnalyzer, WaveformSample,
+    SceneDetector, SeekMode, SilenceDetector, SilenceRange, VideoDecoder, WaveformAnalyzer,
+    WaveformSample,
 };
 
 // ── encode feature ────────────────────────────────────────────────────────────

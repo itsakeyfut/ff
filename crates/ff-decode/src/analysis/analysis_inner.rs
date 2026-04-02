@@ -4,6 +4,11 @@
 //! packet-level access) add their `unsafe` implementation here.
 //! `WaveformAnalyzer` uses only the safe [`crate::AudioDecoder`] API
 //! and therefore has no code in that section.
+//!
+//! Current `unsafe` entry points:
+//! - [`detect_scenes_unsafe`] — `SceneDetector`
+//! - [`detect_silence_unsafe`] — `SilenceDetector`
+//! - [`enumerate_keyframes_unsafe`] — `KeyframeEnumerator`
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -17,6 +22,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::DecodeError;
+use crate::analysis::SilenceRange;
 
 // ── SceneDetector inner ───────────────────────────────────────────────────────
 
@@ -191,6 +197,220 @@ pub(super) unsafe fn detect_scenes_unsafe(
     );
 
     Ok(timestamps)
+}
+
+// ── SilenceDetector inner ─────────────────────────────────────────────────────
+
+/// Detects silent intervals in `path` using the filter graph:
+///
+/// `amovie=filename=path → silencedetect=n=threshold_db dB:d=min_sec → abuffersink`
+///
+/// Drains all output frames, reading `lavfi.silence_start` and
+/// `lavfi.silence_end` metadata keys from each frame.  Only complete intervals
+/// (both start and end seen) are returned; a trailing silence that reaches
+/// end-of-file without an explicit end marker is not included.
+///
+/// # Safety
+///
+/// All raw pointer operations follow the avfilter ownership rules:
+/// - `avfilter_graph_alloc()` returns an owned pointer freed via
+///   `avfilter_graph_free()` on error or after draining.
+/// - `avfilter_graph_create_filter()` adds contexts owned by the graph.
+/// - `avfilter_link()` connects pads owned by the graph.
+/// - `avfilter_graph_config()` finalises the graph.
+/// - `av_frame_alloc()` / `av_frame_free()` manage per-frame lifetimes.
+/// - `(*frame).metadata` is a valid `AVDictionary*` (may be null); `av_dict_get`
+///   handles null dictionaries by returning null.
+pub(super) unsafe fn detect_silence_unsafe(
+    path: &Path,
+    threshold_db: f32,
+    min_duration: Duration,
+) -> Result<Vec<SilenceRange>, DecodeError> {
+    macro_rules! bail {
+        ($graph:ident, $reason:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(DecodeError::AnalysisFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let path_str = path.to_string_lossy();
+    let amovie_args =
+        CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
+            reason: "path contains null byte".to_string(),
+        })?;
+
+    let min_sec = min_duration.as_secs_f64();
+    // silencedetect=n={threshold_db}dB:d={min_sec}
+    // threshold_db is already negative (e.g. -40.0) → formats as "n=-40dB"
+    let silence_args =
+        CString::new(format!("n={threshold_db}dB:d={min_sec:.6}")).map_err(|_| {
+            DecodeError::AnalysisFailed {
+                reason: "silencedetect args contained null byte".to_string(),
+            }
+        })?;
+
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(DecodeError::AnalysisFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // 1. amovie source — reads the audio file directly.
+    let amovie_filt = ff_sys::avfilter_get_by_name(c"amovie".as_ptr());
+    if amovie_filt.is_null() {
+        bail!(graph, "filter not found: amovie");
+    }
+    let mut src_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut src_ctx,
+        amovie_filt,
+        c"silence_src".as_ptr(),
+        amovie_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("amovie create_filter failed code={ret}"));
+    }
+
+    // 2. silencedetect=n=threshold_db dB:d=min_sec — annotates frames with metadata.
+    let silence_filt = ff_sys::avfilter_get_by_name(c"silencedetect".as_ptr());
+    if silence_filt.is_null() {
+        bail!(graph, "filter not found: silencedetect");
+    }
+    let mut sd_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sd_ctx,
+        silence_filt,
+        c"silence_detect".as_ptr(),
+        silence_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("silencedetect create_filter failed code={ret}")
+        );
+    }
+
+    // 3. abuffersink — collects output frames.
+    let abuffersink_filt = ff_sys::avfilter_get_by_name(c"abuffersink".as_ptr());
+    if abuffersink_filt.is_null() {
+        bail!(graph, "filter not found: abuffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        abuffersink_filt,
+        c"silence_sink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("abuffersink create_filter failed code={ret}")
+        );
+    }
+
+    // Link: src → silencedetect → sink
+    let ret = ff_sys::avfilter_link(src_ctx, 0, sd_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link src→silencedetect failed code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(sd_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link silencedetect→sink failed code={ret}")
+        );
+    }
+
+    // Configure the graph.
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        bail!(graph, format!("avfilter_graph_config failed code={ret}"));
+    }
+
+    // Drain all frames; collect silence_start/end metadata from each frame.
+    let mut pending_start: Option<Duration> = None;
+    let mut ranges: Vec<SilenceRange> = Vec::new();
+
+    loop {
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            break;
+        }
+        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, raw_frame);
+        if ret < 0 {
+            let mut ptr = raw_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            break;
+        }
+
+        // SAFETY: `(*raw_frame).metadata` is a valid `AVDictionary*` (possibly null);
+        // `av_dict_get` handles null dictionaries safely by returning null.
+        if let Some(secs) = read_f64_meta(raw_frame, c"lavfi.silence_start".as_ptr())
+            && secs >= 0.0
+        {
+            pending_start = Some(Duration::from_secs_f64(secs));
+        }
+        if let Some(secs) = read_f64_meta(raw_frame, c"lavfi.silence_end".as_ptr())
+            && let Some(start) = pending_start.take()
+            && secs >= 0.0
+        {
+            ranges.push(SilenceRange {
+                start,
+                end: Duration::from_secs_f64(secs),
+            });
+        }
+
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+    }
+
+    // Trailing silence that reaches EOF without a silence_end marker is dropped.
+
+    let mut g = graph;
+    ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+
+    log::debug!(
+        "silence detection complete ranges={} threshold_db={threshold_db:.1} \
+         min_duration={min_sec:.3}s",
+        ranges.len()
+    );
+
+    Ok(ranges)
+}
+
+/// Reads a metadata value from `frame` by `key` and parses it as `f64`.
+/// Returns `None` when the key is absent or the value is not parseable.
+///
+/// # Safety
+///
+/// - `frame` must point to a valid, fully-initialised `AVFrame`.
+/// - `key` must be a null-terminated C string valid for the duration of the call.
+unsafe fn read_f64_meta(
+    frame: *mut ff_sys::AVFrame,
+    key: *const std::os::raw::c_char,
+) -> Option<f64> {
+    let entry = ff_sys::av_dict_get((*frame).metadata, key, std::ptr::null(), 0);
+    if entry.is_null() {
+        return None;
+    }
+    std::ffi::CStr::from_ptr((*entry).value)
+        .to_str()
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
 }
 
 // ── KeyframeEnumerator inner ──────────────────────────────────────────────────
