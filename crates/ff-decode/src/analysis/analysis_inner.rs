@@ -37,8 +37,8 @@ use crate::DecodeError;
 /// - `avfilter_link()` connects pads owned by the graph.
 /// - `avfilter_graph_config()` finalises the graph.
 /// - `av_frame_alloc()` / `av_frame_free()` manage per-frame lifetimes.
-/// - The buffersink's input link (accessed via `(*sink_ctx).inputs`) is
-///   valid after `avfilter_graph_config` succeeds.
+/// - `(*frame).time_base` is set by the filter framework inside
+///   `av_buffersink_get_frame` and is valid for the frame's lifetime.
 pub(super) unsafe fn detect_scenes_unsafe(
     path: &Path,
     threshold: f64,
@@ -148,13 +148,6 @@ pub(super) unsafe fn detect_scenes_unsafe(
         bail!(graph, format!("avfilter_graph_config failed code={ret}"));
     }
 
-    // Read the output time base from the buffersink's input link.
-    // SAFETY: After avfilter_graph_config succeeds, sink_ctx->inputs[0] is a
-    // valid, non-null AVFilterLink* owned by the graph.
-    let time_base = (*(*(*sink_ctx).inputs)).time_base;
-    let tb_num = f64::from(time_base.num);
-    let tb_den = f64::from(time_base.den);
-
     // Drain all output frames; each frame that exits the select filter
     // represents a detected scene change.
     let mut timestamps: Vec<Duration> = Vec::new();
@@ -171,7 +164,13 @@ pub(super) unsafe fn detect_scenes_unsafe(
             break;
         }
 
+        // SAFETY: `(*raw_frame).time_base` is set by the filter framework when
+        // av_buffersink_get_frame fills the frame.  `(*raw_frame).pts` is the
+        // presentation timestamp in that time base.
         let pts = (*raw_frame).pts;
+        let time_base = (*raw_frame).time_base;
+        let tb_num = f64::from(time_base.num);
+        let tb_den = f64::from(time_base.den);
         if pts != ff_sys::AV_NOPTS_VALUE && tb_den > 0.0 {
             let secs = pts as f64 * tb_num / tb_den;
             if secs >= 0.0 {
