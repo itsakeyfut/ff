@@ -3,39 +3,78 @@
 //! Tests verify:
 //! - Missing input file returns `DecodeError::AnalysisFailed`
 //! - A synthetic audio file (1s tone + 2s silence + 1s tone) yields one `SilenceRange`
-//! - The detected range has the expected start/end within ±100 ms
+//! - The detected range has the expected start/end within ±200 ms
 //! - A `min_duration` longer than the actual silence yields no ranges
 //! - Structural invariant: `range.start < range.end`
 //! - A real audio file runs without error
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
 
+use std::io::Write;
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use ff_decode::{DecodeError, SilenceDetector};
 
-/// Generates "1 s sine → 2 s silence → 1 s sine" as a WAV at `path`.
+/// Writes a minimal PCM WAV file with the layout:
+///   0–1 s : 440 Hz sine at 80% amplitude
+///   1–3 s : zeros (true silence, −∞ dBFS)
+///   3–4 s : 440 Hz sine at 80% amplitude
 ///
-/// Uses the FFmpeg CLI's `lavfi` source so no pre-committed fixture is needed.
-/// Returns `false` when FFmpeg is unavailable or the command fails (test skip).
-fn make_silence_fixture(path: &Path) -> bool {
-    std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:duration=4:sample_rate=44100",
-            "-af",
-            "volume='if(between(t,1,3),0,1)'",
-            path.to_str().unwrap_or(""),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Uses only `std::io` — no external tools or dependencies required.
+fn write_silence_fixture(path: &Path) -> std::io::Result<()> {
+    const SAMPLE_RATE: u32 = 44_100;
+    const NUM_CHANNELS: u16 = 1;
+    const BITS_PER_SAMPLE: u16 = 16;
+
+    let block_align = NUM_CHANNELS * BITS_PER_SAMPLE / 8;
+    let byte_rate = SAMPLE_RATE * u32::from(block_align);
+    let total_samples = (SAMPLE_RATE * 4) as usize; // 4 s
+    let silence_start = SAMPLE_RATE as usize; // 1 s
+    let silence_end = 3 * SAMPLE_RATE as usize; // 3 s
+
+    let mut samples: Vec<i16> = Vec::with_capacity(total_samples);
+    for i in 0..total_samples {
+        let v = if i >= silence_start && i < silence_end {
+            0i16
+        } else {
+            let t = i as f64 / f64::from(SAMPLE_RATE);
+            let s = 0.8 * 32_767.0 * (2.0 * std::f64::consts::PI * 440.0 * t).sin();
+            s as i16
+        };
+        samples.push(v);
+    }
+
+    let data_len = (samples.len() * 2) as u32;
+    let file_len = 36 + data_len; // RIFF chunk size
+
+    let mut f = std::fs::File::create(path)?;
+
+    // RIFF / WAVE header
+    f.write_all(b"RIFF")?;
+    f.write_all(&file_len.to_le_bytes())?;
+    f.write_all(b"WAVE")?;
+
+    // fmt sub-chunk (16 bytes, PCM = format code 1)
+    f.write_all(b"fmt ")?;
+    f.write_all(&16u32.to_le_bytes())?;
+    f.write_all(&1u16.to_le_bytes())?; // PCM
+    f.write_all(&NUM_CHANNELS.to_le_bytes())?;
+    f.write_all(&SAMPLE_RATE.to_le_bytes())?;
+    f.write_all(&byte_rate.to_le_bytes())?;
+    f.write_all(&block_align.to_le_bytes())?;
+    f.write_all(&BITS_PER_SAMPLE.to_le_bytes())?;
+
+    // data sub-chunk
+    f.write_all(b"data")?;
+    f.write_all(&data_len.to_le_bytes())?;
+    for s in &samples {
+        f.write_all(&s.to_le_bytes())?;
+    }
+
+    Ok(())
 }
 
 fn test_audio_path() -> std::path::PathBuf {
@@ -56,13 +95,14 @@ fn silence_detector_missing_file_should_return_analysis_failed() {
     );
 }
 
-// ── Functional tests using synthetic fixture ──────────────────────────────────
+// ── Functional tests using synthetic WAV fixture ──────────────────────────────
 
 #[test]
 fn silence_detector_should_find_silence_range() {
     let fixture = std::env::temp_dir().join("ff_decode_silence_test_find.wav");
-    if !make_silence_fixture(&fixture) {
-        println!("Skipping: ffmpeg CLI unavailable or fixture generation failed");
+
+    if write_silence_fixture(&fixture).is_err() {
+        println!("Skipping: could not write silence fixture");
         return;
     }
 
@@ -111,8 +151,9 @@ fn silence_detector_should_find_silence_range() {
 #[test]
 fn silence_detector_short_silence_should_not_be_detected() {
     let fixture = std::env::temp_dir().join("ff_decode_silence_test_short.wav");
-    if !make_silence_fixture(&fixture) {
-        println!("Skipping: ffmpeg CLI unavailable or fixture generation failed");
+
+    if write_silence_fixture(&fixture).is_err() {
+        println!("Skipping: could not write silence fixture");
         return;
     }
 
@@ -141,8 +182,9 @@ fn silence_detector_short_silence_should_not_be_detected() {
 #[test]
 fn silence_detector_range_start_should_be_before_end() {
     let fixture = std::env::temp_dir().join("ff_decode_silence_test_order.wav");
-    if !make_silence_fixture(&fixture) {
-        println!("Skipping: ffmpeg CLI unavailable or fixture generation failed");
+
+    if write_silence_fixture(&fixture).is_err() {
+        println!("Skipping: could not write silence fixture");
         return;
     }
 
