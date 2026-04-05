@@ -259,8 +259,8 @@ pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 pub use ff_filter::{
     AudioConcatenator, AudioTrack, ClipJoiner, DrawTextOptions, EqBand, FilterError, FilterGraph,
     FilterGraphBuilder, FilterStep, HwAccel, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer,
-    MultiTrackComposer, Rgb, ScaleAlgorithm, ToneMap, VideoConcatenator, VideoLayer,
-    XfadeTransition, YadifMode,
+    MultiTrackComposer, QualityMetrics, Rgb, ScaleAlgorithm, ToneMap, VideoConcatenator,
+    VideoLayer, XfadeTransition, YadifMode,
 };
 
 // ── pipeline feature ──────────────────────────────────────────────────────────

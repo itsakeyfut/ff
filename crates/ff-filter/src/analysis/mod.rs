@@ -1,8 +1,13 @@
-//! Loudness and audio analysis tools for media files.
+//! Loudness, audio analysis, and video quality metric tools for media files.
 //!
-//! This module provides [`LoudnessMeter`] for EBU R128 integrated loudness,
-//! loudness range, and true peak measurement.  All `unsafe` `FFmpeg` calls live
-//! in `analysis_inner`; users never need to write `unsafe` code.
+//! This module provides:
+//! - [`LoudnessMeter`] for EBU R128 integrated loudness, loudness range, and
+//!   true peak measurement.
+//! - [`QualityMetrics`] for computing video quality metrics (SSIM, PSNR) between
+//!   a reference and a distorted video.
+//!
+//! All `unsafe` `FFmpeg` calls live in `analysis_inner`; users never need to write
+//! `unsafe` code.
 
 // The single `unsafe` block below delegates directly to analysis_inner, where
 // all invariants are documented.  Suppressing the lint here keeps the safe API
@@ -83,6 +88,63 @@ impl LoudnessMeter {
     }
 }
 
+// ── QualityMetrics ────────────────────────────────────────────────────────────
+
+/// Computes video quality metrics between a reference and a distorted video.
+///
+/// All methods are static — there is no state to configure.
+pub struct QualityMetrics;
+
+impl QualityMetrics {
+    /// Computes the mean SSIM (Structural Similarity Index Measure) over all
+    /// frames between `reference` and `distorted`.
+    ///
+    /// Returns a value in `[0.0, 1.0]`:
+    /// - `1.0` — the inputs are frame-identical.
+    /// - `0.0` — no structural similarity.
+    ///
+    /// Uses `FFmpeg`'s `ssim` filter internally.  Both inputs must have the
+    /// same frame count; if they differ the function returns an error rather
+    /// than silently comparing only the overlapping portion.
+    ///
+    /// # Errors
+    ///
+    /// - [`FilterError::AnalysisFailed`] — either input file is not found, the
+    ///   inputs have different frame counts, or the internal filter graph fails.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_filter::QualityMetrics;
+    ///
+    /// // Compare a video against itself — should return ≈ 1.0.
+    /// let ssim = QualityMetrics::ssim("reference.mp4", "reference.mp4")?;
+    /// assert!(ssim > 0.9999);
+    /// ```
+    pub fn ssim(
+        reference: impl AsRef<Path>,
+        distorted: impl AsRef<Path>,
+    ) -> Result<f32, FilterError> {
+        let reference = reference.as_ref();
+        let distorted = distorted.as_ref();
+
+        if !reference.exists() {
+            return Err(FilterError::AnalysisFailed {
+                reason: format!("reference file not found: {}", reference.display()),
+            });
+        }
+        if !distorted.exists() {
+            return Err(FilterError::AnalysisFailed {
+                reason: format!("distorted file not found: {}", distorted.display()),
+            });
+        }
+        // SAFETY: compute_ssim_unsafe manages all raw pointer lifetimes according
+        // to the avfilter ownership rules: every allocated object is freed before
+        // returning, either in the bail! macro or in the normal cleanup path.
+        unsafe { analysis_inner::compute_ssim_unsafe(reference, distorted) }
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -95,6 +157,28 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::AnalysisFailed { .. })),
             "expected AnalysisFailed for missing file, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn quality_metrics_ssim_missing_reference_should_return_analysis_failed() {
+        let result = QualityMetrics::ssim("does_not_exist_ref.mp4", "does_not_exist_dist.mp4");
+        assert!(
+            matches!(result, Err(FilterError::AnalysisFailed { .. })),
+            "expected AnalysisFailed for missing reference, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn quality_metrics_ssim_missing_distorted_should_return_analysis_failed() {
+        // Reference exists (any existing file), distorted does not.
+        // We reuse the reference path for the reference file check.
+        // Use a path that is guaranteed to exist: the Cargo.toml for this crate.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let result = QualityMetrics::ssim(&manifest, "does_not_exist_dist_99999.mp4");
+        assert!(
+            matches!(result, Err(FilterError::AnalysisFailed { .. })),
+            "expected AnalysisFailed for missing distorted, got {result:?}"
         );
     }
 }

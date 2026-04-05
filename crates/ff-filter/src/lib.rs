@@ -36,7 +36,7 @@ pub mod error;
 mod filter_inner;
 pub mod graph;
 
-pub use analysis::{LoudnessMeter, LoudnessResult};
+pub use analysis::{LoudnessMeter, LoudnessResult, QualityMetrics};
 pub use error::FilterError;
 pub use graph::{
     AudioConcatenator, AudioTrack, ClipJoiner, DrawTextOptions, EqBand, FilterGraph,
