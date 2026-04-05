@@ -430,7 +430,7 @@ unsafe fn probe_video_frame_count(path: &Path) -> Option<i64> {
     let mut fmt_ctx = ff_sys::avformat::open_input(path).ok()?;
 
     // Ignore find_stream_info errors; partial info is still usable.
-    let _ = ff_sys::avformat_find_stream_info(fmt_ctx, std::ptr::null_mut());
+    let _ = ff_sys::avformat::find_stream_info(fmt_ctx);
 
     let nb_streams = (*fmt_ctx).nb_streams;
     let mut result: Option<i64> = None;
