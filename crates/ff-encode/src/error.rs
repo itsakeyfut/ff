@@ -149,6 +149,19 @@ pub enum EncodeError {
         /// Human-readable description of the failure.
         reason: String,
     },
+
+    /// An export preset violated a platform-specific constraint.
+    ///
+    /// Returned by [`ExportPreset::validate()`](crate::ExportPreset::validate)
+    /// when the preset's configuration conflicts with a platform rule (e.g.
+    /// fps > 60 for a YouTube preset).
+    #[error("preset constraint violated: preset={preset} reason={reason}")]
+    PresetConstraintViolation {
+        /// Name of the preset that failed validation.
+        preset: String,
+        /// Human-readable description of the violated constraint.
+        reason: String,
+    },
 }
 
 impl EncodeError {
