@@ -114,8 +114,8 @@ pub(crate) use shared::network;
 
 // Re-exports for convenience
 pub use analysis::{
-    KeyframeEnumerator, SceneDetector, SilenceDetector, SilenceRange, WaveformAnalyzer,
-    WaveformSample,
+    FrameHistogram, HistogramExtractor, KeyframeEnumerator, SceneDetector, SilenceDetector,
+    SilenceRange, WaveformAnalyzer, WaveformSample,
 };
 pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
