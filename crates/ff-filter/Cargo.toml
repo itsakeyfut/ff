@@ -20,5 +20,9 @@ ff-sys = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+ff-encode = { workspace = true }
+ff-probe  = { workspace = true }
+
 [lints]
 workspace = true
