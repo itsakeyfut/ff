@@ -60,7 +60,13 @@ pub(super) unsafe fn detect_scenes_unsafe(
         }};
     }
 
-    let path_str = path.to_string_lossy();
+    // On Windows, paths contain backslashes and a drive-letter colon (e.g.
+    // "D:\…").  FFmpeg's filter-option parser uses ":" as a key=value separator,
+    // so the colon must be escaped as "\:" and backslashes converted to "/".
+    let path_str = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let movie_args =
         CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
             reason: "path contains null byte".to_string(),
@@ -237,7 +243,10 @@ pub(super) unsafe fn detect_silence_unsafe(
         }};
     }
 
-    let path_str = path.to_string_lossy();
+    let path_str = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let amovie_args =
         CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
             reason: "path contains null byte".to_string(),
@@ -448,7 +457,10 @@ pub(super) unsafe fn detect_black_frames_unsafe(
         }};
     }
 
-    let path_str = path.to_string_lossy();
+    let path_str = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let movie_args =
         CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
             reason: "path contains null byte".to_string(),
