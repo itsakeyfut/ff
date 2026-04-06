@@ -4,6 +4,7 @@
 //!
 //! Entry points:
 //! - [`generate_sprite_sheet_unsafe`] — filter graph + PNG encode for sprite sheets
+//! - [`generate_gif_preview_unsafe`]  — two-pass palettegen + GIF encode
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -11,14 +12,15 @@
 use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
+use std::time::Duration;
 
 use ff_sys::{
-    AVCodecID_AV_CODEC_ID_PNG, AVRational, av_buffersink_get_frame, av_frame_alloc, av_frame_free,
-    av_interleaved_write_frame, av_packet_alloc, av_packet_free, av_packet_unref, av_write_trailer,
-    avcodec, avfilter_get_by_name, avfilter_graph_alloc, avfilter_graph_config,
-    avfilter_graph_create_filter, avfilter_graph_free, avfilter_link, avformat,
-    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
-    avformat_write_header,
+    AVCodecID_AV_CODEC_ID_GIF, AVCodecID_AV_CODEC_ID_PNG, AVRational, av_buffersink_get_frame,
+    av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_opt_set, av_packet_alloc,
+    av_packet_free, av_packet_unref, av_write_trailer, avcodec, avfilter_get_by_name,
+    avfilter_graph_alloc, avfilter_graph_config, avfilter_graph_create_filter, avfilter_graph_free,
+    avfilter_link, avformat, avformat_alloc_output_context2, avformat_free_context,
+    avformat_new_stream, avformat_write_header,
 };
 
 use crate::EncodeError;
@@ -456,4 +458,743 @@ unsafe fn drain_packets(
         }
     }
     Ok(())
+}
+
+// ── GifPreview implementation ─────────────────────────────────────────────────
+
+/// Generates an animated GIF from `input` using a two-pass palettegen approach.
+///
+/// Pass 1: builds a palette from the time range via
+///   `movie → trim → fps → scale → palettegen → buffersink`
+///   and saves it to a temp PNG file.
+///
+/// Pass 2: composes the GIF via
+///   `movie_vid / movie_pal → trim → fps → scale / paletteuse → buffersink`
+///   then encodes each frame with the GIF encoder.
+///
+/// # Safety
+///
+/// All raw pointer operations follow avfilter and avcodec ownership rules.
+/// Every allocation is freed on every exit path.
+pub(super) unsafe fn generate_gif_preview_unsafe(
+    input: &Path,
+    start: Duration,
+    duration: Duration,
+    fps: f64,
+    width: u32,
+    output: &Path,
+) -> Result<(), EncodeError> {
+    let start_sec = start.as_secs_f64();
+    let dur_sec = duration.as_secs_f64();
+
+    // Temp palette file uses the process ID to avoid collisions.
+    let palette_path =
+        std::env::temp_dir().join(format!("ff_gif_palette_{}.png", std::process::id()));
+
+    // ── Pass 1: generate palette ──────────────────────────────────────────────
+    let palette_result =
+        generate_palette_unsafe(input, start_sec, dur_sec, fps, width, &palette_path);
+
+    if let Err(e) = palette_result {
+        let _ = std::fs::remove_file(&palette_path);
+        return Err(e);
+    }
+
+    // ── Pass 2: encode GIF ────────────────────────────────────────────────────
+    let gif_result =
+        encode_gif_unsafe(input, start_sec, dur_sec, fps, width, &palette_path, output);
+
+    // Always clean up the temp palette file.
+    let _ = std::fs::remove_file(&palette_path);
+
+    gif_result?;
+
+    log::info!(
+        "gif preview generated start={start:?} duration={duration:?} output={}",
+        output.display()
+    );
+
+    Ok(())
+}
+
+/// Pass 1: builds filter graph to generate a palette and saves it to `palette_path`.
+///
+/// Filter chain: `movie → trim → fps → scale → palettegen → buffersink`
+///
+/// # Safety
+///
+/// All FFmpeg pointers are null-checked and freed on every exit path.
+unsafe fn generate_palette_unsafe(
+    input: &Path,
+    start_sec: f64,
+    dur_sec: f64,
+    fps: f64,
+    width: u32,
+    palette_path: &Path,
+) -> Result<(), EncodeError> {
+    macro_rules! bail {
+        ($graph:expr, $reason:expr) => {{
+            let mut g = $graph;
+            avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(EncodeError::MediaOperationFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let path_str = input.to_string_lossy();
+    let movie_args = CString::new(format!("filename={path_str}")).map_err(|_| {
+        EncodeError::MediaOperationFailed {
+            reason: "input path contains null byte".to_string(),
+        }
+    })?;
+    let trim_args =
+        CString::new(format!("start={start_sec:.6}:duration={dur_sec:.6}")).map_err(|_| {
+            EncodeError::MediaOperationFailed {
+                reason: "trim args contain null byte".to_string(),
+            }
+        })?;
+    let fps_cstr =
+        CString::new(format!("{fps:.4}")).map_err(|_| EncodeError::MediaOperationFailed {
+            reason: "fps arg contains null byte".to_string(),
+        })?;
+    let scale_args = CString::new(format!("{width}:-2:flags=lanczos")).map_err(|_| {
+        EncodeError::MediaOperationFailed {
+            reason: "scale args contain null byte".to_string(),
+        }
+    })?;
+
+    let graph = avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(EncodeError::MediaOperationFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // 1. movie source
+    let movie_filt = avfilter_get_by_name(c"movie".as_ptr());
+    if movie_filt.is_null() {
+        bail!(graph, "filter not found: movie");
+    }
+    let mut movie_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut movie_ctx,
+        movie_filt,
+        c"pal_movie".as_ptr(),
+        movie_args.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("movie create_filter failed code={ret}"));
+    }
+
+    // 2. trim filter
+    let trim_filt = avfilter_get_by_name(c"trim".as_ptr());
+    if trim_filt.is_null() {
+        bail!(graph, "filter not found: trim");
+    }
+    let mut trim_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut trim_ctx,
+        trim_filt,
+        c"pal_trim".as_ptr(),
+        trim_args.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("trim create_filter failed code={ret}"));
+    }
+
+    // 3. fps filter
+    let fps_filt = avfilter_get_by_name(c"fps".as_ptr());
+    if fps_filt.is_null() {
+        bail!(graph, "filter not found: fps");
+    }
+    let mut fps_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut fps_ctx,
+        fps_filt,
+        c"pal_fps".as_ptr(),
+        fps_cstr.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("fps create_filter failed code={ret}"));
+    }
+
+    // 4. scale filter
+    let scale_filt = avfilter_get_by_name(c"scale".as_ptr());
+    if scale_filt.is_null() {
+        bail!(graph, "filter not found: scale");
+    }
+    let mut scale_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut scale_ctx,
+        scale_filt,
+        c"pal_scale".as_ptr(),
+        scale_args.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("scale create_filter failed code={ret}"));
+    }
+
+    // 5. palettegen filter
+    let palettegen_filt = avfilter_get_by_name(c"palettegen".as_ptr());
+    if palettegen_filt.is_null() {
+        bail!(graph, "filter not found: palettegen");
+    }
+    let mut palettegen_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut palettegen_ctx,
+        palettegen_filt,
+        c"pal_palettegen".as_ptr(),
+        c"stats_mode=diff".as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("palettegen create_filter failed code={ret}"));
+    }
+
+    // 6. buffersink
+    let sink_filt = avfilter_get_by_name(c"buffersink".as_ptr());
+    if sink_filt.is_null() {
+        bail!(graph, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        sink_filt,
+        c"pal_sink".as_ptr(),
+        ptr::null_mut(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("buffersink create_filter failed code={ret}"));
+    }
+
+    // Links: movie → trim → fps → scale → palettegen → buffersink
+    let ret = avfilter_link(movie_ctx, 0, trim_ctx, 0);
+    if ret < 0 {
+        bail!(graph, format!("avfilter_link movie→trim failed code={ret}"));
+    }
+    let ret = avfilter_link(trim_ctx, 0, fps_ctx, 0);
+    if ret < 0 {
+        bail!(graph, format!("avfilter_link trim→fps failed code={ret}"));
+    }
+    let ret = avfilter_link(fps_ctx, 0, scale_ctx, 0);
+    if ret < 0 {
+        bail!(graph, format!("avfilter_link fps→scale failed code={ret}"));
+    }
+    let ret = avfilter_link(scale_ctx, 0, palettegen_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link scale→palettegen failed code={ret}")
+        );
+    }
+    let ret = avfilter_link(palettegen_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link palettegen→sink failed code={ret}")
+        );
+    }
+
+    let ret = avfilter_graph_config(graph, ptr::null_mut());
+    if ret < 0 {
+        bail!(graph, format!("avfilter_graph_config failed code={ret}"));
+    }
+
+    // Drain until we get the palette frame (palettegen emits one frame on EOF).
+    let mut palette_frame: *mut ff_sys::AVFrame = ptr::null_mut();
+    loop {
+        let candidate = av_frame_alloc();
+        if candidate.is_null() {
+            break;
+        }
+        let ret = av_buffersink_get_frame(sink_ctx, candidate);
+        if ret >= 0 {
+            // Free any previous candidate; keep this one.
+            if !palette_frame.is_null() {
+                let mut prev = palette_frame;
+                av_frame_free(std::ptr::addr_of_mut!(prev));
+            }
+            palette_frame = candidate;
+        } else {
+            let mut c = candidate;
+            av_frame_free(std::ptr::addr_of_mut!(c));
+            break;
+        }
+    }
+
+    let mut g = graph;
+    avfilter_graph_free(std::ptr::addr_of_mut!(g));
+
+    if palette_frame.is_null() {
+        return Err(EncodeError::MediaOperationFailed {
+            reason: "palettegen produced no palette frame".to_string(),
+        });
+    }
+
+    // Save the palette frame to disk as PNG.
+    let encode_result = encode_frame_as_png(palette_frame, palette_path, 0, 0, 0, 0);
+    let mut f = palette_frame;
+    av_frame_free(std::ptr::addr_of_mut!(f));
+    encode_result
+}
+
+/// Pass 2: composes the GIF from the video + palette and encodes it.
+///
+/// Filter chain:
+/// ```text
+/// movie_vid → trim → fps → scale → paletteuse[0]
+/// movie_pal                      → paletteuse[1]
+/// paletteuse → buffersink
+/// ```
+///
+/// # Safety
+///
+/// All FFmpeg pointers are null-checked and freed on every exit path.
+unsafe fn encode_gif_unsafe(
+    input: &Path,
+    start_sec: f64,
+    dur_sec: f64,
+    fps: f64,
+    width: u32,
+    palette_path: &Path,
+    output: &Path,
+) -> Result<(), EncodeError> {
+    macro_rules! bail {
+        ($graph:expr, $reason:expr) => {{
+            let mut g = $graph;
+            avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(EncodeError::MediaOperationFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let path_str = input.to_string_lossy();
+    let movie_vid_args = CString::new(format!("filename={path_str}")).map_err(|_| {
+        EncodeError::MediaOperationFailed {
+            reason: "input path contains null byte".to_string(),
+        }
+    })?;
+    let pal_str = palette_path.to_string_lossy();
+    let movie_pal_args = CString::new(format!("filename={pal_str}")).map_err(|_| {
+        EncodeError::MediaOperationFailed {
+            reason: "palette path contains null byte".to_string(),
+        }
+    })?;
+    let trim_args =
+        CString::new(format!("start={start_sec:.6}:duration={dur_sec:.6}")).map_err(|_| {
+            EncodeError::MediaOperationFailed {
+                reason: "trim args contain null byte".to_string(),
+            }
+        })?;
+    let fps_cstr =
+        CString::new(format!("{fps:.4}")).map_err(|_| EncodeError::MediaOperationFailed {
+            reason: "fps arg contains null byte".to_string(),
+        })?;
+    let scale_args = CString::new(format!("{width}:-2:flags=lanczos")).map_err(|_| {
+        EncodeError::MediaOperationFailed {
+            reason: "scale args contain null byte".to_string(),
+        }
+    })?;
+
+    let graph = avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(EncodeError::MediaOperationFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // 1. movie source for video
+    let movie_filt = avfilter_get_by_name(c"movie".as_ptr());
+    if movie_filt.is_null() {
+        bail!(graph, "filter not found: movie");
+    }
+    let mut movie_vid_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut movie_vid_ctx,
+        movie_filt,
+        c"gif_movie_vid".as_ptr(),
+        movie_vid_args.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("movie_vid create_filter failed code={ret}"));
+    }
+
+    // 2. movie source for palette PNG
+    let mut movie_pal_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut movie_pal_ctx,
+        movie_filt,
+        c"gif_movie_pal".as_ptr(),
+        movie_pal_args.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("movie_pal create_filter failed code={ret}"));
+    }
+
+    // 3. trim
+    let trim_filt = avfilter_get_by_name(c"trim".as_ptr());
+    if trim_filt.is_null() {
+        bail!(graph, "filter not found: trim");
+    }
+    let mut trim_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut trim_ctx,
+        trim_filt,
+        c"gif_trim".as_ptr(),
+        trim_args.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("trim create_filter failed code={ret}"));
+    }
+
+    // 4. fps
+    let fps_filt = avfilter_get_by_name(c"fps".as_ptr());
+    if fps_filt.is_null() {
+        bail!(graph, "filter not found: fps");
+    }
+    let mut fps_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut fps_ctx,
+        fps_filt,
+        c"gif_fps".as_ptr(),
+        fps_cstr.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("fps create_filter failed code={ret}"));
+    }
+
+    // 5. scale
+    let scale_filt = avfilter_get_by_name(c"scale".as_ptr());
+    if scale_filt.is_null() {
+        bail!(graph, "filter not found: scale");
+    }
+    let mut scale_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut scale_ctx,
+        scale_filt,
+        c"gif_scale".as_ptr(),
+        scale_args.as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("scale create_filter failed code={ret}"));
+    }
+
+    // 6. paletteuse (2 input pads: pad 0 = video, pad 1 = palette)
+    let paletteuse_filt = avfilter_get_by_name(c"paletteuse".as_ptr());
+    if paletteuse_filt.is_null() {
+        bail!(graph, "filter not found: paletteuse");
+    }
+    let mut paletteuse_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut paletteuse_ctx,
+        paletteuse_filt,
+        c"gif_paletteuse".as_ptr(),
+        c"dither=bayer:bayer_scale=5:diff_mode=rectangle".as_ptr(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("paletteuse create_filter failed code={ret}"));
+    }
+
+    // 7. buffersink
+    let sink_filt = avfilter_get_by_name(c"buffersink".as_ptr());
+    if sink_filt.is_null() {
+        bail!(graph, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = ptr::null_mut();
+    let ret = avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        sink_filt,
+        c"gif_sink".as_ptr(),
+        ptr::null_mut(),
+        ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("buffersink create_filter failed code={ret}"));
+    }
+
+    // Links:
+    //   movie_vid → trim → fps → scale → paletteuse[0]
+    //   movie_pal                       → paletteuse[1]
+    //   paletteuse → buffersink
+    let ret = avfilter_link(movie_vid_ctx, 0, trim_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link movie_vid→trim failed code={ret}")
+        );
+    }
+    let ret = avfilter_link(trim_ctx, 0, fps_ctx, 0);
+    if ret < 0 {
+        bail!(graph, format!("avfilter_link trim→fps failed code={ret}"));
+    }
+    let ret = avfilter_link(fps_ctx, 0, scale_ctx, 0);
+    if ret < 0 {
+        bail!(graph, format!("avfilter_link fps→scale failed code={ret}"));
+    }
+    let ret = avfilter_link(scale_ctx, 0, paletteuse_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link scale→paletteuse[0] failed code={ret}")
+        );
+    }
+    let ret = avfilter_link(movie_pal_ctx, 0, paletteuse_ctx, 1);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link movie_pal→paletteuse[1] failed code={ret}")
+        );
+    }
+    let ret = avfilter_link(paletteuse_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link paletteuse→sink failed code={ret}")
+        );
+    }
+
+    let ret = avfilter_graph_config(graph, ptr::null_mut());
+    if ret < 0 {
+        bail!(graph, format!("avfilter_graph_config failed code={ret}"));
+    }
+
+    // ── Open GIF output ───────────────────────────────────────────────────────
+    let mut fmt_ctx: *mut ff_sys::AVFormatContext = ptr::null_mut();
+    let c_path = CString::new(
+        output
+            .to_str()
+            .ok_or_else(|| EncodeError::CannotCreateFile {
+                path: output.to_path_buf(),
+            })?,
+    )
+    .map_err(|_| EncodeError::CannotCreateFile {
+        path: output.to_path_buf(),
+    })?;
+
+    let ret = avformat_alloc_output_context2(
+        &mut fmt_ctx,
+        ptr::null_mut(),
+        c"gif".as_ptr(),
+        c_path.as_ptr(),
+    );
+    if ret < 0 || fmt_ctx.is_null() {
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(EncodeError::from_ffmpeg_error(ret));
+    }
+
+    let stream = avformat_new_stream(fmt_ctx, ptr::null());
+    if stream.is_null() {
+        avformat_free_context(fmt_ctx);
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(EncodeError::Ffmpeg {
+            code: 0,
+            message: "avformat_new_stream failed".to_string(),
+        });
+    }
+
+    let codec = avcodec::find_encoder(AVCodecID_AV_CODEC_ID_GIF).ok_or_else(|| {
+        EncodeError::UnsupportedCodec {
+            codec: "gif".to_string(),
+        }
+    })?;
+
+    let codec_ctx = match avcodec::alloc_context3(codec) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            avformat_free_context(fmt_ctx);
+            let mut g = graph;
+            avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(EncodeError::from_ffmpeg_error(e));
+        }
+    };
+
+    // Pull a first frame to discover width/height/pix_fmt from the filter output.
+    let first_frame = av_frame_alloc();
+    if first_frame.is_null() {
+        avcodec::free_context(&mut { codec_ctx });
+        avformat_free_context(fmt_ctx);
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(EncodeError::Ffmpeg {
+            code: 0,
+            message: "av_frame_alloc failed".to_string(),
+        });
+    }
+    let ret = av_buffersink_get_frame(sink_ctx, first_frame);
+    if ret < 0 {
+        let mut f = first_frame;
+        av_frame_free(std::ptr::addr_of_mut!(f));
+        avcodec::free_context(&mut { codec_ctx });
+        avformat_free_context(fmt_ctx);
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(EncodeError::MediaOperationFailed {
+            reason: format!("no frames from GIF filter graph code={ret}"),
+        });
+    }
+
+    let out_width = (*first_frame).width;
+    let out_height = (*first_frame).height;
+    let out_pix_fmt = (*first_frame).format;
+
+    // Configure GIF encoder.
+    // SAFETY: codec_ctx is non-null.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fps_int = fps.round().max(1.0) as u32;
+    (*codec_ctx).width = out_width;
+    (*codec_ctx).height = out_height;
+    (*codec_ctx).time_base = AVRational {
+        num: 1,
+        den: fps_int as i32,
+    };
+    (*codec_ctx).pix_fmt = out_pix_fmt;
+
+    // Set GIF to loop infinitely (option "loop" = 0).
+    // SAFETY: priv_data is valid after alloc_context3; av_opt_set handles unknown options gracefully.
+    let _ = av_opt_set(
+        (*codec_ctx).priv_data.cast(),
+        c"loop".as_ptr(),
+        c"0".as_ptr(),
+        0,
+    );
+
+    if let Err(e) = avcodec::open2(codec_ctx, codec, ptr::null_mut()) {
+        let mut f = first_frame;
+        av_frame_free(std::ptr::addr_of_mut!(f));
+        avcodec::free_context(&mut { codec_ctx });
+        avformat_free_context(fmt_ctx);
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(EncodeError::from_ffmpeg_error(e));
+    }
+
+    // Copy codec parameters to stream.
+    // SAFETY: stream, codec_ctx, codecpar are non-null.
+    let par = (*stream).codecpar;
+    (*par).codec_id = AVCodecID_AV_CODEC_ID_GIF;
+    (*par).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_VIDEO;
+    (*par).width = out_width;
+    (*par).height = out_height;
+    (*par).format = out_pix_fmt;
+
+    // Open output IO and write header.
+    let io_ctx = match avformat::open_output(output, avformat::avio_flags::WRITE) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            let mut f = first_frame;
+            av_frame_free(std::ptr::addr_of_mut!(f));
+            avcodec::free_context(&mut { codec_ctx });
+            avformat_free_context(fmt_ctx);
+            let mut g = graph;
+            avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(EncodeError::from_ffmpeg_error(e));
+        }
+    };
+    (*fmt_ctx).pb = io_ctx;
+
+    let ret = avformat_write_header(fmt_ctx, ptr::null_mut());
+    if ret < 0 {
+        avformat::close_output(&mut (*fmt_ctx).pb);
+        let mut f = first_frame;
+        av_frame_free(std::ptr::addr_of_mut!(f));
+        avcodec::free_context(&mut { codec_ctx });
+        avformat_free_context(fmt_ctx);
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(EncodeError::from_ffmpeg_error(ret));
+    }
+
+    let packet = av_packet_alloc();
+    if packet.is_null() {
+        av_write_trailer(fmt_ctx);
+        avformat::close_output(&mut (*fmt_ctx).pb);
+        let mut f = first_frame;
+        av_frame_free(std::ptr::addr_of_mut!(f));
+        avcodec::free_context(&mut { codec_ctx });
+        avformat_free_context(fmt_ctx);
+        let mut g = graph;
+        avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(EncodeError::Ffmpeg {
+            code: 0,
+            message: "av_packet_alloc failed".to_string(),
+        });
+    }
+
+    // ── Encode all frames ─────────────────────────────────────────────────────
+    let encode_result = (|| -> Result<(), EncodeError> {
+        let mut frame_counter: i64 = 0;
+
+        // Encode the first frame we already pulled.
+        (*first_frame).pts = frame_counter;
+        frame_counter += 1;
+        avcodec::send_frame(codec_ctx, first_frame).map_err(EncodeError::from_ffmpeg_error)?;
+        drain_packets(codec_ctx, fmt_ctx, packet, false)?;
+
+        // Pull and encode remaining frames.
+        loop {
+            let frame = av_frame_alloc();
+            if frame.is_null() {
+                break;
+            }
+            let ret = av_buffersink_get_frame(sink_ctx, frame);
+            if ret < 0 {
+                let mut f = frame;
+                av_frame_free(std::ptr::addr_of_mut!(f));
+                break;
+            }
+            (*frame).pts = frame_counter;
+            frame_counter += 1;
+            let send_result =
+                avcodec::send_frame(codec_ctx, frame).map_err(EncodeError::from_ffmpeg_error);
+            let mut f = frame;
+            av_frame_free(std::ptr::addr_of_mut!(f));
+            send_result?;
+            drain_packets(codec_ctx, fmt_ctx, packet, false)?;
+        }
+
+        // Flush encoder.
+        avcodec::send_frame(codec_ctx, ptr::null()).map_err(EncodeError::from_ffmpeg_error)?;
+        drain_packets(codec_ctx, fmt_ctx, packet, true)?;
+        Ok(())
+    })();
+
+    av_write_trailer(fmt_ctx);
+    avformat::close_output(&mut (*fmt_ctx).pb);
+    av_packet_free(&mut { packet });
+    let mut f = first_frame;
+    av_frame_free(std::ptr::addr_of_mut!(f));
+    avcodec::free_context(&mut { codec_ctx });
+    avformat_free_context(fmt_ctx);
+    let mut g = graph;
+    avfilter_graph_free(std::ptr::addr_of_mut!(g));
+
+    encode_result
 }

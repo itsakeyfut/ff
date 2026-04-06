@@ -243,6 +243,9 @@ pub const AVCodecID_AV_CODEC_ID_TIFF: AVCodecID = 90;
 pub const AVCodecID_AV_CODEC_ID_WEBP: AVCodecID = 219;
 pub const AVCodecID_AV_CODEC_ID_EXR: AVCodecID = 178;
 
+// AVCodecID — animation
+pub const AVCodecID_AV_CODEC_ID_GIF: AVCodecID = 97;
+
 // AVCodecID — subtitle
 pub const AVCodecID_AV_CODEC_ID_DVB_SUBTITLE: AVCodecID = 94209;
 pub const AVCodecID_AV_CODEC_ID_SSA: AVCodecID = 94212;
