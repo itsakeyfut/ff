@@ -105,6 +105,7 @@ pub mod analysis;
 pub(crate) mod async_decoder;
 pub mod audio;
 pub mod error;
+pub mod extract;
 pub mod image;
 mod shared;
 pub mod video;
@@ -119,6 +120,7 @@ pub use analysis::{
 };
 pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
+pub use extract::FrameExtractor;
 pub use ff_common::{FramePool, PooledBuffer};
 pub use ff_format::ContainerInfo;
 pub use image::{ImageDecoder, ImageDecoderBuilder};
