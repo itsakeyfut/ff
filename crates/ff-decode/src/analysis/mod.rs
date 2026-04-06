@@ -428,7 +428,7 @@ pub struct FrameHistogram {
 ///
 /// Decodes the input video via [`VideoDecoder`] with `RGB24` output conversion
 /// so that histogram accumulation is a simple one-pass loop with no additional
-/// format dispatch.  FFmpeg's `histogram` filter is deliberately **not** used
+/// format dispatch.  `FFmpeg`'s `histogram` filter is deliberately **not** used
 /// because it produces video output rather than structured data.
 ///
 /// # Examples
@@ -510,10 +510,10 @@ impl HistogramExtractor {
         let mut frame_index: u32 = 0;
 
         while let Some(frame) = decoder.decode_one()? {
-            if frame_index % self.interval_frames == 0 {
-                if let Some(hist) = compute_rgb24_histogram(&frame) {
-                    results.push(hist);
-                }
+            if frame_index.is_multiple_of(self.interval_frames)
+                && let Some(hist) = compute_rgb24_histogram(&frame)
+            {
+                results.push(hist);
             }
             frame_index += 1;
         }
@@ -547,17 +547,21 @@ fn compute_rgb24_histogram(frame: &ff_format::VideoFrame) -> Option<FrameHistogr
         let row_start = row * stride;
         for col in 0..width {
             let offset = row_start + col * 3;
-            let rv = usize::from(plane[offset]);
-            let gv = usize::from(plane[offset + 1]);
-            let bv = usize::from(plane[offset + 2]);
+            let rv = plane[offset];
+            let gv = plane[offset + 1];
+            let bv = plane[offset + 2];
+            // f32 can represent all u8 values exactly (mantissa is 23 bits, u8 needs only 8).
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let lv = (0.299_f32
-                .mul_add(rv as f32, 0.587_f32.mul_add(gv as f32, 0.114 * bv as f32))
+                .mul_add(
+                    f32::from(rv),
+                    0.587_f32.mul_add(f32::from(gv), 0.114 * f32::from(bv)),
+                )
                 .round() as usize)
                 .min(255);
-            r[rv] += 1;
-            g[gv] += 1;
-            b[bv] += 1;
+            r[usize::from(rv)] += 1;
+            g[usize::from(gv)] += 1;
+            b[usize::from(bv)] += 1;
             luma[lv] += 1;
         }
     }
