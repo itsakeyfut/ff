@@ -235,6 +235,7 @@ pub const AVCodecID_AV_CODEC_ID_VP9: AVCodecID = 167;
 pub const AVCodecID_AV_CODEC_ID_HEVC: AVCodecID = 173;
 pub const AVCodecID_AV_CODEC_ID_AV1: AVCodecID = 226;
 pub const AVCodecID_AV_CODEC_ID_DNXHD: AVCodecID = 99;
+pub const AVCodecID_AV_CODEC_ID_FFV1: AVCodecID = 33;
 
 // AVCodecID — image (still image)
 pub const AVCodecID_AV_CODEC_ID_PNG: AVCodecID = 61;
