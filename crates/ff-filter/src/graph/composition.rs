@@ -225,7 +225,15 @@ unsafe fn build_video_composition(
     let layer_count = layers.len();
 
     for (idx, layer) in layers.iter().enumerate() {
-        let path = layer.source.to_string_lossy();
+        // On Windows, paths contain backslashes and a drive-letter colon
+        // (e.g. "D:\…").  FFmpeg's filter-option parser uses ":" as a
+        // key=value separator, so the colon must be escaped as "\:".
+        // Forward-slashes are safe on all platforms.
+        let path = layer
+            .source
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace(':', "\\:");
         let is_last = idx == layer_count - 1;
 
         // ── movie= source ─────────────────────────────────────────────────────
@@ -650,7 +658,11 @@ unsafe fn build_audio_mix(
     let mut end_ctxs: Vec<*mut ff_sys::AVFilterContext> = Vec::with_capacity(track_count);
 
     for (idx, track) in tracks.iter().enumerate() {
-        let path = track.source.to_string_lossy();
+        let path = track
+            .source
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace(':', "\\:");
 
         // ── amovie= source ────────────────────────────────────────────────────
         let amovie_filter = ff_sys::avfilter_get_by_name(c"amovie".as_ptr());
@@ -1060,7 +1072,10 @@ unsafe fn build_video_concat(
     let mut end_ctxs: Vec<*mut ff_sys::AVFilterContext> = Vec::with_capacity(clip_count);
 
     for (idx, clip) in clips.iter().enumerate() {
-        let path = clip.to_string_lossy();
+        let path = clip
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace(':', "\\:");
 
         // ── movie= source ─────────────────────────────────────────────────────
         let movie_filter = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
@@ -1313,7 +1328,10 @@ unsafe fn build_audio_concat(
     let mut end_ctxs: Vec<*mut ff_sys::AVFilterContext> = Vec::with_capacity(clip_count);
 
     for (idx, clip) in clips.iter().enumerate() {
-        let path = clip.to_string_lossy();
+        let path = clip
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace(':', "\\:");
 
         // ── amovie= source ────────────────────────────────────────────────────
         let amovie_filter = ff_sys::avfilter_get_by_name(c"amovie".as_ptr());
