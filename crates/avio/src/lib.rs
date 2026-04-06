@@ -222,7 +222,8 @@ pub use ff_common::VecPool;
 pub use ff_decode::{
     AudioDecoder, BlackFrameDetector, DecodeError, FrameExtractor, FrameHistogram, FramePool,
     HardwareAccel, HistogramExtractor, ImageDecoder, KeyframeEnumerator, SceneDetector, SeekMode,
-    SilenceDetector, SilenceRange, VideoDecoder, WaveformAnalyzer, WaveformSample,
+    SilenceDetector, SilenceRange, ThumbnailSelector, VideoDecoder, WaveformAnalyzer,
+    WaveformSample,
 };
 
 // ── encode feature ────────────────────────────────────────────────────────────

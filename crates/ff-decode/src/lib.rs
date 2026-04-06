@@ -120,7 +120,7 @@ pub use analysis::{
 };
 pub use audio::{AudioDecoder, AudioDecoderBuilder};
 pub use error::DecodeError;
-pub use extract::FrameExtractor;
+pub use extract::{FrameExtractor, ThumbnailSelector};
 pub use ff_common::{FramePool, PooledBuffer};
 pub use ff_format::ContainerInfo;
 pub use image::{ImageDecoder, ImageDecoderBuilder};
