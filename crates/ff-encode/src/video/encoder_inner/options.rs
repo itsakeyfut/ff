@@ -6,13 +6,14 @@
 use super::{
     AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3,
     AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD,
-    AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FLAC,
-    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MJPEG,
-    AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO, AVCodecID_AV_CODEC_ID_MPEG4,
-    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
-    AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES,
-    AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AudioCodec,
-    CString, EncodeError, VideoCodec, VideoEncoderInner, avcodec,
+    AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FFV1,
+    AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
+    AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
+    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS,
+    AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG,
+    AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8,
+    AVCodecID_AV_CODEC_ID_VP9, AudioCodec, CString, EncodeError, VideoCodec, VideoEncoderInner,
+    avcodec,
 };
 
 /// Convert VideoCodec to FFmpeg AVCodecID.
@@ -30,6 +31,7 @@ pub(super) fn codec_to_id(codec: VideoCodec) -> AVCodecID {
         VideoCodec::Mpeg2 => AVCodecID_AV_CODEC_ID_MPEG2VIDEO,
         VideoCodec::Mjpeg => AVCodecID_AV_CODEC_ID_MJPEG,
         VideoCodec::Png => AVCodecID_AV_CODEC_ID_PNG,
+        VideoCodec::Ffv1 => AVCodecID_AV_CODEC_ID_FFV1,
         _ => AVCodecID_AV_CODEC_ID_NONE,
     }
 }

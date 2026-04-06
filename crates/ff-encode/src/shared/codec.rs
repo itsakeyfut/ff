@@ -49,12 +49,14 @@ impl VideoCodecEncodeExt for VideoCodec {
                 | VideoCodec::Mpeg4
                 | VideoCodec::ProRes
                 | VideoCodec::DnxHd
+                | VideoCodec::Ffv1
         )
     }
 
     fn default_extension(&self) -> &'static str {
         match self {
             VideoCodec::Vp9 | VideoCodec::Av1 => "webm",
+            VideoCodec::Ffv1 => "mkv",
             _ => "mp4",
         }
     }

@@ -61,6 +61,8 @@ pub enum VideoCodec {
     Mjpeg,
     /// PNG - lossless image codec, used for image sequence output
     Png,
+    /// FFV1 - lossless video codec for archival use
+    Ffv1,
     /// Unknown or unsupported codec
     Unknown,
 }
@@ -90,6 +92,7 @@ impl VideoCodec {
             Self::Mpeg2 => "mpeg2video",
             Self::Mjpeg => "mjpeg",
             Self::Png => "png",
+            Self::Ffv1 => "ffv1",
             Self::Unknown => "unknown",
         }
     }
@@ -119,6 +122,7 @@ impl VideoCodec {
             Self::Mpeg2 => "MPEG-2",
             Self::Mjpeg => "Motion JPEG",
             Self::Png => "PNG",
+            Self::Ffv1 => "FFV1",
             Self::Unknown => "Unknown",
         }
     }
