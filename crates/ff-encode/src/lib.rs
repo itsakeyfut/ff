@@ -210,7 +210,7 @@ pub use audio::{
 pub use error::EncodeError;
 pub use image::{ImageEncoder, ImageEncoderBuilder};
 pub use media_ops::{AudioAdder, AudioExtractor, AudioReplacement};
-pub use preview::SpriteSheet;
+pub use preview::{GifPreview, SpriteSheet};
 pub use shared::{
     AudioCodec, BitrateMode, CRF_MAX, EncodeProgress, EncodeProgressCallback, HardwareEncoder,
     OutputContainer, Preset, VideoCodec, VideoCodecEncodeExt,
