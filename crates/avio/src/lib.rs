@@ -220,9 +220,9 @@ pub use ff_probe::{ProbeError, open};
 pub use ff_common::VecPool;
 #[cfg(feature = "decode")]
 pub use ff_decode::{
-    AudioDecoder, DecodeError, FrameHistogram, FramePool, HardwareAccel, HistogramExtractor,
-    ImageDecoder, KeyframeEnumerator, SceneDetector, SeekMode, SilenceDetector, SilenceRange,
-    VideoDecoder, WaveformAnalyzer, WaveformSample,
+    AudioDecoder, BlackFrameDetector, DecodeError, FrameHistogram, FramePool, HardwareAccel,
+    HistogramExtractor, ImageDecoder, KeyframeEnumerator, SceneDetector, SeekMode, SilenceDetector,
+    SilenceRange, VideoDecoder, WaveformAnalyzer, WaveformSample,
 };
 
 // ── encode feature ────────────────────────────────────────────────────────────
