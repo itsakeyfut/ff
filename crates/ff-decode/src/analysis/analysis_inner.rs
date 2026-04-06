@@ -9,6 +9,7 @@
 //! - [`detect_scenes_unsafe`] — `SceneDetector`
 //! - [`detect_silence_unsafe`] — `SilenceDetector`
 //! - [`enumerate_keyframes_unsafe`] — `KeyframeEnumerator`
+//! - [`detect_black_frames_unsafe`] — `BlackFrameDetector`
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -411,6 +412,179 @@ unsafe fn read_f64_meta(
         .to_str()
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
+}
+
+// ── BlackFrameDetector inner ──────────────────────────────────────────────────
+
+/// Detects black intervals in `path` using the filter graph:
+///
+/// `movie=filename=path → blackdetect=d=0.1:pic_th={threshold} → buffersink`
+///
+/// Drains all output frames, reading `lavfi.black_start` from each frame's
+/// metadata.  Returns one [`Duration`] per detected black interval start.
+///
+/// # Safety
+///
+/// All raw pointer operations follow the avfilter ownership rules:
+/// - `avfilter_graph_alloc()` returns an owned pointer freed via
+///   `avfilter_graph_free()` on error or after draining.
+/// - `avfilter_graph_create_filter()` adds contexts owned by the graph.
+/// - `avfilter_link()` connects pads owned by the graph.
+/// - `avfilter_graph_config()` finalises the graph.
+/// - `av_frame_alloc()` / `av_frame_free()` manage per-frame lifetimes.
+/// - `(*frame).metadata` is a valid `AVDictionary*` (may be null); `av_dict_get`
+///   handles null dictionaries safely by returning null.
+pub(super) unsafe fn detect_black_frames_unsafe(
+    path: &Path,
+    threshold: f64,
+) -> Result<Vec<Duration>, DecodeError> {
+    macro_rules! bail {
+        ($graph:ident, $reason:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(DecodeError::AnalysisFailed {
+                reason: format!("{}", $reason),
+            });
+        }};
+    }
+
+    let path_str = path.to_string_lossy();
+    let movie_args =
+        CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
+            reason: "path contains null byte".to_string(),
+        })?;
+
+    // blackdetect=d=0.1:pic_th={threshold}
+    //   d     — minimum black-interval duration (0.1 s)
+    //   pic_th — fraction of black pixels required per frame (0.0–1.0)
+    let blackdetect_args = CString::new(format!("d=0.1:pic_th={threshold:.6}")).map_err(|_| {
+        DecodeError::AnalysisFailed {
+            reason: "blackdetect args contained null byte".to_string(),
+        }
+    })?;
+
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(DecodeError::AnalysisFailed {
+            reason: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // 1. movie source — reads the video file directly.
+    let movie_filt = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
+    if movie_filt.is_null() {
+        bail!(graph, "filter not found: movie");
+    }
+    let mut src_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut src_ctx,
+        movie_filt,
+        c"black_src".as_ptr(),
+        movie_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("movie create_filter failed code={ret}"));
+    }
+
+    // 2. blackdetect — annotates frames with lavfi.black_start / lavfi.black_end.
+    let blackdetect_filt = ff_sys::avfilter_get_by_name(c"blackdetect".as_ptr());
+    if blackdetect_filt.is_null() {
+        bail!(graph, "filter not found: blackdetect");
+    }
+    let mut bd_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut bd_ctx,
+        blackdetect_filt,
+        c"black_detect".as_ptr(),
+        blackdetect_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("blackdetect create_filter failed code={ret}")
+        );
+    }
+
+    // 3. buffersink — collects output frames.
+    let buffersink_filt = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+    if buffersink_filt.is_null() {
+        bail!(graph, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        buffersink_filt,
+        c"black_sink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("buffersink create_filter failed code={ret}"));
+    }
+
+    // Link: src → blackdetect → sink
+    let ret = ff_sys::avfilter_link(src_ctx, 0, bd_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link src→blackdetect failed code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(bd_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            format!("avfilter_link blackdetect→sink failed code={ret}")
+        );
+    }
+
+    // Configure the graph.
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        bail!(graph, format!("avfilter_graph_config failed code={ret}"));
+    }
+
+    // Drain all frames; collect lavfi.black_start timestamps.
+    let mut timestamps: Vec<Duration> = Vec::new();
+
+    loop {
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            break;
+        }
+        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, raw_frame);
+        if ret < 0 {
+            let mut ptr = raw_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+            break;
+        }
+
+        // SAFETY: `(*raw_frame).metadata` is a valid `AVDictionary*` (possibly null);
+        // `av_dict_get` handles null dictionaries safely by returning null.
+        if let Some(secs) = read_f64_meta(raw_frame, c"lavfi.black_start".as_ptr())
+            && secs >= 0.0
+        {
+            timestamps.push(Duration::from_secs_f64(secs));
+        }
+
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
+    }
+
+    let mut g = graph;
+    ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+
+    log::debug!(
+        "black frame detection complete intervals={} threshold={threshold:.4}",
+        timestamps.len()
+    );
+
+    Ok(timestamps)
 }
 
 // ── KeyframeEnumerator inner ──────────────────────────────────────────────────
