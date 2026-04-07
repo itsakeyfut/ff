@@ -2,7 +2,7 @@
 //!
 //! All `unsafe` code lives here; [`super`] exposes safe wrappers.
 //!
-//! Current entry points:
+//! Current `unsafe` entry points:
 //! - [`measure_loudness_unsafe`] — EBU R128 loudness via `ebur128` filter
 //! - [`compute_ssim_unsafe`] — mean SSIM via `ssim` filter
 //! - [`compute_psnr_unsafe`] — mean PSNR via `psnr` filter
