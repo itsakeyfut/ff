@@ -1,15 +1,17 @@
 //! Integration tests for scene-change detection against a synthetic reference video.
 //!
-//! The reference video is generated at runtime via the `ffmpeg` CLI: six
-//! solid-colour 1-second segments are concatenated, producing hard cuts at
-//! 1 s, 2 s, 3 s, 4 s, and 5 s.  Tests skip gracefully when `ffmpeg` is not
-//! in `PATH` or generation fails.
+//! The reference video is generated at runtime via `VideoEncoder`: six
+//! solid-colour 1-second segments (30 frames each) are encoded back-to-back,
+//! producing hard cuts at 1 s, 2 s, 3 s, 4 s, and 5 s.  Tests skip
+//! gracefully when the encoder cannot be built.
 
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
+
+use ff_encode::{VideoCodec, VideoEncoder};
+use ff_format::{PixelFormat, PooledBuffer, Timestamp, VideoFrame};
 
 use ff_decode::SceneDetector;
 
@@ -30,73 +32,74 @@ fn test_output_path(filename: &str) -> PathBuf {
     dir.join(filename)
 }
 
+/// YUV420P frame filled with a solid colour specified as (Y, Cb, Cr).
+fn yuv420p_frame(width: u32, height: u32, y: u8, cb: u8, cr: u8) -> VideoFrame {
+    let y_plane = PooledBuffer::standalone(vec![y; (width * height) as usize]);
+    let u_plane = PooledBuffer::standalone(vec![cb; ((width / 2) * (height / 2)) as usize]);
+    let v_plane = PooledBuffer::standalone(vec![cr; ((width / 2) * (height / 2)) as usize]);
+    VideoFrame::new(
+        vec![y_plane, u_plane, v_plane],
+        vec![width as usize, (width / 2) as usize, (width / 2) as usize],
+        width,
+        height,
+        PixelFormat::Yuv420p,
+        Timestamp::default(),
+        true,
+    )
+    .expect("failed to create test frame")
+}
+
 /// Generates a 6-second video consisting of six 1-second solid-colour segments
-/// (red, green, blue, yellow, white, cyan) concatenated via the `concat` filter.
+/// (red, green, blue, yellow, white, cyan) encoded back-to-back.
 ///
 /// Hard cuts appear at exactly 1 s, 2 s, 3 s, 4 s, and 5 s.
 ///
-/// Returns `None` (printing a skip message) when `ffmpeg` is not available or
-/// the generation command fails.
+/// Returns `None` (printing a skip message) when the encoder cannot be built.
 fn generate_hard_cut_video(path: &Path) -> Option<()> {
-    let path_str = match path.to_str() {
-        Some(s) => s,
-        None => {
-            println!("Skipping: output path is not valid UTF-8");
-            return None;
-        }
-    };
+    const WIDTH: u32 = 160;
+    const HEIGHT: u32 = 120;
+    const FPS: f64 = 30.0;
+    const FRAMES_PER_SEGMENT: usize = 30; // 1 second at 30 fps
 
-    // Six 1-second 160×120 colour sources at 30 fps, concatenated into one clip.
-    let output = match Command::new("ffmpeg")
-        .args([
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=red:s=160x120:d=1:r=30",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=green:s=160x120:d=1:r=30",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=blue:s=160x120:d=1:r=30",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=yellow:s=160x120:d=1:r=30",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=white:s=160x120:d=1:r=30",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=cyan:s=160x120:d=1:r=30",
-            "-filter_complex",
-            "[0][1][2][3][4][5]concat=n=6:v=1:a=0[v]",
-            "-map",
-            "[v]",
-            "-vcodec",
-            "mpeg4",
-            "-y",
-            path_str,
-        ])
-        .output()
+    // Distinct solid colours in YUV420P (BT.601 approximate values).
+    // Ordered so that every adjacent pair differs by |ΔY| ≥ 65 (> 51 needed
+    // for scene score > 0.4 at threshold 0.4):
+    //   red→white: |82−235|=153   white→blue:   |235−41|=194
+    //   blue→yellow: |41−210|=169  yellow→green: |210−145|=65
+    //   green→black: |145−16|=129
+    let segments: &[(u8, u8, u8)] = &[
+        (82, 90, 240),   // red    Y=82
+        (235, 128, 128), // white  Y=235
+        (41, 240, 110),  // blue   Y=41
+        (210, 16, 146),  // yellow Y=210
+        (145, 54, 34),   // green  Y=145
+        (16, 128, 128),  // black  Y=16
+    ];
+
+    let mut encoder = match VideoEncoder::create(path)
+        .video(WIDTH, HEIGHT, FPS)
+        .video_codec(VideoCodec::Mpeg4)
+        .build()
     {
-        Ok(o) => o,
+        Ok(enc) => enc,
         Err(e) => {
-            println!("Skipping: cannot run ffmpeg: {e}");
+            println!("Skipping: cannot build encoder: {e}");
             return None;
         }
     };
 
-    if !output.status.success() {
-        println!(
-            "Skipping: ffmpeg exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
+    for &(y, cb, cr) in segments {
+        for _ in 0..FRAMES_PER_SEGMENT {
+            let frame = yuv420p_frame(WIDTH, HEIGHT, y, cb, cr);
+            if let Err(e) = encoder.push_video(&frame) {
+                println!("Skipping: push_video failed: {e}");
+                return None;
+            }
+        }
+    }
+
+    if let Err(e) = encoder.finish() {
+        println!("Skipping: encoder finish failed: {e}");
         return None;
     }
 
@@ -110,7 +113,7 @@ fn scene_detector_should_detect_known_cuts_within_one_frame_tolerance() {
     let out_path = test_output_path("analysis_scene_hard_cuts.mp4");
     let _guard = FileGuard(out_path.clone());
 
-    // Generate the reference video; skip gracefully if ffmpeg is unavailable.
+    // Generate the reference video; skip gracefully if encoder is unavailable.
     if generate_hard_cut_video(&out_path).is_none() {
         return;
     }

@@ -506,9 +506,16 @@ fn concat_two_inputs_should_produce_output_with_approx_sum_duration() {
                 }
             };
             let output_duration = output_info.duration();
-            let expected = input_duration * 2;
+            // The pipeline re-encodes every decoded frame at the output fps.
+            // When input fps differs from output fps, the output duration scales
+            // by (input_fps / output_fps).  Probe the input fps to compute the
+            // correct expected duration.
+            let input_fps = input_info.frame_rate().unwrap_or(24.0);
+            let output_fps = 24.0_f64; // matches basic_config()
+            let fps_ratio = input_fps / output_fps;
+            let expected = input_duration.mul_f64(2.0 * fps_ratio);
             // Allow ±20% to account for encoding/muxing overhead.
-            let tolerance = input_duration.mul_f64(0.4);
+            let tolerance = expected.mul_f64(0.2);
             assert!(
                 output_duration >= expected.saturating_sub(tolerance),
                 "output duration {output_duration:?} shorter than expected \
