@@ -16,8 +16,13 @@ use fixtures::{
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Returns `true` when `libx264` is compiled into this FFmpeg build.
+/// Returns `true` when `libx264` is compiled into this FFmpeg build **and**
+/// the `gpl` feature flag is enabled, meaning the encoder selection code will
+/// actually choose libx264 (rather than falling back to libvpx-vp9).
 fn is_libx264_available() -> bool {
+    if !cfg!(feature = "gpl") {
+        return false;
+    }
     let name = b"libx264\0";
     // SAFETY: `name` is a valid null-terminated C string with static lifetime.
     // The pointer is never stored beyond this call; FFmpeg does not take

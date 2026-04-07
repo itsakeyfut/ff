@@ -421,6 +421,41 @@ name = "quality_metrics"
 path = "examples/analysis/quality_metrics.rs"
 required-features = ["decode", "filter"]
 
+[[example]]
+name = "audio_replacement"
+path = "examples/encode/audio_replacement.rs"
+required-features = ["encode"]
+
+[[example]]
+name = "audio_extraction"
+path = "examples/encode/audio_extraction.rs"
+required-features = ["encode"]
+
+[[example]]
+name = "audio_addition"
+path = "examples/encode/audio_addition.rs"
+required-features = ["encode"]
+
+[[example]]
+name = "stream_copy_trim"
+path = "examples/encode/stream_copy_trim.rs"
+required-features = ["encode"]
+
+[[example]]
+name = "sprite_sheet"
+path = "examples/encode/sprite_sheet.rs"
+required-features = ["encode"]
+
+[[example]]
+name = "gif_preview"
+path = "examples/encode/gif_preview.rs"
+required-features = ["encode"]
+
+[[example]]
+name = "export_preset"
+path = "examples/encode/export_preset.rs"
+required-features = ["decode", "encode"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
