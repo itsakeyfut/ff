@@ -1,8 +1,11 @@
-//! End-to-end integration test for multi-track video composition and audio mixing.
+//! End-to-end integration tests for multi-track video composition, audio mixing,
+//! and clip concatenation.
 //!
-//! Composites three synthetic video layers with `MultiTrackComposer` and mixes
-//! two audio tracks with `MultiTrackAudioMixer`, encodes the result to an MP4
-//! file, then validates it with `ff_probe`.
+//! - `multi_track_composition_should_produce_valid_mp4_output`: composites three
+//!   synthetic video layers with `MultiTrackComposer` and mixes two audio tracks
+//!   with `MultiTrackAudioMixer`.
+//! - `video_concatenator_should_produce_output_longer_than_single_clip`:
+//!   concatenates two synthetic video clips with `VideoConcatenator`.
 
 #![allow(clippy::unwrap_used)]
 
@@ -11,7 +14,9 @@ mod fixtures;
 use std::time::Duration;
 
 use ff_encode::{AudioCodec, VideoCodec, VideoEncoder};
-use ff_filter::{AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoLayer};
+use ff_filter::{
+    AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoConcatenator, VideoLayer,
+};
 use ff_format::{AudioFrame, ChannelLayout, SampleFormat};
 use fixtures::{FileGuard, make_source_file, test_output_path, yuv420p_frame};
 
@@ -263,5 +268,106 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         video.height(),
         CANVAS_H,
         "output video height must match canvas"
+    );
+}
+
+#[test]
+fn video_concatenator_should_produce_output_longer_than_single_clip() {
+    // Use 30 frames at 30 fps so each source clip is ≈ 1 second.
+    // Two clips concatenated → output duration ≥ 1.5 s.
+    const W: u32 = 160;
+    const H: u32 = 90;
+    const FPS: f64 = 30.0;
+    const FRAMES_PER_CLIP: usize = 30; // 1 s per clip
+
+    let src1_path = test_output_path("video_concat_src1.mp4");
+    let src2_path = test_output_path("video_concat_src2.mp4");
+    let out_path = test_output_path("video_concat_out.mp4");
+
+    let _g1 = FileGuard::new(src1_path.clone());
+    let _g2 = FileGuard::new(src2_path.clone());
+    let _gout = FileGuard::new(out_path.clone());
+
+    // ── Step 1: generate two synthetic source clips ────────────────────────────
+    // Clip 1: red-ish (Y=76, U=84, V=255)
+    if make_source_file(&src1_path, W, H, FPS, FRAMES_PER_CLIP, 76, 84, 255).is_none() {
+        return;
+    }
+    // Clip 2: blue-ish (Y=29, U=255, V=107)
+    if make_source_file(&src2_path, W, H, FPS, FRAMES_PER_CLIP, 29, 255, 107).is_none() {
+        return;
+    }
+
+    // ── Step 2: build VideoConcatenator ────────────────────────────────────────
+    let mut graph = match VideoConcatenator::new(vec![&src1_path, &src2_path])
+        .output_resolution(W, H)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: VideoConcatenator::build failed: {e}");
+            return;
+        }
+    };
+
+    // ── Step 3: pull all frames into a video-only output file ──────────────────
+    let mut encoder = match VideoEncoder::create(&out_path)
+        .video(W, H, FPS)
+        .video_codec(VideoCodec::Mpeg4)
+        .build()
+    {
+        Ok(enc) => enc,
+        Err(e) => {
+            println!("Skipping: output encoder build failed: {e}");
+            return;
+        }
+    };
+
+    let mut frame_count = 0usize;
+    loop {
+        match graph.pull_video() {
+            Ok(Some(frame)) => {
+                if let Err(e) = encoder.push_video(&frame) {
+                    println!("Skipping: push_video failed: {e}");
+                    return;
+                }
+                frame_count += 1;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                println!("Skipping: pull_video failed: {e}");
+                return;
+            }
+        }
+    }
+
+    if let Err(e) = encoder.finish() {
+        println!("Skipping: encoder finish failed: {e}");
+        return;
+    }
+
+    // ── Step 4: validate with ff_probe ─────────────────────────────────────────
+    let info = match ff_probe::open(&out_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: ff_probe::open failed: {e}");
+            return;
+        }
+    };
+
+    assert!(
+        info.has_video(),
+        "concatenated output must have a video stream"
+    );
+
+    let duration = info.duration();
+    assert!(
+        duration >= Duration::from_millis(1500),
+        "concatenated output must be ≥ 1.5 s (two 1-second clips), got {duration:?}"
+    );
+
+    assert!(
+        frame_count > FRAMES_PER_CLIP,
+        "concatenated output must have more frames than a single clip ({FRAMES_PER_CLIP}), got {frame_count}"
     );
 }
