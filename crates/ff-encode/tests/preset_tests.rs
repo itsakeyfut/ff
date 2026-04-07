@@ -1,4 +1,4 @@
-//! Integration tests for predefined `ExportPreset` values.
+//! Integration tests for `ExportPreset` — both predefined and custom.
 //!
 //! Each test builds a short clip (≤ 1 s of synthetic frames) with one preset,
 //! then opens the output with `ff_probe::open()` to confirm the file is valid
@@ -13,8 +13,8 @@ mod fixtures;
 
 use std::path::Path;
 
-use ff_encode::{ExportPreset, VideoEncoder};
-use ff_format::{AudioFrame, SampleFormat};
+use ff_encode::{AudioEncoderConfig, BitrateMode, ExportPreset, VideoEncoder, VideoEncoderConfig};
+use ff_format::{AudioCodec, AudioFrame, SampleFormat, VideoCodec};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -194,4 +194,37 @@ fn export_preset_web_h264_should_produce_ffprobe_valid_output() {
     let output = fixtures::test_output_path("preset_web_h264.webm");
     let _guard = fixtures::FileGuard::new(output.clone());
     run_preset_test(&ExportPreset::web_h264(), &output, true);
+}
+
+// ── Custom preset test ────────────────────────────────────────────────────────
+
+#[test]
+fn custom_export_preset_should_produce_ffprobe_valid_output() {
+    // Construct ExportPreset directly as a struct literal — no predefined
+    // factory method.  This exercises the public struct fields that #324 added
+    // and confirms that user-defined presets apply correctly to the encoder.
+    let preset = ExportPreset {
+        name: "custom_test".to_string(),
+        video: Some(VideoEncoderConfig {
+            codec: VideoCodec::H264,
+            width: None,
+            height: None,
+            fps: Some(30.0),
+            bitrate_mode: BitrateMode::Crf(28),
+            pixel_format: None,
+            codec_options: None,
+        }),
+        audio: AudioEncoderConfig {
+            codec: AudioCodec::Aac,
+            sample_rate: 44_100,
+            channels: 2,
+            bitrate: 128_000,
+        },
+    };
+
+    let output = fixtures::test_output_path("custom_preset_test.mp4");
+    let _guard = fixtures::FileGuard::new(output.clone());
+
+    // expect_video = true: preset has a video config, so both streams are expected.
+    run_preset_test(&preset, &output, true);
 }
