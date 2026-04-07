@@ -685,6 +685,10 @@ pub unsafe fn av_buffersink_get_frame(
     -11
 }
 
+pub unsafe fn av_buffersink_get_time_base(_ctx: *const AVFilterContext) -> AVRational {
+    AVRational { num: 0, den: 1 }
+}
+
 /// Stub `avformat` wrapper module.
 pub mod avformat {
     use std::os::raw::c_int;
