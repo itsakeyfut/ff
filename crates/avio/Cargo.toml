@@ -371,6 +371,56 @@ name = "clip_trim"
 path = "examples/filter/clip_trim.rs"
 required-features = ["encode"]
 
+[[example]]
+name = "scene_detection"
+path = "examples/analysis/scene_detection.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "waveform"
+path = "examples/analysis/waveform.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "silence_detection"
+path = "examples/analysis/silence_detection.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "keyframes"
+path = "examples/analysis/keyframes.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "histogram"
+path = "examples/analysis/histogram.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "black_frames"
+path = "examples/analysis/black_frames.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "frame_extraction"
+path = "examples/analysis/frame_extraction.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "thumbnail_selector"
+path = "examples/analysis/thumbnail_selector.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "loudness"
+path = "examples/analysis/loudness.rs"
+required-features = ["decode", "filter"]
+
+[[example]]
+name = "quality_metrics"
+path = "examples/analysis/quality_metrics.rs"
+required-features = ["decode", "filter"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
