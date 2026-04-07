@@ -200,6 +200,7 @@ pub struct AVCodecContext {
 }
 
 pub struct AVCodec {
+    pub id: AVCodecID,
     pub sample_fmts: *const AVSampleFormat,
     pub capabilities: c_int,
 }
