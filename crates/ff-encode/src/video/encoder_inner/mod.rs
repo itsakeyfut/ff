@@ -361,11 +361,13 @@ impl VideoEncoderInner {
                     strides,
                     width,
                     height,
-                    pts: self.frame_count as i64,
+                    // time_base.den = fps * 1000, so one frame duration = 1000 ticks.
+                    pts: self.frame_count as i64 * 1000,
                 });
 
                 // Send to pass-1 encoder and discard the encoded output.
-                (*av_frame).pts = self.frame_count as i64;
+                // time_base.den = fps * 1000, so one frame duration = 1000 ticks.
+                (*av_frame).pts = self.frame_count as i64 * 1000;
                 let send_result = avcodec::send_frame(pass1_ctx, av_frame);
                 if let Err(e) = send_result {
                     av_frame_free(&mut av_frame as *mut *mut _);
@@ -409,8 +411,9 @@ impl VideoEncoderInner {
                 return Err(e);
             }
 
-            // Set frame properties
-            (*av_frame).pts = self.frame_count as i64;
+            // Set frame properties.
+            // time_base.den = fps * 1000, so one frame duration = 1000 ticks.
+            (*av_frame).pts = self.frame_count as i64 * 1000;
 
             // Send frame to encoder
             let send_result = avcodec::send_frame(codec_ctx, av_frame);

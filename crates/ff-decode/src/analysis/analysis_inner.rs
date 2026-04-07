@@ -60,7 +60,13 @@ pub(super) unsafe fn detect_scenes_unsafe(
         }};
     }
 
-    let path_str = path.to_string_lossy();
+    // On Windows, paths contain backslashes and a drive-letter colon (e.g.
+    // "D:\…").  FFmpeg's filter-option parser uses ":" as a key=value separator,
+    // so the colon must be escaped as "\:" and backslashes converted to "/".
+    let path_str = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let movie_args =
         CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
             reason: "path contains null byte".to_string(),
@@ -155,6 +161,16 @@ pub(super) unsafe fn detect_scenes_unsafe(
         bail!(graph, format!("avfilter_graph_config failed code={ret}"));
     }
 
+    // Read the output time base from the sink context once after configuration.
+    // The frame's own `time_base` field is not reliably populated by all FFmpeg
+    // versions / platforms, so we use `av_buffersink_get_time_base` instead.
+    //
+    // SAFETY: `sink_ctx` is a fully configured `AVFilterContext*` produced by
+    // `avfilter_graph_create_filter` and validated by `avfilter_graph_config`.
+    let sink_time_base = ff_sys::av_buffersink_get_time_base(sink_ctx);
+    let tb_num = f64::from(sink_time_base.num);
+    let tb_den = f64::from(sink_time_base.den);
+
     // Drain all output frames; each frame that exits the select filter
     // represents a detected scene change.
     let mut timestamps: Vec<Duration> = Vec::new();
@@ -171,13 +187,9 @@ pub(super) unsafe fn detect_scenes_unsafe(
             break;
         }
 
-        // SAFETY: `(*raw_frame).time_base` is set by the filter framework when
-        // av_buffersink_get_frame fills the frame.  `(*raw_frame).pts` is the
-        // presentation timestamp in that time base.
+        // SAFETY: `raw_frame` was filled by `av_buffersink_get_frame`; its
+        // `pts` field is the presentation timestamp in `sink_time_base` units.
         let pts = (*raw_frame).pts;
-        let time_base = (*raw_frame).time_base;
-        let tb_num = f64::from(time_base.num);
-        let tb_den = f64::from(time_base.den);
         if pts != ff_sys::AV_NOPTS_VALUE && tb_den > 0.0 {
             let secs = pts as f64 * tb_num / tb_den;
             if secs >= 0.0 {
@@ -237,7 +249,10 @@ pub(super) unsafe fn detect_silence_unsafe(
         }};
     }
 
-    let path_str = path.to_string_lossy();
+    let path_str = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let amovie_args =
         CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
             reason: "path contains null byte".to_string(),
@@ -448,7 +463,10 @@ pub(super) unsafe fn detect_black_frames_unsafe(
         }};
     }
 
-    let path_str = path.to_string_lossy();
+    let path_str = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let movie_args =
         CString::new(format!("filename={path_str}")).map_err(|_| DecodeError::AnalysisFailed {
             reason: "path contains null byte".to_string(),
