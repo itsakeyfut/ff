@@ -2,7 +2,7 @@
 //!
 //! This module provides tools for extracting analytical data from media files.
 //! Each tool lives in its own submodule; all `unsafe` `FFmpeg` filter-graph and
-//! packet-level calls are confined to [`analysis_inner`].
+//! packet-level calls are confined to `analysis_inner`.
 
 pub(crate) mod analysis_inner;
 mod black_frame_detector;
