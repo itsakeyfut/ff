@@ -1,9 +1,8 @@
 //! Inner implementation details for media analysis tools.
 //!
-//! Analysis tools that require direct `FFmpeg` calls (filter graphs,
-//! packet-level access) add their `unsafe` implementation here.
-//! `WaveformAnalyzer` uses only the safe [`crate::AudioDecoder`] API
-//! and therefore has no code in that section.
+//! All `unsafe` `FFmpeg` filter-graph and packet-level calls live here.
+//! Per-type safe APIs live in sibling files (`scene_detector.rs`, etc.)
+//! and call these entry points from within their own `unsafe` blocks.
 //!
 //! Current `unsafe` entry points:
 //! - [`detect_scenes_unsafe`] — `SceneDetector`
@@ -22,8 +21,8 @@ use std::ffi::CString;
 use std::path::Path;
 use std::time::Duration;
 
+use super::silence_detector::SilenceRange;
 use crate::DecodeError;
-use crate::analysis::SilenceRange;
 
 // ── SceneDetector inner ───────────────────────────────────────────────────────
 
