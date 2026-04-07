@@ -15,12 +15,13 @@ use std::ptr;
 use std::time::Duration;
 
 use ff_sys::{
-    AVCodecID_AV_CODEC_ID_GIF, AVCodecID_AV_CODEC_ID_PNG, AVRational, av_buffersink_get_frame,
-    av_frame_alloc, av_frame_free, av_interleaved_write_frame, av_opt_set, av_packet_alloc,
-    av_packet_free, av_packet_unref, av_write_trailer, avcodec, avfilter_get_by_name,
-    avfilter_graph_alloc, avfilter_graph_config, avfilter_graph_create_filter, avfilter_graph_free,
-    avfilter_link, avformat, avformat_alloc_output_context2, avformat_free_context,
-    avformat_new_stream, avformat_write_header,
+    AVCodecID_AV_CODEC_ID_GIF, AVCodecID_AV_CODEC_ID_PNG, AVPixelFormat_AV_PIX_FMT_RGB24,
+    AVRational, av_buffersink_get_frame, av_frame_alloc, av_frame_free, av_frame_get_buffer,
+    av_interleaved_write_frame, av_opt_set, av_packet_alloc, av_packet_free, av_packet_unref,
+    av_write_trailer, avcodec, avfilter_get_by_name, avfilter_graph_alloc, avfilter_graph_config,
+    avfilter_graph_create_filter, avfilter_graph_free, avfilter_link, avformat,
+    avformat_alloc_output_context2, avformat_free_context, avformat_new_stream,
+    avformat_write_header, swscale,
 };
 
 use crate::EncodeError;
@@ -95,7 +96,13 @@ pub(super) unsafe fn generate_sprite_sheet_unsafe(
         }};
     }
 
-    let path_str = input.to_string_lossy();
+    // Use forward slashes and escape ':' (Windows drive-letter separator):
+    // FFmpeg's filter arg parser uses ':' as key-value separator and '\' as
+    // escape; 'C:/foo' would be split at ':' unless written as 'C\:/foo'.
+    let path_str = input
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let movie_args = CString::new(format!("filename={path_str}")).map_err(|_| {
         EncodeError::MediaOperationFailed {
             reason: "input path contains null byte".to_string(),
@@ -293,7 +300,90 @@ unsafe fn encode_frame_as_png(
 
     let width = (*frame).width;
     let height = (*frame).height;
-    let pix_fmt = (*frame).format;
+    let src_pix_fmt = (*frame).format;
+
+    // ── Convert to rgb24 if the frame pixel format is not PNG-compatible ──────
+    // PNG encoder only accepts: rgb24, rgba, rgb48be, rgba64be, pal8, gray, …
+    // Filter outputs (tile, palettegen) typically emit yuv420p or bgra.
+    // We unconditionally convert to rgb24 to avoid EINVAL from avcodec_open2.
+    let converted_frame: *mut ff_sys::AVFrame;
+    let needs_conversion = src_pix_fmt != AVPixelFormat_AV_PIX_FMT_RGB24;
+    if needs_conversion {
+        let cf = av_frame_alloc();
+        if cf.is_null() {
+            return Err(EncodeError::Ffmpeg {
+                code: 0,
+                message: "av_frame_alloc failed for rgb24 conversion frame".to_string(),
+            });
+        }
+        (*cf).width = width;
+        (*cf).height = height;
+        (*cf).format = AVPixelFormat_AV_PIX_FMT_RGB24;
+        let ret = av_frame_get_buffer(cf, 0);
+        if ret < 0 {
+            let mut f = cf;
+            av_frame_free(std::ptr::addr_of_mut!(f));
+            return Err(EncodeError::from_ffmpeg_error(ret));
+        }
+        // SAFETY: src_pix_fmt and AVPixelFormat_AV_PIX_FMT_RGB24 are valid;
+        // frame and cf buffers are allocated and large enough.
+        let sws_ctx = swscale::get_context(
+            width,
+            height,
+            src_pix_fmt,
+            width,
+            height,
+            AVPixelFormat_AV_PIX_FMT_RGB24,
+            swscale::scale_flags::BILINEAR,
+        )
+        .map_err(|e| {
+            let mut f = cf;
+            av_frame_free(std::ptr::addr_of_mut!(f));
+            EncodeError::from_ffmpeg_error(e)
+        })?;
+        let scale_ret = swscale::scale(
+            sws_ctx,
+            (*frame).data.as_ptr().cast::<*const u8>(),
+            (*frame).linesize.as_ptr(),
+            0,
+            height,
+            (*cf).data.as_mut_ptr().cast_const(),
+            (*cf).linesize.as_mut_ptr(),
+        );
+        swscale::free_context(sws_ctx);
+        if let Err(e) = scale_ret {
+            let mut f = cf;
+            av_frame_free(std::ptr::addr_of_mut!(f));
+            return Err(EncodeError::from_ffmpeg_error(e));
+        }
+        converted_frame = cf;
+    } else {
+        converted_frame = frame;
+    }
+
+    let encode_result = encode_frame_as_png_inner(converted_frame, output, width, height);
+
+    if needs_conversion {
+        let mut f = converted_frame;
+        av_frame_free(std::ptr::addr_of_mut!(f));
+    }
+
+    encode_result
+}
+
+/// Encodes a rgb24 `*mut AVFrame` as a PNG file at `output`.
+///
+/// # Safety
+///
+/// `frame` must be a valid, non-null rgb24 frame with matching `width`/`height`.
+/// All allocations are freed on every exit path.
+unsafe fn encode_frame_as_png_inner(
+    frame: *mut ff_sys::AVFrame,
+    output: &Path,
+    width: i32,
+    height: i32,
+) -> Result<(), EncodeError> {
+    let pix_fmt = AVPixelFormat_AV_PIX_FMT_RGB24;
 
     // ── Allocate output format context ────────────────────────────────────────
     let mut fmt_ctx: *mut ff_sys::AVFormatContext = ptr::null_mut();
@@ -308,21 +398,16 @@ unsafe fn encode_frame_as_png(
         path: output.to_path_buf(),
     })?;
 
-    // Try the dedicated "apng" muxer first; fall back to auto-detection.
-    let mut ret = avformat_alloc_output_context2(
+    // Use the image2 muxer explicitly: it accepts the png encoder for single-
+    // frame output, regardless of the file extension.  The "apng" muxer only
+    // accepts the APNG (animated PNG) codec — not the plain PNG codec — and
+    // would fail at avformat_write_header.
+    let ret = avformat_alloc_output_context2(
         &mut fmt_ctx,
         ptr::null_mut(),
-        c"apng".as_ptr(),
+        c"image2".as_ptr(),
         c_path.as_ptr(),
     );
-    if ret < 0 || fmt_ctx.is_null() {
-        ret = avformat_alloc_output_context2(
-            &mut fmt_ctx,
-            ptr::null_mut(),
-            ptr::null(),
-            c_path.as_ptr(),
-        );
-    }
     if ret < 0 || fmt_ctx.is_null() {
         return Err(EncodeError::from_ffmpeg_error(ret));
     }
@@ -542,7 +627,10 @@ unsafe fn generate_palette_unsafe(
         }};
     }
 
-    let path_str = input.to_string_lossy();
+    let path_str = input
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let movie_args = CString::new(format!("filename={path_str}")).map_err(|_| {
         EncodeError::MediaOperationFailed {
             reason: "input path contains null byte".to_string(),
@@ -781,13 +869,23 @@ unsafe fn encode_gif_unsafe(
         }};
     }
 
-    let path_str = input.to_string_lossy();
+    let path_str = input
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let movie_vid_args = CString::new(format!("filename={path_str}")).map_err(|_| {
         EncodeError::MediaOperationFailed {
             reason: "input path contains null byte".to_string(),
         }
     })?;
-    let pal_str = palette_path.to_string_lossy();
+    // FFmpeg filter option strings use ':' as key-value separator and '\' as
+    // escape character.  On Windows, absolute paths contain a drive-letter
+    // colon (C:/) which must be escaped as \: so the parser treats it as part
+    // of the value, not as a new option.
+    let pal_str = palette_path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
     let movie_pal_args = CString::new(format!("filename={pal_str}")).map_err(|_| {
         EncodeError::MediaOperationFailed {
             reason: "palette path contains null byte".to_string(),

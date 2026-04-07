@@ -676,6 +676,7 @@ impl VideoEncoderInner {
             VideoCodec::Mpeg2 => vec!["mpeg2video"],
             VideoCodec::Mjpeg => vec!["mjpeg"],
             VideoCodec::Png => vec!["png"],
+            VideoCodec::Ffv1 => vec!["ffv1"],
             _ => vec![],
         };
 

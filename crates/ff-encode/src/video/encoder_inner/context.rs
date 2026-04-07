@@ -7,7 +7,7 @@ use super::color::{
     color_primaries_to_av, color_space_to_av, color_transfer_to_av, from_av_pixel_format,
     pixel_format_to_av,
 };
-use super::options::{audio_codec_to_id, codec_to_id};
+use super::options::audio_codec_to_id;
 use super::two_pass::AV_CODEC_FLAG_PASS1;
 use super::{
     AV_TIME_BASE, AVChapter, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPixelFormat_AV_PIX_FMT_YUV420P,
@@ -205,8 +205,12 @@ impl VideoEncoderInner {
         let mut codec_ctx =
             avcodec::alloc_context3(codec_ptr).map_err(EncodeError::from_ffmpeg_error)?;
 
-        // Configure codec context
-        (*codec_ctx).codec_id = codec_to_id(codec);
+        // Configure codec context.
+        // Use the encoder's own codec_id rather than codec_to_id(codec): when a
+        // fallback encoder is selected (e.g. libvpx-vp9 instead of libx264 for
+        // H.264), the codec_id must match the actual encoder, not the requested
+        // codec family, otherwise avcodec_open2 rejects it with EINVAL.
+        (*codec_ctx).codec_id = (*codec_ptr).id;
         (*codec_ctx).width = width as i32;
         (*codec_ctx).height = height as i32;
         (*codec_ctx).time_base.num = 1;
@@ -397,9 +401,18 @@ impl VideoEncoderInner {
         // Set channel layout using FFmpeg 7.x API
         swresample::channel_layout::set_default(&mut (*codec_ctx).ch_layout, channels as i32);
 
-        // Set sample format (encoder's preferred format)
-        // We'll use FLTP (planar float) as it's widely supported
-        (*codec_ctx).sample_fmt = ff_sys::swresample::sample_format::FLTP;
+        // Use the first sample format the codec actually declares; fall back to
+        // FLTP only when the codec exposes no preference.  FLTP is NOT valid for
+        // Opus (which requires s16 or flt), so we must not hard-code it.
+        let target_fmt = {
+            let fmts = (*codec_ptr).sample_fmts;
+            if !fmts.is_null() && *fmts != ff_sys::swresample::sample_format::NONE {
+                *fmts
+            } else {
+                ff_sys::swresample::sample_format::FLTP
+            }
+        };
+        (*codec_ctx).sample_fmt = target_fmt;
 
         // Set bitrate
         if let Some(br) = bitrate {

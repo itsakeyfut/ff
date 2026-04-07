@@ -25,7 +25,7 @@ use crate::{
 /// ```ignore
 /// use ff_encode::{VideoEncoder, VideoCodec, Preset};
 ///
-/// let mut encoder = VideoEncoder::create("output.mp4")
+/// let mut encoder = VideoEncoder::create(test_out("output.mp4"))
 ///     .video(1920, 1080, 30.0)
 ///     .video_codec(VideoCodec::H264)
 ///     .preset(Preset::Medium)
@@ -806,7 +806,7 @@ impl VideoEncoderBuilder {
 /// ```ignore
 /// use ff_encode::{VideoEncoder, VideoCodec};
 ///
-/// let mut encoder = VideoEncoder::create("output.mp4")
+/// let mut encoder = VideoEncoder::create(test_out("output.mp4"))
 ///     .video(1920, 1080, 30.0)
 ///     .video_codec(VideoCodec::H264)
 ///     .build()?;
@@ -856,7 +856,12 @@ impl VideoEncoder {
             container: builder.container,
         };
 
-        let inner = if config.video_width.is_some() {
+        // Create the inner encoder when at least one of video or audio is
+        // configured.  `video_width.is_some()` alone is not sufficient:
+        // audio-only presets (e.g. podcast_mono) set audio fields but no video
+        // dimensions, so we must also check for audio configuration.
+        let has_audio = config.audio_sample_rate.is_some() && config.audio_channels.is_some();
+        let inner = if config.video_width.is_some() || has_audio {
             Some(VideoEncoderInner::new(&config)?)
         } else {
             None
@@ -1050,6 +1055,16 @@ mod tests {
     use super::*;
     use crate::HardwareEncoder;
 
+    /// Returns a path inside `target/test-output/` so that any files created
+    /// by builder unit tests do not litter the crate root.
+    fn test_out(name: &str) -> String {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-output");
+        std::fs::create_dir_all(&dir).ok();
+        dir.join(name).to_string_lossy().into_owned()
+    }
+
     fn create_mock_encoder(video_codec_name: &str, audio_codec_name: &str) -> VideoEncoder {
         VideoEncoder {
             inner: Some(VideoEncoderInner {
@@ -1110,12 +1125,12 @@ mod tests {
 
     #[test]
     fn create_should_return_builder_without_error() {
-        let _builder: VideoEncoderBuilder = VideoEncoder::create("output.mp4");
+        let _builder: VideoEncoderBuilder = VideoEncoder::create(test_out("output.mp4"));
     }
 
     #[test]
     fn builder_video_settings_should_be_stored() {
-        let builder = VideoEncoder::create("output.mp4")
+        let builder = VideoEncoder::create(test_out("output.mp4"))
             .video(1920, 1080, 30.0)
             .video_codec(VideoCodec::H264)
             .bitrate_mode(crate::BitrateMode::Cbr(8_000_000));
@@ -1131,7 +1146,7 @@ mod tests {
 
     #[test]
     fn builder_audio_settings_should_be_stored() {
-        let builder = VideoEncoder::create("output.mp4")
+        let builder = VideoEncoder::create(test_out("output.mp4"))
             .audio(48000, 2)
             .audio_codec(AudioCodec::Aac)
             .audio_bitrate(192_000);
@@ -1143,7 +1158,7 @@ mod tests {
 
     #[test]
     fn builder_preset_should_be_stored() {
-        let builder = VideoEncoder::create("output.mp4")
+        let builder = VideoEncoder::create(test_out("output.mp4"))
             .video(1920, 1080, 30.0)
             .preset(Preset::Fast);
         assert_eq!(builder.preset, Preset::Fast);
@@ -1151,7 +1166,7 @@ mod tests {
 
     #[test]
     fn builder_hardware_encoder_should_be_stored() {
-        let builder = VideoEncoder::create("output.mp4")
+        let builder = VideoEncoder::create(test_out("output.mp4"))
             .video(1920, 1080, 30.0)
             .hardware_encoder(HardwareEncoder::Nvenc);
         assert_eq!(builder.hardware_encoder, HardwareEncoder::Nvenc);
@@ -1159,7 +1174,7 @@ mod tests {
 
     #[test]
     fn builder_container_should_be_stored() {
-        let builder = VideoEncoder::create("output.mp4")
+        let builder = VideoEncoder::create(test_out("output.mp4"))
             .video(1920, 1080, 30.0)
             .container(OutputContainer::Mp4);
         assert_eq!(builder.container, Some(OutputContainer::Mp4));
@@ -1167,13 +1182,13 @@ mod tests {
 
     #[test]
     fn build_without_streams_should_return_error() {
-        let result = VideoEncoder::create("output.mp4").build();
+        let result = VideoEncoder::create(test_out("output.mp4")).build();
         assert!(result.is_err());
     }
 
     #[test]
     fn build_with_odd_width_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(1921, 1080, 30.0)
             .build();
         assert!(result.is_err());
@@ -1181,7 +1196,7 @@ mod tests {
 
     #[test]
     fn build_with_odd_height_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(1920, 1081, 30.0)
             .build();
         assert!(result.is_err());
@@ -1189,7 +1204,7 @@ mod tests {
 
     #[test]
     fn build_with_invalid_fps_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(1920, 1080, -1.0)
             .build();
         assert!(result.is_err());
@@ -1197,7 +1212,7 @@ mod tests {
 
     #[test]
     fn two_pass_flag_should_be_stored_in_builder() {
-        let builder = VideoEncoder::create("output.mp4")
+        let builder = VideoEncoder::create(test_out("output.mp4"))
             .video(640, 480, 30.0)
             .two_pass();
         assert!(builder.two_pass);
@@ -1205,7 +1220,7 @@ mod tests {
 
     #[test]
     fn two_pass_with_audio_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(640, 480, 30.0)
             .audio(48000, 2)
             .two_pass()
@@ -1221,13 +1236,15 @@ mod tests {
 
     #[test]
     fn two_pass_without_video_should_return_error() {
-        let result = VideoEncoder::create("output.mp4").two_pass().build();
+        let result = VideoEncoder::create(test_out("output.mp4"))
+            .two_pass()
+            .build();
         assert!(result.is_err());
     }
 
     #[test]
     fn build_with_crf_above_51_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(1920, 1080, 30.0)
             .bitrate_mode(crate::BitrateMode::Crf(100))
             .build();
@@ -1236,8 +1253,7 @@ mod tests {
 
     #[test]
     fn bitrate_mode_vbr_with_max_less_than_target_should_return_error() {
-        let output_path = "test_vbr.mp4";
-        let result = VideoEncoder::create(output_path)
+        let result = VideoEncoder::create(test_out("test_vbr.mp4"))
             .video(640, 480, 30.0)
             .bitrate_mode(crate::BitrateMode::Vbr {
                 target: 4_000_000,
@@ -1303,7 +1319,7 @@ mod tests {
 
     #[test]
     fn add_attachment_should_accumulate_entries() {
-        let builder = VideoEncoder::create("output.mkv")
+        let builder = VideoEncoder::create(test_out("output.mkv"))
             .video(320, 240, 30.0)
             .add_attachment(vec![1, 2, 3], "application/x-truetype-font", "font.ttf")
             .add_attachment(vec![4, 5, 6], "image/jpeg", "cover.jpg");
@@ -1317,13 +1333,13 @@ mod tests {
 
     #[test]
     fn add_attachment_with_no_attachments_should_start_empty() {
-        let builder = VideoEncoder::create("output.mkv").video(320, 240, 30.0);
+        let builder = VideoEncoder::create(test_out("output.mkv")).video(320, 240, 30.0);
         assert!(builder.attachments.is_empty());
     }
 
     #[test]
     fn webm_extension_with_h264_video_codec_should_return_error() {
-        let result = VideoEncoder::create("output.webm")
+        let result = VideoEncoder::create(test_out("output.webm"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H264)
             .build();
@@ -1335,7 +1351,7 @@ mod tests {
 
     #[test]
     fn webm_extension_with_h265_video_codec_should_return_error() {
-        let result = VideoEncoder::create("output.webm")
+        let result = VideoEncoder::create(test_out("output.webm"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H265)
             .build();
@@ -1347,7 +1363,7 @@ mod tests {
 
     #[test]
     fn webm_extension_with_incompatible_audio_codec_should_return_error() {
-        let result = VideoEncoder::create("output.webm")
+        let result = VideoEncoder::create(test_out("output.webm"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Vp9)
             .audio(48000, 2)
@@ -1361,7 +1377,7 @@ mod tests {
 
     #[test]
     fn webm_extension_without_explicit_codec_should_default_to_vp9_opus() {
-        let builder = VideoEncoder::create("output.webm").video(640, 480, 30.0);
+        let builder = VideoEncoder::create(test_out("output.webm")).video(640, 480, 30.0);
         let normalized = builder.apply_container_defaults();
         assert_eq!(normalized.video_codec, VideoCodec::Vp9);
         assert_eq!(normalized.audio_codec, AudioCodec::Opus);
@@ -1369,7 +1385,7 @@ mod tests {
 
     #[test]
     fn webm_extension_with_explicit_vp9_should_preserve_codec() {
-        let builder = VideoEncoder::create("output.webm")
+        let builder = VideoEncoder::create(test_out("output.webm"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Vp9);
         assert!(builder.video_codec_explicit);
@@ -1379,7 +1395,7 @@ mod tests {
 
     #[test]
     fn webm_container_enum_with_incompatible_codec_should_return_error() {
-        let result = VideoEncoder::create("output.mkv")
+        let result = VideoEncoder::create(test_out("output.mkv"))
             .video(640, 480, 30.0)
             .container(OutputContainer::WebM)
             .video_codec(VideoCodec::H264)
@@ -1393,7 +1409,7 @@ mod tests {
     #[test]
     fn non_webm_extension_should_not_enforce_webm_codecs() {
         // H264 + AAC on .mp4 should not trigger WebM validation
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H264)
             .build();
@@ -1406,7 +1422,7 @@ mod tests {
 
     #[test]
     fn avi_extension_without_explicit_codec_should_default_to_h264_mp3() {
-        let builder = VideoEncoder::create("output.avi").video(640, 480, 30.0);
+        let builder = VideoEncoder::create(test_out("output.avi")).video(640, 480, 30.0);
         let normalized = builder.apply_container_defaults();
         assert_eq!(normalized.video_codec, VideoCodec::H264);
         assert_eq!(normalized.audio_codec, AudioCodec::Mp3);
@@ -1414,7 +1430,7 @@ mod tests {
 
     #[test]
     fn mov_extension_without_explicit_codec_should_default_to_h264_aac() {
-        let builder = VideoEncoder::create("output.mov").video(640, 480, 30.0);
+        let builder = VideoEncoder::create(test_out("output.mov")).video(640, 480, 30.0);
         let normalized = builder.apply_container_defaults();
         assert_eq!(normalized.video_codec, VideoCodec::H264);
         assert_eq!(normalized.audio_codec, AudioCodec::Aac);
@@ -1422,7 +1438,7 @@ mod tests {
 
     #[test]
     fn avi_with_incompatible_video_codec_should_return_error() {
-        let result = VideoEncoder::create("output.avi")
+        let result = VideoEncoder::create(test_out("output.avi"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Vp9)
             .build();
@@ -1434,7 +1450,7 @@ mod tests {
 
     #[test]
     fn avi_with_incompatible_audio_codec_should_return_error() {
-        let result = VideoEncoder::create("output.avi")
+        let result = VideoEncoder::create(test_out("output.avi"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H264)
             .audio(48000, 2)
@@ -1448,7 +1464,7 @@ mod tests {
 
     #[test]
     fn mov_with_incompatible_video_codec_should_return_error() {
-        let result = VideoEncoder::create("output.mov")
+        let result = VideoEncoder::create(test_out("output.mov"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Vp9)
             .build();
@@ -1460,7 +1476,7 @@ mod tests {
 
     #[test]
     fn mov_with_incompatible_audio_codec_should_return_error() {
-        let result = VideoEncoder::create("output.mov")
+        let result = VideoEncoder::create(test_out("output.mov"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H264)
             .audio(48000, 2)
@@ -1474,7 +1490,7 @@ mod tests {
 
     #[test]
     fn avi_container_enum_with_incompatible_codec_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(640, 480, 30.0)
             .container(OutputContainer::Avi)
             .video_codec(VideoCodec::Vp9)
@@ -1487,7 +1503,7 @@ mod tests {
 
     #[test]
     fn mov_container_enum_with_incompatible_codec_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(640, 480, 30.0)
             .container(OutputContainer::Mov)
             .video_codec(VideoCodec::Vp9)
@@ -1501,7 +1517,7 @@ mod tests {
     #[test]
     fn avi_with_pcm_audio_should_pass_validation() {
         // AudioCodec::Pcm (backward-compat alias for 16-bit PCM) must be accepted in AVI.
-        let result = VideoEncoder::create("output.avi")
+        let result = VideoEncoder::create(test_out("output.avi"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H264)
             .audio(48000, 2)
@@ -1515,7 +1531,7 @@ mod tests {
 
     #[test]
     fn mov_with_pcm24_audio_should_pass_validation() {
-        let result = VideoEncoder::create("output.mov")
+        let result = VideoEncoder::create(test_out("output.mov"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H264)
             .audio(48000, 2)
@@ -1530,7 +1546,7 @@ mod tests {
     #[test]
     fn non_avi_mov_extension_should_not_enforce_avi_mov_codecs() {
         // Vp9 on .webm should not trigger AVI/MOV validation
-        let result = VideoEncoder::create("output.webm")
+        let result = VideoEncoder::create(test_out("output.webm"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Vp9)
             .build();
@@ -1544,7 +1560,7 @@ mod tests {
 
     #[test]
     fn fmp4_container_with_h264_should_pass_validation() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::H264)
             .container(OutputContainer::FMp4)
@@ -1557,7 +1573,7 @@ mod tests {
 
     #[test]
     fn fmp4_container_with_mpeg4_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Mpeg4)
             .container(OutputContainer::FMp4)
@@ -1572,7 +1588,7 @@ mod tests {
 
     #[test]
     fn fmp4_container_with_mjpeg_should_return_error() {
-        let result = VideoEncoder::create("output.mp4")
+        let result = VideoEncoder::create(test_out("output.mp4"))
             .video(640, 480, 30.0)
             .video_codec(VideoCodec::Mjpeg)
             .container(OutputContainer::FMp4)
