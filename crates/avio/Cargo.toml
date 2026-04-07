@@ -456,6 +456,16 @@ name = "export_preset"
 path = "examples/encode/export_preset.rs"
 required-features = ["decode", "encode"]
 
+[[example]]
+name = "multi_track_compose"
+path = "examples/filter/multi_track_compose.rs"
+required-features = ["filter", "pipeline", "encode"]
+
+[[example]]
+name = "timeline_render"
+path = "examples/transcode/timeline_render.rs"
+required-features = ["filter", "pipeline", "encode"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
