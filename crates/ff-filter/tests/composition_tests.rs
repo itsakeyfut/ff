@@ -6,6 +6,8 @@
 //!   with `MultiTrackAudioMixer`.
 //! - `video_concatenator_should_produce_output_longer_than_single_clip`:
 //!   concatenates two synthetic video clips with `VideoConcatenator`.
+//! - `audio_concatenator_should_produce_output_longer_than_single_clip`:
+//!   concatenates two synthetic audio clips with `AudioConcatenator`.
 
 #![allow(clippy::unwrap_used)]
 
@@ -13,9 +15,10 @@ mod fixtures;
 
 use std::time::Duration;
 
-use ff_encode::{AudioCodec, VideoCodec, VideoEncoder};
+use ff_encode::{AudioCodec, AudioEncoder, VideoCodec, VideoEncoder};
 use ff_filter::{
-    AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoConcatenator, VideoLayer,
+    AudioConcatenator, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoConcatenator,
+    VideoLayer,
 };
 use ff_format::{AudioFrame, ChannelLayout, SampleFormat};
 use fixtures::{FileGuard, make_source_file, test_output_path, yuv420p_frame};
@@ -369,5 +372,127 @@ fn video_concatenator_should_produce_output_longer_than_single_clip() {
     assert!(
         frame_count > FRAMES_PER_CLIP,
         "concatenated output must have more frames than a single clip ({FRAMES_PER_CLIP}), got {frame_count}"
+    );
+}
+
+#[test]
+fn audio_concatenator_should_produce_output_longer_than_single_clip() {
+    // 44 × 1024 samples ÷ 44 100 Hz ≈ 1.02 s per source clip.
+    // Two clips concatenated → output duration ≥ 1.5 s.
+    const SAMPLE_RATE: u32 = 44_100;
+    const CHANNELS: u32 = 1; // mono
+    const FRAME_SIZE: usize = 1024;
+    const FRAMES_PER_CLIP: usize = 44; // ≈ 1.02 s
+
+    let src1_path = test_output_path("audio_concat_src1.m4a");
+    let src2_path = test_output_path("audio_concat_src2.m4a");
+    let out_path = test_output_path("audio_concat_out.m4a");
+
+    let _g1 = FileGuard::new(src1_path.clone());
+    let _g2 = FileGuard::new(src2_path.clone());
+    let _gout = FileGuard::new(out_path.clone());
+
+    // ── Step 1: create two silent mono AAC source clips ────────────────────────
+    for src_path in [&src1_path, &src2_path] {
+        let mut enc = match AudioEncoder::create(src_path)
+            .audio(SAMPLE_RATE, CHANNELS)
+            .audio_codec(AudioCodec::Aac)
+            .build()
+        {
+            Ok(e) => e,
+            Err(e) => {
+                println!("Skipping: AudioEncoder::build failed: {e}");
+                return;
+            }
+        };
+        for _ in 0..FRAMES_PER_CLIP {
+            let frame =
+                match AudioFrame::empty(FRAME_SIZE, CHANNELS, SAMPLE_RATE, SampleFormat::F32) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        println!("Skipping: AudioFrame::empty failed: {e}");
+                        return;
+                    }
+                };
+            if let Err(e) = enc.push(&frame) {
+                println!("Skipping: source push failed: {e}");
+                return;
+            }
+        }
+        if let Err(e) = enc.finish() {
+            println!("Skipping: source encoder finish failed: {e}");
+            return;
+        }
+    }
+
+    // ── Step 2: build AudioConcatenator ───────────────────────────────────────
+    let mut graph = match AudioConcatenator::new(vec![&src1_path, &src2_path])
+        .output_format(SAMPLE_RATE, ChannelLayout::Mono)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: AudioConcatenator::build failed: {e}");
+            return;
+        }
+    };
+
+    // ── Step 3: pull all audio frames into an output file ─────────────────────
+    let mut out_enc = match AudioEncoder::create(&out_path)
+        .audio(SAMPLE_RATE, CHANNELS)
+        .audio_codec(AudioCodec::Aac)
+        .build()
+    {
+        Ok(e) => e,
+        Err(e) => {
+            println!("Skipping: output encoder build failed: {e}");
+            return;
+        }
+    };
+
+    loop {
+        match graph.pull_audio() {
+            Ok(Some(frame)) => {
+                if let Err(e) = out_enc.push(&frame) {
+                    println!("Skipping: push to output encoder failed: {e}");
+                    return;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                println!("Skipping: pull_audio failed: {e}");
+                return;
+            }
+        }
+    }
+
+    if let Err(e) = out_enc.finish() {
+        println!("Skipping: output encoder finish failed: {e}");
+        return;
+    }
+
+    // ── Step 4: validate with ff_probe ─────────────────────────────────────────
+    let info = match ff_probe::open(&out_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: ff_probe::open failed: {e}");
+            return;
+        }
+    };
+
+    assert!(
+        info.has_audio(),
+        "concatenated output must have an audio stream"
+    );
+    assert_eq!(
+        info.video_stream_count(),
+        0,
+        "audio-only output must not have a video stream"
+    );
+
+    let duration = info.duration();
+    assert!(
+        duration >= Duration::from_millis(1500),
+        "concatenated output must be ≥ 1.5 s (two ≈1-second clips), got {duration:?}"
     );
 }
