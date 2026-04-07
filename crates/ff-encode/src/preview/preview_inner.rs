@@ -71,7 +71,21 @@ unsafe fn probe_video_duration_secs(path: &Path) -> Result<f64, EncodeError> {
 /// All raw pointer operations follow avfilter and avcodec ownership rules.
 /// Every allocation is freed on every exit path via the `bail!` macro or
 /// explicit cleanup at the end of the function.
-pub(super) unsafe fn generate_sprite_sheet_unsafe(
+/// Safe entry point called from [`super`]; all `unsafe` is confined here.
+pub(super) fn generate_sprite_sheet(
+    input: &Path,
+    cols: u32,
+    rows: u32,
+    frame_width: u32,
+    frame_height: u32,
+    output: &Path,
+) -> Result<(), EncodeError> {
+    // SAFETY: generate_sprite_sheet_unsafe manages all raw pointer lifetimes
+    //         per avfilter and avcodec ownership rules.
+    unsafe { generate_sprite_sheet_unsafe(input, cols, rows, frame_width, frame_height, output) }
+}
+
+unsafe fn generate_sprite_sheet_unsafe(
     input: &Path,
     cols: u32,
     rows: u32,
@@ -561,7 +575,21 @@ unsafe fn drain_packets(
 ///
 /// All raw pointer operations follow avfilter and avcodec ownership rules.
 /// Every allocation is freed on every exit path.
-pub(super) unsafe fn generate_gif_preview_unsafe(
+/// Safe entry point called from [`super`]; all `unsafe` is confined here.
+pub(super) fn generate_gif_preview(
+    input: &Path,
+    start: Duration,
+    duration: Duration,
+    fps: f64,
+    width: u32,
+    output: &Path,
+) -> Result<(), EncodeError> {
+    // SAFETY: generate_gif_preview_unsafe manages all raw pointer lifetimes
+    //         per avfilter and avcodec ownership rules.
+    unsafe { generate_gif_preview_unsafe(input, start, duration, fps, width, output) }
+}
+
+unsafe fn generate_gif_preview_unsafe(
     input: &Path,
     start: Duration,
     duration: Duration,

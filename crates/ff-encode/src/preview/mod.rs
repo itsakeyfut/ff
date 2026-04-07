@@ -121,17 +121,14 @@ impl SpriteSheet {
                 reason: "output path not set".to_string(),
             });
         }
-        // SAFETY: preview_inner manages all raw pointer lifetimes per avfilter rules.
-        unsafe {
-            preview_inner::generate_sprite_sheet_unsafe(
-                &self.input,
-                self.cols,
-                self.rows,
-                self.frame_width,
-                self.frame_height,
-                &self.output,
-            )
-        }
+        preview_inner::generate_sprite_sheet(
+            &self.input,
+            self.cols,
+            self.rows,
+            self.frame_width,
+            self.frame_height,
+            &self.output,
+        )
     }
 }
 
@@ -246,17 +243,14 @@ impl GifPreview {
                 reason: "width must be > 0".to_string(),
             });
         }
-        // SAFETY: preview_inner manages all raw pointer lifetimes per avfilter rules.
-        unsafe {
-            preview_inner::generate_gif_preview_unsafe(
-                &self.input,
-                self.start,
-                self.duration,
-                self.fps,
-                self.width,
-                &self.output,
-            )
-        }
+        preview_inner::generate_gif_preview(
+            &self.input,
+            self.start,
+            self.duration,
+            self.fps,
+            self.width,
+            &self.output,
+        )
     }
 }
 
