@@ -11,6 +11,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-04-08
+
+### Added
+
+#### ff-pipeline
+- `Clip` value type with source path, in/out trim, timeline offset, and duration methods ([#673](https://github.com/itsakeyfut/avio/issues/673))
+- `Timeline` and `TimelineBuilder` for ordered video and audio track layout built from `Clip` instances ([#674](https://github.com/itsakeyfut/avio/issues/674))
+- `Timeline::render()` — composite and encode a `Timeline` to a video output file ([#675](https://github.com/itsakeyfut/avio/issues/675))
+- `PipelineError::ClipNotFound` and `PipelineError::TimelineRenderFailed` variants ([#826](https://github.com/itsakeyfut/avio/issues/826))
+
+#### ff-filter — multi-track composition
+- `MultiTrackComposer` for layered video composition with per-track position, scale, and opacity ([#296](https://github.com/itsakeyfut/avio/issues/296))
+- `MultiTrackAudioMixer` for multi-track audio mixing with per-track volume and time offset ([#296](https://github.com/itsakeyfut/avio/issues/296))
+- Auto-resample and reformat mismatched `AudioTrack` sources ([#299](https://github.com/itsakeyfut/avio/issues/299))
+- Per-track effects chain to `AudioTrack` ([#679](https://github.com/itsakeyfut/avio/issues/679))
+- Track time offset via `adelay` for `MultiTrackAudioMixer` ([#300](https://github.com/itsakeyfut/avio/issues/300))
+- Non-zero canvas dimension validation in `MultiTrackComposer` ([#297](https://github.com/itsakeyfut/avio/issues/297))
+- `FilterError::CompositionFailed` and `FilterError::AnalysisFailed` variants ([#824](https://github.com/itsakeyfut/avio/issues/824))
+
+#### ff-filter — clip operations
+- `VideoConcatenator` for multi-clip seamless video concatenation ([#301](https://github.com/itsakeyfut/avio/issues/301))
+- `AudioConcatenator` for multi-clip seamless audio concatenation ([#302](https://github.com/itsakeyfut/avio/issues/302))
+- `ClipJoiner` for cross-dissolve transition between two clips ([#304](https://github.com/itsakeyfut/avio/issues/304))
+
+#### ff-filter — analysis
+- `LoudnessMeter` for EBU R128 integrated loudness, true peak, and loudness range measurement ([#309](https://github.com/itsakeyfut/avio/issues/309))
+- `QualityMetrics::ssim` for SSIM video quality measurement ([#313](https://github.com/itsakeyfut/avio/issues/313))
+- `QualityMetrics::psnr` for PSNR video quality measurement ([#314](https://github.com/itsakeyfut/avio/issues/314))
+
+#### ff-decode — analysis
+- `WaveformAnalyzer` for per-channel waveform data extraction ([#308](https://github.com/itsakeyfut/avio/issues/308))
+- `SilenceDetector` for audio silence interval detection ([#312](https://github.com/itsakeyfut/avio/issues/312))
+- `KeyframeEnumerator` for keyframe timestamp enumeration ([#311](https://github.com/itsakeyfut/avio/issues/311))
+- `SceneDetector` for scene change detection ([#310](https://github.com/itsakeyfut/avio/issues/310))
+- `BlackFrameDetector` for black interval detection in video ([#316](https://github.com/itsakeyfut/avio/issues/316))
+- `HistogramExtractor` for per-frame RGB and luma histogram extraction ([#315](https://github.com/itsakeyfut/avio/issues/315))
+- `DecodeError::NoFrameAtTimestamp` and `DecodeError::AnalysisFailed` variants ([#823](https://github.com/itsakeyfut/avio/issues/823))
+
+#### ff-decode — frame operations
+- `VideoDecoder::extract_frame` for single frame extraction at a timestamp ([#317](https://github.com/itsakeyfut/avio/issues/317))
+- `FrameExtractor` for batch frame extraction at regular intervals ([#318](https://github.com/itsakeyfut/avio/issues/318))
+- `ThumbnailSelector` for automatic best-frame selection (skips black/white/blurry frames) ([#321](https://github.com/itsakeyfut/avio/issues/321))
+
+#### ff-encode — media operations
+- `StreamCopyTrim` for stream-copy clip trimming with `Duration` API ([#303](https://github.com/itsakeyfut/avio/issues/303))
+- `AudioReplacement` for stream-copy audio track replacement ([#305](https://github.com/itsakeyfut/avio/issues/305))
+- `AudioExtractor` for stream-copy audio track extraction ([#306](https://github.com/itsakeyfut/avio/issues/306))
+- `AudioAdder` for muxing audio into silent video with optional looping ([#307](https://github.com/itsakeyfut/avio/issues/307))
+- `SpriteSheet` for thumbnail sprite sheet generation ([#319](https://github.com/itsakeyfut/avio/issues/319))
+- `GifPreview` for animated GIF generation via two-pass palettegen ([#320](https://github.com/itsakeyfut/avio/issues/320))
+- `EncodeError::MediaOperationFailed` variant ([#825](https://github.com/itsakeyfut/avio/issues/825))
+
+#### ff-encode — export presets
+- `ExportPreset` with YouTube 1080p and YouTube 4K presets and platform constraint validation ([#322](https://github.com/itsakeyfut/avio/issues/322), [#324](https://github.com/itsakeyfut/avio/issues/324), [#325](https://github.com/itsakeyfut/avio/issues/325))
+- Additional presets: Twitter, Instagram, Blu-ray, Podcast, Lossless, Web ([#323](https://github.com/itsakeyfut/avio/issues/323))
+
+#### ff-format
+- `VideoFrame` and `AudioFrame` public clone API for multi-track and effect pipeline use ([#672](https://github.com/itsakeyfut/avio/issues/672))
+
+#### avio (facade)
+- Re-exported all v0.10.0 public types under feature flags ([#827](https://github.com/itsakeyfut/avio/issues/827))
+
+### Refactored
+
+- Split large source files into per-concern submodules across `ff-decode`, `ff-encode`, `ff-filter`, and `ff-format` (issues [#884](https://github.com/itsakeyfut/avio/issues/884)–[#895](https://github.com/itsakeyfut/avio/issues/895)) — no public API changes
+- Moved `SubtitleError` from `subtitle/mod.rs` to `error.rs` ([#894](https://github.com/itsakeyfut/avio/issues/894))
+
+---
+
 ## [0.9.0] - 2026-03-30
 
 ### Added

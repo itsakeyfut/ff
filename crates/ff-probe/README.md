@@ -8,7 +8,7 @@ Read media file metadata with one function call. No knowledge of container forma
 
 ```toml
 [dependencies]
-ff-probe = "0.9"
+ff-probe = "0.10"
 ```
 
 ## Quick Start
