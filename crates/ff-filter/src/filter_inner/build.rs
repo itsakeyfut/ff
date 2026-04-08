@@ -1251,10 +1251,15 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // Blend (photographic modes: Multiply, Screen)
+            // Blend (photographic modes: Multiply, Screen, Overlay, SoftLight, HardLight)
             if let FilterStep::Blend {
                 top,
-                mode: mode @ (BlendMode::Multiply | BlendMode::Screen),
+                mode:
+                    mode @ (BlendMode::Multiply
+                    | BlendMode::Screen
+                    | BlendMode::Overlay
+                    | BlendMode::SoftLight
+                    | BlendMode::HardLight),
                 opacity,
             } = step
             {
@@ -1264,6 +1269,9 @@ impl FilterGraphInner {
                 let mode_name = match mode {
                     BlendMode::Multiply => "multiply",
                     BlendMode::Screen => "screen",
+                    BlendMode::Overlay => "overlay",
+                    BlendMode::SoftLight => "softlight",
+                    BlendMode::HardLight => "hardlight",
                     _ => unreachable!(),
                 };
                 prev_ctx = match add_blend_photographic_step(
