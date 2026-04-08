@@ -313,6 +313,34 @@ impl fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// Error type for subtitle parsing operations.
+#[derive(Debug, Error)]
+pub enum SubtitleError {
+    /// I/O error reading a subtitle file.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// File extension is not a recognized subtitle format.
+    #[error("unsupported subtitle format: {extension}")]
+    UnsupportedFormat {
+        /// The unrecognized file extension.
+        extension: String,
+    },
+
+    /// A structural parse error prevents processing the file.
+    #[error("parse error at line {line}: {reason}")]
+    ParseError {
+        /// 1-based line number where the error was detected.
+        line: usize,
+        /// Human-readable description of the problem.
+        reason: String,
+    },
+
+    /// The input contained no valid subtitle events.
+    #[error("no valid subtitle events found")]
+    NoEvents,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

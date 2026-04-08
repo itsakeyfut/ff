@@ -74,7 +74,7 @@ pub use chapter::{ChapterInfo, ChapterInfoBuilder};
 pub use codec::{AudioCodec, SubtitleCodec, VideoCodec};
 pub use color::{ColorPrimaries, ColorRange, ColorSpace, ColorTransfer};
 pub use container::{ContainerInfo, ContainerInfoBuilder};
-pub use error::{FormatError, FrameError};
+pub use error::{FormatError, FrameError, SubtitleError};
 pub use ff_common::PooledBuffer;
 pub use frame::{AudioFrame, VideoFrame};
 pub use hdr::{Hdr10Metadata, MasteringDisplay};

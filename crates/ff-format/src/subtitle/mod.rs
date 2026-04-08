@@ -19,35 +19,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use thiserror::Error;
-
-/// Error type for subtitle parsing operations.
-#[derive(Debug, Error)]
-pub enum SubtitleError {
-    /// I/O error reading a subtitle file.
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// File extension is not a recognized subtitle format.
-    #[error("unsupported subtitle format: {extension}")]
-    UnsupportedFormat {
-        /// The unrecognized file extension.
-        extension: String,
-    },
-
-    /// A structural parse error prevents processing the file.
-    #[error("parse error at line {line}: {reason}")]
-    ParseError {
-        /// 1-based line number where the error was detected.
-        line: usize,
-        /// Human-readable description of the problem.
-        reason: String,
-    },
-
-    /// The input contained no valid subtitle events.
-    #[error("no valid subtitle events found")]
-    NoEvents,
-}
+pub use crate::error::SubtitleError;
 
 /// A single subtitle event (cue).
 #[derive(Debug, Clone, PartialEq, Eq)]
