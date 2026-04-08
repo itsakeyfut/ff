@@ -1885,3 +1885,89 @@ fn blend_difference_with_self_should_produce_black() {
         "Difference of identical layers should produce near-black output (avg={avg})"
     );
 }
+
+#[test]
+fn blend_add_black_top_should_be_identity() {
+    // Add(bottom=Y128, top=Y0): 128 + 0 = 128, clamped → identity.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::Add, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 0);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        (avg - 128.0).abs() < 15.0,
+        "Add with black top should preserve bottom luma (avg={avg})"
+    );
+}
+
+#[test]
+fn blend_subtract_white_top_should_produce_black() {
+    // Subtract(bottom=Y128, top=Y255): max(128 - 255, 0) = 0 → black.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::Subtract, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 255);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg < 10.0,
+        "Subtract with white top should produce near-black output (avg={avg})"
+    );
+}
