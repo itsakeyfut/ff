@@ -4,6 +4,7 @@
 //! including FFmpeg context management and encoding operations.
 
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
+#![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
 // FFmpeg C API frequently requires raw pointer casting
 #![allow(clippy::ptr_as_ptr)]

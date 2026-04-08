@@ -12,6 +12,7 @@
 //! returns — no manual cleanup is needed at individual error sites.
 
 // Rust 2024: Allow unsafe operations in unsafe functions for FFmpeg C API
+#![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::ptr_as_ptr)]
 #![allow(clippy::cast_possible_wrap)]
