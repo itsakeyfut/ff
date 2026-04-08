@@ -15,6 +15,11 @@ use crate::{
     VideoCodec,
 };
 
+mod audio;
+mod color;
+mod meta;
+mod video;
+
 /// Builder for constructing a [`VideoEncoder`].
 ///
 /// Created by calling [`VideoEncoder::create()`]. Call [`build()`](Self::build)
@@ -131,262 +136,6 @@ impl VideoEncoderBuilder {
             attachments: Vec::new(),
         }
     }
-
-    // === Video settings ===
-
-    /// Configure video stream settings.
-    #[must_use]
-    pub fn video(mut self, width: u32, height: u32, fps: f64) -> Self {
-        self.video_width = Some(width);
-        self.video_height = Some(height);
-        self.video_fps = Some(fps);
-        self
-    }
-
-    /// Set video codec.
-    #[must_use]
-    pub fn video_codec(mut self, codec: VideoCodec) -> Self {
-        self.video_codec = codec;
-        self.video_codec_explicit = true;
-        self
-    }
-
-    /// Set the bitrate control mode for video encoding.
-    #[must_use]
-    pub fn bitrate_mode(mut self, mode: crate::BitrateMode) -> Self {
-        self.video_bitrate_mode = Some(mode);
-        self
-    }
-
-    /// Set encoding preset (speed vs quality tradeoff).
-    #[must_use]
-    pub fn preset(mut self, preset: Preset) -> Self {
-        self.preset = preset;
-        self
-    }
-
-    /// Set hardware encoder.
-    #[must_use]
-    pub fn hardware_encoder(mut self, hw: HardwareEncoder) -> Self {
-        self.hardware_encoder = hw;
-        self
-    }
-
-    // === Audio settings ===
-
-    /// Configure audio stream settings.
-    #[must_use]
-    pub fn audio(mut self, sample_rate: u32, channels: u32) -> Self {
-        self.audio_sample_rate = Some(sample_rate);
-        self.audio_channels = Some(channels);
-        self
-    }
-
-    /// Set audio codec.
-    #[must_use]
-    pub fn audio_codec(mut self, codec: AudioCodec) -> Self {
-        self.audio_codec = codec;
-        self.audio_codec_explicit = true;
-        self
-    }
-
-    /// Set audio bitrate in bits per second.
-    #[must_use]
-    pub fn audio_bitrate(mut self, bitrate: u64) -> Self {
-        self.audio_bitrate = Some(bitrate);
-        self
-    }
-
-    // === OutputContainer settings ===
-
-    /// Set container format explicitly (usually auto-detected from file extension).
-    #[must_use]
-    pub fn container(mut self, container: OutputContainer) -> Self {
-        self.container = Some(container);
-        self
-    }
-
-    // === Callbacks ===
-
-    /// Set a closure as the progress callback.
-    #[must_use]
-    pub fn on_progress<F>(mut self, callback: F) -> Self
-    where
-        F: FnMut(&crate::EncodeProgress) + Send + 'static,
-    {
-        self.progress_callback = Some(Box::new(callback));
-        self
-    }
-
-    /// Set a [`EncodeProgressCallback`] trait object (supports cancellation).
-    #[must_use]
-    pub fn progress_callback<C: EncodeProgressCallback + 'static>(mut self, callback: C) -> Self {
-        self.progress_callback = Some(Box::new(callback));
-        self
-    }
-
-    // === Two-pass ===
-
-    /// Enable two-pass encoding for more accurate bitrate distribution.
-    ///
-    /// Two-pass encoding is video-only and is incompatible with audio streams.
-    #[must_use]
-    pub fn two_pass(mut self) -> Self {
-        self.two_pass = true;
-        self
-    }
-
-    // === Metadata ===
-
-    /// Embed a metadata tag in the output container.
-    ///
-    /// Calls `av_dict_set` on `AVFormatContext->metadata` before the header
-    /// is written. Multiple calls accumulate entries; duplicate keys use the
-    /// last value.
-    #[must_use]
-    pub fn metadata(mut self, key: &str, value: &str) -> Self {
-        self.metadata.push((key.to_string(), value.to_string()));
-        self
-    }
-
-    // === Chapters ===
-
-    /// Add a chapter to the output container.
-    ///
-    /// Allocates an `AVChapter` entry on `AVFormatContext` before the header
-    /// is written. Multiple calls accumulate chapters in the order added.
-    #[must_use]
-    pub fn chapter(mut self, chapter: ff_format::chapter::ChapterInfo) -> Self {
-        self.chapters.push(chapter);
-        self
-    }
-
-    // === Subtitle passthrough ===
-
-    /// Copy a subtitle stream from an existing file into the output container.
-    ///
-    /// Opens `source_path`, locates the stream at `stream_index`, and registers it
-    /// as a passthrough stream in the output.  Packets are copied verbatim using
-    /// `av_interleaved_write_frame` without re-encoding.
-    ///
-    /// `stream_index` is the zero-based index of the subtitle stream inside
-    /// `source_path`.  For files with a single subtitle track this is typically `0`
-    /// (or whichever index `ffprobe` reports).
-    ///
-    /// If the source cannot be opened or the stream index is invalid, a warning is
-    /// logged and encoding continues without subtitles.
-    #[must_use]
-    pub fn subtitle_passthrough(mut self, source_path: &str, stream_index: usize) -> Self {
-        self.subtitle_passthrough = Some((source_path.to_string(), stream_index));
-        self
-    }
-
-    // === Per-codec options ===
-
-    /// Set per-codec encoding options.
-    ///
-    /// Applied via `av_opt_set` before `avcodec_open2` during [`build()`](Self::build).
-    /// This is additive — omitting it leaves codec defaults unchanged.
-    /// Any option that the chosen encoder does not support is logged as a
-    /// warning and skipped; it never causes `build()` to return an error.
-    ///
-    /// The [`VideoCodecOptions`] variant should match the codec selected via
-    /// [`video_codec()`](Self::video_codec).  A mismatch is silently ignored.
-    #[must_use]
-    pub fn codec_options(mut self, opts: VideoCodecOptions) -> Self {
-        self.codec_options = Some(opts);
-        self
-    }
-
-    // === Pixel format ===
-
-    /// Override the pixel format for video encoding.
-    ///
-    /// When omitted the encoder uses `yuv420p` by default, except that
-    /// H.265 `Main10` automatically selects `yuv420p10le`.
-    #[must_use]
-    pub fn pixel_format(mut self, fmt: ff_format::PixelFormat) -> Self {
-        self.pixel_format = Some(fmt);
-        self
-    }
-
-    // === HDR metadata ===
-
-    /// Embed HDR10 static metadata in the output.
-    ///
-    /// Sets `color_primaries = BT.2020`, `color_trc = SMPTE ST 2084 (PQ)`,
-    /// and `colorspace = BT.2020 NCL` on the codec context, then attaches
-    /// `AV_PKT_DATA_CONTENT_LIGHT_LEVEL` and
-    /// `AV_PKT_DATA_MASTERING_DISPLAY_METADATA` packet side data to every
-    /// keyframe.
-    ///
-    /// Pair with [`codec_options`](Self::codec_options) using
-    /// `H265Options { profile: H265Profile::Main10, .. }`
-    /// and [`pixel_format(PixelFormat::Yuv420p10le)`](Self::pixel_format) for a
-    /// complete HDR10 pipeline.
-    #[must_use]
-    pub fn hdr10_metadata(mut self, meta: ff_format::Hdr10Metadata) -> Self {
-        self.hdr10_metadata = Some(meta);
-        self
-    }
-
-    // === Color tagging ===
-
-    /// Override the color space (matrix coefficients) written to the codec context.
-    ///
-    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata, if set
-    /// via [`hdr10_metadata()`](Self::hdr10_metadata), automatically selects
-    /// BT.2020 NCL — this setter takes priority over that automatic choice.
-    #[must_use]
-    pub fn color_space(mut self, cs: ff_format::ColorSpace) -> Self {
-        self.color_space = Some(cs);
-        self
-    }
-
-    /// Override the color transfer characteristic (gamma curve) written to the codec context.
-    ///
-    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata
-    /// automatically selects PQ (SMPTE ST 2084) — this setter takes priority.
-    /// Use [`ColorTransfer::Hlg`](ff_format::ColorTransfer::Hlg) for HLG broadcast HDR.
-    #[must_use]
-    pub fn color_transfer(mut self, trc: ff_format::ColorTransfer) -> Self {
-        self.color_transfer = Some(trc);
-        self
-    }
-
-    /// Override the color primaries written to the codec context.
-    ///
-    /// When omitted the encoder uses the FFmpeg default. HDR10 metadata
-    /// automatically selects BT.2020 — this setter takes priority.
-    #[must_use]
-    pub fn color_primaries(mut self, cp: ff_format::ColorPrimaries) -> Self {
-        self.color_primaries = Some(cp);
-        self
-    }
-
-    // === Attachments ===
-
-    /// Embed a binary attachment in the output container.
-    ///
-    /// Attachments are supported in MKV/WebM containers and are used for
-    /// fonts (required by ASS/SSA subtitle rendering), cover art, or other
-    /// binary files that consumers of the file may need.
-    ///
-    /// - `data` — raw bytes of the attachment
-    /// - `mime_type` — MIME type string (e.g. `"application/x-truetype-font"`,
-    ///   `"image/jpeg"`)
-    /// - `filename` — the name reported inside the container (e.g. `"Arial.ttf"`)
-    ///
-    /// Multiple calls accumulate entries; each attachment becomes its own stream
-    /// with `AVMEDIA_TYPE_ATTACHMENT` codec parameters.
-    #[must_use]
-    pub fn add_attachment(mut self, data: Vec<u8>, mime_type: &str, filename: &str) -> Self {
-        self.attachments
-            .push((data, mime_type.to_string(), filename.to_string()));
-        self
-    }
-
-    // === Build ===
 
     /// Validate builder state and open the output file.
     ///
@@ -1129,58 +878,6 @@ mod tests {
     }
 
     #[test]
-    fn builder_video_settings_should_be_stored() {
-        let builder = VideoEncoder::create(test_out("output.mp4"))
-            .video(1920, 1080, 30.0)
-            .video_codec(VideoCodec::H264)
-            .bitrate_mode(crate::BitrateMode::Cbr(8_000_000));
-        assert_eq!(builder.video_width, Some(1920));
-        assert_eq!(builder.video_height, Some(1080));
-        assert_eq!(builder.video_fps, Some(30.0));
-        assert_eq!(builder.video_codec, VideoCodec::H264);
-        assert_eq!(
-            builder.video_bitrate_mode,
-            Some(crate::BitrateMode::Cbr(8_000_000))
-        );
-    }
-
-    #[test]
-    fn builder_audio_settings_should_be_stored() {
-        let builder = VideoEncoder::create(test_out("output.mp4"))
-            .audio(48000, 2)
-            .audio_codec(AudioCodec::Aac)
-            .audio_bitrate(192_000);
-        assert_eq!(builder.audio_sample_rate, Some(48000));
-        assert_eq!(builder.audio_channels, Some(2));
-        assert_eq!(builder.audio_codec, AudioCodec::Aac);
-        assert_eq!(builder.audio_bitrate, Some(192_000));
-    }
-
-    #[test]
-    fn builder_preset_should_be_stored() {
-        let builder = VideoEncoder::create(test_out("output.mp4"))
-            .video(1920, 1080, 30.0)
-            .preset(Preset::Fast);
-        assert_eq!(builder.preset, Preset::Fast);
-    }
-
-    #[test]
-    fn builder_hardware_encoder_should_be_stored() {
-        let builder = VideoEncoder::create(test_out("output.mp4"))
-            .video(1920, 1080, 30.0)
-            .hardware_encoder(HardwareEncoder::Nvenc);
-        assert_eq!(builder.hardware_encoder, HardwareEncoder::Nvenc);
-    }
-
-    #[test]
-    fn builder_container_should_be_stored() {
-        let builder = VideoEncoder::create(test_out("output.mp4"))
-            .video(1920, 1080, 30.0)
-            .container(OutputContainer::Mp4);
-        assert_eq!(builder.container, Some(OutputContainer::Mp4));
-    }
-
-    #[test]
     fn build_without_streams_should_return_error() {
         let result = VideoEncoder::create(test_out("output.mp4")).build();
         assert!(result.is_err());
@@ -1208,14 +905,6 @@ mod tests {
             .video(1920, 1080, -1.0)
             .build();
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn two_pass_flag_should_be_stored_in_builder() {
-        let builder = VideoEncoder::create(test_out("output.mp4"))
-            .video(640, 480, 30.0)
-            .two_pass();
-        assert!(builder.two_pass);
     }
 
     #[test]
@@ -1318,23 +1007,37 @@ mod tests {
     }
 
     #[test]
-    fn add_attachment_should_accumulate_entries() {
-        let builder = VideoEncoder::create(test_out("output.mkv"))
-            .video(320, 240, 30.0)
-            .add_attachment(vec![1, 2, 3], "application/x-truetype-font", "font.ttf")
-            .add_attachment(vec![4, 5, 6], "image/jpeg", "cover.jpg");
-        assert_eq!(builder.attachments.len(), 2);
-        assert_eq!(builder.attachments[0].0, vec![1u8, 2, 3]);
-        assert_eq!(builder.attachments[0].1, "application/x-truetype-font");
-        assert_eq!(builder.attachments[0].2, "font.ttf");
-        assert_eq!(builder.attachments[1].1, "image/jpeg");
-        assert_eq!(builder.attachments[1].2, "cover.jpg");
+    fn webm_extension_without_explicit_codec_should_default_to_vp9_opus() {
+        let builder = VideoEncoder::create(test_out("output.webm")).video(640, 480, 30.0);
+        let normalized = builder.apply_container_defaults();
+        assert_eq!(normalized.video_codec, VideoCodec::Vp9);
+        assert_eq!(normalized.audio_codec, AudioCodec::Opus);
     }
 
     #[test]
-    fn add_attachment_with_no_attachments_should_start_empty() {
-        let builder = VideoEncoder::create(test_out("output.mkv")).video(320, 240, 30.0);
-        assert!(builder.attachments.is_empty());
+    fn webm_extension_with_explicit_vp9_should_preserve_codec() {
+        let builder = VideoEncoder::create(test_out("output.webm"))
+            .video(640, 480, 30.0)
+            .video_codec(VideoCodec::Vp9);
+        assert!(builder.video_codec_explicit);
+        let normalized = builder.apply_container_defaults();
+        assert_eq!(normalized.video_codec, VideoCodec::Vp9);
+    }
+
+    #[test]
+    fn avi_extension_without_explicit_codec_should_default_to_h264_mp3() {
+        let builder = VideoEncoder::create(test_out("output.avi")).video(640, 480, 30.0);
+        let normalized = builder.apply_container_defaults();
+        assert_eq!(normalized.video_codec, VideoCodec::H264);
+        assert_eq!(normalized.audio_codec, AudioCodec::Mp3);
+    }
+
+    #[test]
+    fn mov_extension_without_explicit_codec_should_default_to_h264_aac() {
+        let builder = VideoEncoder::create(test_out("output.mov")).video(640, 480, 30.0);
+        let normalized = builder.apply_container_defaults();
+        assert_eq!(normalized.video_codec, VideoCodec::H264);
+        assert_eq!(normalized.audio_codec, AudioCodec::Aac);
     }
 
     #[test]
@@ -1376,24 +1079,6 @@ mod tests {
     }
 
     #[test]
-    fn webm_extension_without_explicit_codec_should_default_to_vp9_opus() {
-        let builder = VideoEncoder::create(test_out("output.webm")).video(640, 480, 30.0);
-        let normalized = builder.apply_container_defaults();
-        assert_eq!(normalized.video_codec, VideoCodec::Vp9);
-        assert_eq!(normalized.audio_codec, AudioCodec::Opus);
-    }
-
-    #[test]
-    fn webm_extension_with_explicit_vp9_should_preserve_codec() {
-        let builder = VideoEncoder::create(test_out("output.webm"))
-            .video(640, 480, 30.0)
-            .video_codec(VideoCodec::Vp9);
-        assert!(builder.video_codec_explicit);
-        let normalized = builder.apply_container_defaults();
-        assert_eq!(normalized.video_codec, VideoCodec::Vp9);
-    }
-
-    #[test]
     fn webm_container_enum_with_incompatible_codec_should_return_error() {
         let result = VideoEncoder::create(test_out("output.mkv"))
             .video(640, 480, 30.0)
@@ -1418,22 +1103,6 @@ mod tests {
             result,
             Err(crate::EncodeError::UnsupportedContainerCodecCombination { .. })
         ));
-    }
-
-    #[test]
-    fn avi_extension_without_explicit_codec_should_default_to_h264_mp3() {
-        let builder = VideoEncoder::create(test_out("output.avi")).video(640, 480, 30.0);
-        let normalized = builder.apply_container_defaults();
-        assert_eq!(normalized.video_codec, VideoCodec::H264);
-        assert_eq!(normalized.audio_codec, AudioCodec::Mp3);
-    }
-
-    #[test]
-    fn mov_extension_without_explicit_codec_should_default_to_h264_aac() {
-        let builder = VideoEncoder::create(test_out("output.mov")).video(640, 480, 30.0);
-        let normalized = builder.apply_container_defaults();
-        assert_eq!(normalized.video_codec, VideoCodec::H264);
-        assert_eq!(normalized.audio_codec, AudioCodec::Aac);
     }
 
     #[test]
