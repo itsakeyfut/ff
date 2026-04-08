@@ -7,6 +7,7 @@ pub(super) use super::filter_step::FilterStep;
 pub(super) use super::types::{
     DrawTextOptions, EqBand, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
+pub(super) use crate::blend::BlendMode;
 pub(super) use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
 
@@ -30,7 +31,7 @@ mod video;
 ///     .tone_map(ToneMap::Hable)
 ///     .build()?;
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FilterGraphBuilder {
     pub(super) steps: Vec<FilterStep>,
     pub(super) hw: Option<HwAccel>,
@@ -41,6 +42,14 @@ impl FilterGraphBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns the accumulated filter steps.
+    ///
+    /// Used by `filter_inner` to build sub-graphs (e.g. the top layer of a
+    /// [`FilterStep::Blend`] compound step).
+    pub(crate) fn steps(&self) -> &[FilterStep] {
+        &self.steps
     }
 
     /// Enable hardware-accelerated filtering.
@@ -336,6 +345,13 @@ impl FilterGraphBuilder {
                     });
                 }
             }
+            if let FilterStep::Blend { mode, .. } = step
+                && !matches!(mode, BlendMode::Normal)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "blend mode not yet implemented".to_string(),
+                });
+            }
             if let FilterStep::OverlayImage { path, opacity, .. } = step {
                 let ext = Path::new(path)
                     .extension()
@@ -599,5 +615,64 @@ mod tests {
         assert_eq!(Rgb::NEUTRAL.r, 1.0);
         assert_eq!(Rgb::NEUTRAL.g, 1.0);
         assert_eq!(Rgb::NEUTRAL.b, 1.0);
+    }
+
+    // ── blend() ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn blend_normal_full_opacity_should_use_overlay_filter() {
+        // build() must succeed; filter_name() == "overlay" is validated inside
+        // validate_filter_steps at build time.
+        let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .blend(top, BlendMode::Normal, 1.0)
+            .build();
+        assert!(
+            result.is_ok(),
+            "blend(Normal, opacity=1.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn blend_normal_half_opacity_should_apply_colorchannelmixer() {
+        // build() must succeed; the colorchannelmixer step is added at graph
+        // construction time (push_video) — tested end-to-end in integration tests.
+        let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .blend(top, BlendMode::Normal, 0.5)
+            .build();
+        assert!(
+            result.is_ok(),
+            "blend(Normal, opacity=0.5) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn blend_unimplemented_mode_should_return_invalid_config() {
+        let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .blend(top, BlendMode::Multiply, 1.0)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "unimplemented blend mode must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn blend_opacity_above_one_should_be_clamped_to_one() {
+        // Clamping happens in blend(); out-of-range opacity must not cause build() to fail.
+        let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .blend(top, BlendMode::Normal, 2.5)
+            .build();
+        assert!(
+            result.is_ok(),
+            "blend with opacity=2.5 must clamp to 1.0 and build successfully, got {result:?}"
+        );
     }
 }

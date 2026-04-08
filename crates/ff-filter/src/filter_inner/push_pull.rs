@@ -171,6 +171,7 @@ impl FilterGraphInner {
                 FilterStep::Overlay { .. }
                     | FilterStep::XFade { .. }
                     | FilterStep::JoinWithDissolve { .. }
+                    | FilterStep::Blend { .. }
             ) {
                 return 2;
             }
