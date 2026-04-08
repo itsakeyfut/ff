@@ -10,8 +10,8 @@
 #![allow(clippy::unwrap_used)]
 
 use ff_filter::{
-    DrawTextOptions, FilterError, FilterGraph, HwAccel, Rgb, ScaleAlgorithm, ToneMap,
-    XfadeTransition, YadifMode,
+    BlendMode, DrawTextOptions, FilterError, FilterGraph, FilterGraphBuilder, HwAccel, Rgb,
+    ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
 use ff_format::{AudioFrame, PixelFormat, PooledBuffer, SampleFormat, Timestamp, VideoFrame};
 
@@ -1472,5 +1472,157 @@ fn push_two_clips_through_join_with_dissolve_should_produce_output() {
         out.height(),
         64,
         "output height should match input after join_with_dissolve"
+    );
+}
+
+// ── Blend: Multiply and Screen ────────────────────────────────────────────────
+
+/// YUV420p frame filled with a solid luma value; U/V neutral at 128.
+fn make_solid_yuv_frame(width: u32, height: u32, y_val: u8) -> VideoFrame {
+    let y = vec![y_val; (width * height) as usize];
+    let u = vec![128u8; ((width / 2) * (height / 2)) as usize];
+    let v = vec![128u8; ((width / 2) * (height / 2)) as usize];
+    VideoFrame::new(
+        vec![
+            PooledBuffer::standalone(y),
+            PooledBuffer::standalone(u),
+            PooledBuffer::standalone(v),
+        ],
+        vec![width as usize, (width / 2) as usize, (width / 2) as usize],
+        width,
+        height,
+        PixelFormat::Yuv420p,
+        Timestamp::default(),
+        true,
+    )
+    .unwrap()
+}
+
+#[test]
+fn blend_multiply_black_top_should_produce_black_output() {
+    // Multiply(bottom=Y128, top=Y0) = 0: black top kills all luma.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::Multiply, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 0);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg < 10.0,
+        "Multiply with black top should produce near-black output (avg={avg})"
+    );
+}
+
+#[test]
+fn blend_multiply_white_top_should_be_identity() {
+    // Multiply(bottom=Y128, top=Y255) = 128 * 255 / 255 = 128: identity.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::Multiply, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 255);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        (avg - 128.0).abs() < 15.0,
+        "Multiply with white top should preserve bottom luma (avg={avg})"
+    );
+}
+
+#[test]
+fn blend_screen_white_top_should_produce_white_output() {
+    // Screen(bottom=Y128, top=Y255) = 255: white top saturates to white.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::Screen, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 255);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg > 245.0,
+        "Screen with white top should produce near-white output (avg={avg})"
     );
 }

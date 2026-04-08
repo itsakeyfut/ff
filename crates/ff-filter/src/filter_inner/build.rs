@@ -689,6 +689,103 @@ pub(super) unsafe fn add_blend_normal_step(
     Ok(overlay_ctx)
 }
 
+// ── Blend photographic-mode compound step ────────────────────────────────────
+
+/// Insert a photographic-mode blend compound step (Multiply, Screen, etc.).
+///
+/// Chains `top_steps` on `top_src_ctx`, then creates
+/// `blend=all_mode=<mode_name>[:all_opacity=<opacity>]` and links both inputs.
+///
+/// ```text
+/// [in1]top_steps...[top_processed]
+/// [bottom_ctx][top_processed]blend=all_mode=<mode>[out]
+/// ```
+///
+/// # Safety
+///
+/// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
+/// same `AVFilterGraph`.
+pub(super) unsafe fn add_blend_photographic_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    bottom_ctx: *mut ff_sys::AVFilterContext,
+    top_src_ctx: *mut ff_sys::AVFilterContext,
+    top_steps: &[FilterStep],
+    mode_name: &str,
+    opacity: f32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    // 1. Chain the top builder's steps starting from the in1 buffersrc.
+    let mut top_ctx = top_src_ctx;
+    for (j, step) in top_steps.iter().enumerate() {
+        // Skip audio-only steps; they have no place in the video blend chain.
+        if matches!(
+            step,
+            FilterStep::AReverse
+                | FilterStep::AFadeIn { .. }
+                | FilterStep::AFadeOut { .. }
+                | FilterStep::ParametricEq { .. }
+                | FilterStep::ANoiseGate { .. }
+                | FilterStep::ACompressor { .. }
+                | FilterStep::StereoToMono
+                | FilterStep::ChannelMap { .. }
+                | FilterStep::AudioDelay { .. }
+                | FilterStep::ConcatAudio { .. }
+                | FilterStep::LoudnessNormalize { .. }
+                | FilterStep::NormalizePeak { .. }
+        ) {
+            continue;
+        }
+        top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
+    }
+
+    // 2. Create the blend filter.
+    let blend_filter = ff_sys::avfilter_get_by_name(c"blend".as_ptr());
+    if blend_filter.is_null() {
+        log::warn!("filter not found name=blend (blend_photographic)");
+        return Err(FilterError::BuildFailed);
+    }
+    let blend_name =
+        CString::new(format!("blend_phot{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let blend_args_str = if (opacity - 1.0).abs() < f32::EPSILON {
+        format!("all_mode={mode_name}")
+    } else {
+        format!("all_mode={mode_name}:all_opacity={opacity}")
+    };
+    let blend_args = CString::new(blend_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut blend_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut blend_ctx,
+        blend_filter,
+        blend_name.as_ptr(),
+        blend_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=blend args={blend_args_str} (blend_photographic)");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=blend args={blend_args_str} index={index} (blend_photographic)");
+
+    // 3. Link: bottom → blend[0], top → blend[1].
+    // SAFETY: bottom_ctx, top_ctx, blend_ctx are all in the same graph.
+    let ret = ff_sys::avfilter_link(bottom_ctx, 0, blend_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(top_ctx, 0, blend_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    log::debug!(
+        "filter blend_photographic expanded mode={mode_name} opacity={opacity} index={index}"
+    );
+    Ok(blend_ctx)
+}
+
 // ── buffersrc / buffersink arg-string helpers ──────────────────────────────────
 
 /// Build the `args` string passed to `avfilter_graph_create_filter` when
@@ -1145,6 +1242,36 @@ impl FilterGraphInner {
                     prev_ctx,
                     top_src.as_ptr(),
                     top.steps(),
+                    *opacity,
+                    i,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            // Blend (photographic modes: Multiply, Screen)
+            if let FilterStep::Blend {
+                top,
+                mode: mode @ (BlendMode::Multiply | BlendMode::Screen),
+                opacity,
+            } = step
+            {
+                let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
+                    bail!(FilterError::BuildFailed)
+                };
+                let mode_name = match mode {
+                    BlendMode::Multiply => "multiply",
+                    BlendMode::Screen => "screen",
+                    _ => unreachable!(),
+                };
+                prev_ctx = match add_blend_photographic_step(
+                    graph,
+                    prev_ctx,
+                    top_src.as_ptr(),
+                    top.steps(),
+                    mode_name,
                     *opacity,
                     i,
                 ) {
