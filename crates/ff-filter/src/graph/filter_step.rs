@@ -1,8 +1,10 @@
 //! Internal filter step representation.
 
+use super::builder::FilterGraphBuilder;
 use super::types::{
     DrawTextOptions, EqBand, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
+use crate::blend::BlendMode;
 
 // ── FilterStep ────────────────────────────────────────────────────────────────
 
@@ -372,6 +374,29 @@ pub enum FilterStep {
         /// Opacity 0.0 (fully transparent) to 1.0 (fully opaque).
         opacity: f32,
     },
+
+    /// Blend a `top` layer over the current stream (bottom) using the given mode.
+    ///
+    /// This is a compound step:
+    /// - **Normal** mode: `[top]colorchannelmixer=aa=<opacity>[top_faded];
+    ///   [bottom][top_faded]overlay=format=auto:shortest=1[out]`
+    ///   (the `colorchannelmixer` step is omitted when `opacity == 1.0`).
+    /// - All other modes return [`crate::FilterError::InvalidConfig`] from
+    ///   [`crate::FilterGraphBuilder::build`] until implemented.
+    ///
+    /// The `top` builder's steps are applied to the second input slot (`in1`).
+    /// `opacity` is clamped to `[0.0, 1.0]` by the builder method.
+    ///
+    /// `Box<FilterGraphBuilder>` is used to break the otherwise-recursive type:
+    /// `FilterStep` → `FilterGraphBuilder` → `Vec<FilterStep>`.
+    Blend {
+        /// Filter pipeline for the top (foreground) layer.
+        top: Box<FilterGraphBuilder>,
+        /// How the two layers are combined.
+        mode: BlendMode,
+        /// Opacity of the top layer in `[0.0, 1.0]`; 1.0 = fully opaque.
+        opacity: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -469,6 +494,10 @@ impl FilterStep {
             // check.  The actual graph construction is handled by
             // `filter_inner::build::add_overlay_image_step`.
             Self::OverlayImage { .. } => "overlay",
+            // Blend is a compound step; "overlay" is used as the primary filter
+            // for validate_filter_steps.  Unimplemented modes are caught by
+            // build() before validate_filter_steps is reached.
+            Self::Blend { .. } => "overlay",
         }
     }
 
@@ -684,6 +713,10 @@ impl FilterStep {
             // These are not consumed by add_and_link_step (which is bypassed for
             // this compound step); they exist here only for completeness.
             Self::OverlayImage { x, y, .. } => format!("{x}:{y}"),
+            // args() for Blend is not consumed by add_and_link_step (which is
+            // bypassed in favour of add_blend_normal_step).  Provided for
+            // completeness using the Normal-mode overlay args.
+            Self::Blend { .. } => "format=auto:shortest=1".to_string(),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by

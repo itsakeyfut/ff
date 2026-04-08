@@ -4,6 +4,7 @@ use super::{
     AUDIO_TIME_BASE_NUM, BuildResult, FilterCtxVec, VIDEO_TIME_BASE_DEN, VIDEO_TIME_BASE_NUM,
     VideoGraphResult, ffmpeg_err,
 };
+use crate::blend::BlendMode;
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::types::{EqBand, HwAccel};
@@ -556,6 +557,138 @@ pub(super) unsafe fn add_overlay_image_step(
     Ok(overlay_ctx)
 }
 
+// ── Blend Normal mode compound step ──────────────────────────────────────────
+
+/// Insert a Normal-mode blend compound step.
+///
+/// The top layer's `top_steps` are first applied to `top_src_ctx` (the `in1`
+/// buffersrc), then optionally followed by `colorchannelmixer=aa=<opacity>` when
+/// `opacity < 1.0`.  The result is composited onto `bottom_ctx` using
+/// `overlay=format=auto:shortest=1`.
+///
+/// ```text
+/// [in1]top_steps...[top_processed]
+/// [top_processed]colorchannelmixer=aa=<opacity>[top_faded]   ← when opacity < 1.0
+/// [bottom_ctx][top_faded]overlay=format=auto:shortest=1[out]
+/// ```
+///
+/// # Safety
+///
+/// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
+/// same `AVFilterGraph`.
+pub(super) unsafe fn add_blend_normal_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    bottom_ctx: *mut ff_sys::AVFilterContext,
+    top_src_ctx: *mut ff_sys::AVFilterContext,
+    top_steps: &[FilterStep],
+    opacity: f32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    // 1. Chain the top builder's steps starting from the in1 buffersrc.
+    let mut top_ctx = top_src_ctx;
+    for (j, step) in top_steps.iter().enumerate() {
+        // Skip audio-only steps; they have no place in the video blend chain.
+        if matches!(
+            step,
+            FilterStep::AReverse
+                | FilterStep::AFadeIn { .. }
+                | FilterStep::AFadeOut { .. }
+                | FilterStep::ParametricEq { .. }
+                | FilterStep::ANoiseGate { .. }
+                | FilterStep::ACompressor { .. }
+                | FilterStep::StereoToMono
+                | FilterStep::ChannelMap { .. }
+                | FilterStep::AudioDelay { .. }
+                | FilterStep::ConcatAudio { .. }
+                | FilterStep::LoudnessNormalize { .. }
+                | FilterStep::NormalizePeak { .. }
+        ) {
+            continue;
+        }
+        top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
+    }
+
+    // 2. When opacity < 1.0, attenuate the top layer's alpha channel.
+    if opacity < 1.0 {
+        let ccm_name =
+            CString::new(format!("blend_ccm{index}")).map_err(|_| FilterError::BuildFailed)?;
+        let ccm_args_str = format!("aa={opacity}");
+        let ccm_args = CString::new(ccm_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+
+        let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
+        if ccm_filter.is_null() {
+            log::warn!("filter not found name=colorchannelmixer (blend_normal)");
+            return Err(FilterError::BuildFailed);
+        }
+
+        let mut ccm_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut ccm_ctx,
+            ccm_filter,
+            ccm_name.as_ptr(),
+            ccm_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            log::warn!("filter creation failed name=colorchannelmixer args={ccm_args_str}");
+            return Err(FilterError::BuildFailed);
+        }
+        log::debug!("filter added name=colorchannelmixer args={ccm_args_str} index={index}");
+
+        // SAFETY: top_ctx and ccm_ctx belong to the same graph; pad indices valid.
+        let ret = ff_sys::avfilter_link(top_ctx, 0, ccm_ctx, 0);
+        if ret < 0 {
+            return Err(FilterError::BuildFailed);
+        }
+        top_ctx = ccm_ctx;
+    }
+
+    // 3. Create the overlay filter.
+    let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
+    if overlay_filter.is_null() {
+        log::warn!("filter not found name=overlay (blend_normal)");
+        return Err(FilterError::BuildFailed);
+    }
+    let overlay_name =
+        CString::new(format!("blend_overlay{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let overlay_args = c"format=auto:shortest=1";
+    let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut overlay_ctx,
+        overlay_filter,
+        overlay_name.as_ptr(),
+        overlay_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!(
+            "filter creation failed name=overlay args=format=auto:shortest=1 (blend_normal)"
+        );
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!(
+        "filter added name=overlay args=format=auto:shortest=1 index={index} (blend_normal)"
+    );
+
+    // 4. Link: bottom → overlay[0], top → overlay[1].
+    // SAFETY: bottom_ctx, top_ctx, overlay_ctx are all in the same graph.
+    let ret = ff_sys::avfilter_link(bottom_ctx, 0, overlay_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(top_ctx, 0, overlay_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    log::debug!("filter blend_normal expanded opacity={opacity} index={index}");
+    Ok(overlay_ctx)
+}
+
 // ── buffersrc / buffersink arg-string helpers ──────────────────────────────────
 
 /// Build the `args` string passed to `avfilter_graph_create_filter` when
@@ -994,6 +1127,33 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // Blend (Normal mode) is a compound step:
+            //   prev → [bottom]overlay=format=auto:shortest=1 ← [top][ccm]
+            // where [top] is in1 with the top builder's steps applied.
+            // Unimplemented modes are caught by build() before reaching here.
+            if let FilterStep::Blend {
+                top,
+                mode: BlendMode::Normal,
+                opacity,
+            } = step
+            {
+                let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
+                    bail!(FilterError::BuildFailed)
+                };
+                prev_ctx = match add_blend_normal_step(
+                    graph,
+                    prev_ctx,
+                    top_src.as_ptr(),
+                    top.steps(),
+                    *opacity,
+                    i,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
             prev_ctx = match add_and_link_step(graph, prev_ctx, step, i, "step") {
                 Ok(ctx) => ctx,
                 Err(e) => bail!(e),
@@ -1186,6 +1346,7 @@ impl FilterGraphInner {
                 FilterStep::Reverse
                     | FilterStep::ConcatVideo { .. }
                     | FilterStep::JoinWithDissolve { .. }
+                    | FilterStep::Blend { .. }
             ) {
                 continue;
             }

@@ -4,6 +4,7 @@
 pub(super) use super::*;
 
 mod color;
+mod compositing;
 mod core;
 mod effects;
 mod geometry;

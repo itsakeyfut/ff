@@ -32,11 +32,13 @@
 //! - `filter_inner` — `pub(crate)` unsafe `FFmpeg` calls (not part of the public API)
 
 pub mod analysis;
+pub mod blend;
 pub mod error;
 mod filter_inner;
 pub mod graph;
 
 pub use analysis::{LoudnessMeter, LoudnessResult, QualityMetrics};
+pub use blend::BlendMode;
 pub use error::FilterError;
 pub use graph::{
     AudioConcatenator, AudioTrack, ClipJoiner, DrawTextOptions, EqBand, FilterGraph,
