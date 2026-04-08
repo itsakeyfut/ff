@@ -1261,7 +1261,9 @@ impl FilterGraphInner {
                     | BlendMode::SoftLight
                     | BlendMode::HardLight
                     | BlendMode::ColorDodge
-                    | BlendMode::ColorBurn),
+                    | BlendMode::ColorBurn
+                    | BlendMode::Darken
+                    | BlendMode::Lighten),
                 opacity,
             } = step
             {
@@ -1276,6 +1278,8 @@ impl FilterGraphInner {
                     BlendMode::HardLight => "hardlight",
                     BlendMode::ColorDodge => "colordodge",
                     BlendMode::ColorBurn => "colorburn",
+                    BlendMode::Darken => "darken",
+                    BlendMode::Lighten => "lighten",
                     _ => unreachable!(),
                 };
                 prev_ctx = match add_blend_photographic_step(

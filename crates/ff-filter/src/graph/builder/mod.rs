@@ -356,6 +356,8 @@ impl FilterGraphBuilder {
                         | BlendMode::HardLight
                         | BlendMode::ColorDodge
                         | BlendMode::ColorBurn
+                        | BlendMode::Darken
+                        | BlendMode::Lighten
                 )
             {
                 return Err(FilterError::InvalidConfig {
@@ -664,7 +666,7 @@ mod tests {
         let top = FilterGraphBuilder::new().trim(0.0, 5.0);
         let result = FilterGraph::builder()
             .trim(0.0, 5.0)
-            .blend(top, BlendMode::Darken, 1.0)
+            .blend(top, BlendMode::Difference, 1.0)
             .build();
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),

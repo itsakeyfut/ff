@@ -1756,3 +1756,89 @@ fn blend_colorburn_should_produce_darker_output() {
         "ColorBurn should produce darker output than bottom luma=128 (avg={avg})"
     );
 }
+
+#[test]
+fn blend_darken_black_top_should_produce_black_output() {
+    // Darken(bottom=Y128, top=Y0): min(128, 0) = 0.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::Darken, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 0);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg < 10.0,
+        "Darken with black top should produce near-black output (avg={avg})"
+    );
+}
+
+#[test]
+fn blend_lighten_white_top_should_produce_white_output() {
+    // Lighten(bottom=Y128, top=Y255): max(128, 255) = 255.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::Lighten, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 255);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg > 245.0,
+        "Lighten with white top should produce near-white output (avg={avg})"
+    );
+}
