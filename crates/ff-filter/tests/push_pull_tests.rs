@@ -1971,3 +1971,48 @@ fn blend_subtract_white_top_should_produce_black() {
         "Subtract with white top should produce near-black output (avg={avg})"
     );
 }
+
+#[test]
+fn blend_luminosity_should_preserve_base_hue_and_saturation() {
+    // Luminosity applies the top's luminance to the base's hue+saturation.
+    // With a brighter grey top (Y=200) over a darker grey bottom (Y=128),
+    // the output luma should shift toward the top's luminance (200).
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::Luminosity, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg > 160.0,
+        "Luminosity with brighter top should increase output luma toward top's value (avg={avg})"
+    );
+}

@@ -1267,7 +1267,11 @@ impl FilterGraphInner {
                     | BlendMode::Difference
                     | BlendMode::Exclusion
                     | BlendMode::Add
-                    | BlendMode::Subtract),
+                    | BlendMode::Subtract
+                    | BlendMode::Hue
+                    | BlendMode::Saturation
+                    | BlendMode::Color
+                    | BlendMode::Luminosity),
                 opacity,
             } = step
             {
@@ -1288,6 +1292,10 @@ impl FilterGraphInner {
                     BlendMode::Exclusion => "exclusion",
                     BlendMode::Add => "addition",
                     BlendMode::Subtract => "subtract",
+                    BlendMode::Hue => "hue",
+                    BlendMode::Saturation => "saturation",
+                    BlendMode::Color => "color",
+                    BlendMode::Luminosity => "luminosity",
                     _ => unreachable!(),
                 };
                 prev_ctx = match add_blend_photographic_step(
