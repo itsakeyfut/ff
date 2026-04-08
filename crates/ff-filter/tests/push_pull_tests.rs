@@ -1670,3 +1670,89 @@ fn blend_overlay_midgray_top_should_be_identity() {
         "Overlay with mid-gray top should leave bottom luma approximately unchanged (avg={avg})"
     );
 }
+
+#[test]
+fn blend_colordodge_should_produce_brighter_output() {
+    // ColorDodge(bottom=Y128, top=Y128): result = bottom / (1 - top) → saturates toward white.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::ColorDodge, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 128);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg > 140.0,
+        "ColorDodge should produce brighter output than bottom luma=128 (avg={avg})"
+    );
+}
+
+#[test]
+fn blend_colorburn_should_produce_darker_output() {
+    // ColorBurn(bottom=Y128, top=Y128): result = 1 - (1 - bottom) / top → darkens toward black.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::ColorBurn, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 128);
+    let top_frame = make_solid_yuv_frame(64, 64, 128);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg < 115.0,
+        "ColorBurn should produce darker output than bottom luma=128 (avg={avg})"
+    );
+}
