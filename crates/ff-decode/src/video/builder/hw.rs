@@ -28,7 +28,7 @@ impl VideoDecoderBuilder {
     ///
     /// If the requested hardware accelerator is unavailable, the decoder
     /// will fall back to software decoding unless
-    /// [`DecodeError::HwAccelUnavailable`] is explicitly requested.
+    /// `DecodeError::HwAccelUnavailable` is explicitly requested.
     ///
     /// # Examples
     ///

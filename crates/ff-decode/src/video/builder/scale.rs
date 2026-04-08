@@ -17,7 +17,7 @@ impl VideoDecoderBuilder {
     ///
     /// # Errors
     ///
-    /// [`build()`](Self::build) returns [`DecodeError::InvalidOutputDimensions`]
+    /// [`build()`](Self::build) returns `DecodeError::InvalidOutputDimensions`
     /// if either dimension is zero after rounding.
     ///
     /// # Examples
@@ -44,7 +44,7 @@ impl VideoDecoderBuilder {
     ///
     /// # Errors
     ///
-    /// [`build()`](Self::build) returns [`DecodeError::InvalidOutputDimensions`]
+    /// [`build()`](Self::build) returns `DecodeError::InvalidOutputDimensions`
     /// if `width` is zero.
     ///
     /// # Examples
@@ -71,7 +71,7 @@ impl VideoDecoderBuilder {
     ///
     /// # Errors
     ///
-    /// [`build()`](Self::build) returns [`DecodeError::InvalidOutputDimensions`]
+    /// [`build()`](Self::build) returns `DecodeError::InvalidOutputDimensions`
     /// if `height` is zero.
     ///
     /// # Examples
