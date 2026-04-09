@@ -484,6 +484,35 @@ pub enum FilterStep {
         /// When `true`, the alpha channel is negated after keying.
         invert: bool,
     },
+
+    /// Apply a rectangular alpha mask using `FFmpeg`'s `geq` filter.
+    ///
+    /// Pixels inside the rectangle defined by (`x`, `y`, `width`, `height`)
+    /// are made fully opaque (`alpha=255`); pixels outside are made fully
+    /// transparent (`alpha=0`).  When `invert` is `true` the roles are swapped:
+    /// inside becomes transparent and outside becomes opaque.
+    ///
+    /// - `x`, `y`: top-left corner of the rectangle (in pixels).
+    /// - `width`, `height`: rectangle dimensions (must be > 0).
+    /// - `invert`: when `false`, keeps the interior; when `true`, keeps the
+    ///   exterior.
+    ///
+    /// `width` and `height` are validated in [`build`](FilterGraphBuilder::build);
+    /// zero values return [`crate::FilterError::InvalidConfig`].
+    ///
+    /// The output carries an alpha channel (`rgba`).
+    RectMask {
+        /// Left edge of the rectangle (pixels from the left).
+        x: u32,
+        /// Top edge of the rectangle (pixels from the top).
+        y: u32,
+        /// Width of the rectangle in pixels (must be > 0).
+        width: u32,
+        /// Height of the rectangle in pixels (must be > 0).
+        height: u32,
+        /// When `true`, the mask is inverted: outside is opaque, inside is transparent.
+        invert: bool,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -594,6 +623,8 @@ impl FilterStep {
             // LumaKey is a compound step when invert=true (lumakey + geq);
             // "lumakey" is used here for validate_filter_steps.
             Self::LumaKey { .. } => "lumakey",
+            // RectMask uses geq to set alpha per-pixel based on rectangle bounds.
+            Self::RectMask { .. } => "geq",
         }
     }
 
@@ -833,6 +864,21 @@ impl FilterStep {
                 softness,
                 ..
             } => format!("threshold={threshold}:tolerance={tolerance}:softness={softness}"),
+            Self::RectMask {
+                x,
+                y,
+                width,
+                height,
+                invert,
+            } => {
+                let xw = x + width - 1;
+                let yh = y + height - 1;
+                let (inside, outside) = if *invert { (0, 255) } else { (255, 0) };
+                format!(
+                    "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
+                     a='if(between(X,{x},{xw})*between(Y,{y},{yh}),{inside},{outside})'"
+                )
+            }
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by

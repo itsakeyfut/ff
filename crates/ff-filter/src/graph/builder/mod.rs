@@ -407,6 +407,13 @@ impl FilterGraphBuilder {
                     });
                 }
             }
+            if let FilterStep::RectMask { width, height, .. } = step
+                && (*width == 0 || *height == 0)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "rect_mask width and height must be > 0".to_string(),
+                });
+            }
             if let FilterStep::OverlayImage { path, opacity, .. } = step {
                 let ext = Path::new(path)
                     .extension()
@@ -799,6 +806,30 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "spill_suppress strength < 0.0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rect_mask_zero_width_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .rect_mask(0, 0, 0, 32, false)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "rect_mask width=0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rect_mask_zero_height_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .rect_mask(0, 0, 32, 0, false)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "rect_mask height=0 must return InvalidConfig, got {result:?}"
         );
     }
 

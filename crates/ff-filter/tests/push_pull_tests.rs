@@ -2673,3 +2673,97 @@ fn lumakey_invert_should_key_out_dark_regions() {
         );
     }
 }
+
+// ── Rect mask ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn rect_mask_100x100_makes_outside_transparent() {
+    // A 128×128 gray frame with a non-inverted 100×100 mask at (0, 0):
+    // - inside  (X in [0,99], Y in [0,99]):  alpha=255 (opaque)
+    // - outside (remaining 128²-100²=6384 px): alpha=0 (transparent)
+    // Expected average alpha = 10000*255/16384 ≈ 155.5.
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .rect_mask(0, 0, 100, 100, false)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(128, 128);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 128, "output width must match input");
+    assert_eq!(out.height(), 128, "output height must match input");
+    // geq outputs rgba (packed); alpha is at byte 3 (rgba) or byte 0 (argb).
+    if let Some(data) = out.plane(0) {
+        if data.len() == 128 * 128 * 4 {
+            let avg_a0 = data.chunks(4).map(|p| p[0] as f32).sum::<f32>() / (128.0 * 128.0);
+            let avg_a3 = data.chunks(4).map(|p| p[3] as f32).sum::<f32>() / (128.0 * 128.0);
+            // The alpha channel (whichever byte) should average ~155 (100×100 opaque out of 128×128).
+            let alpha = avg_a0.max(avg_a3);
+            assert!(
+                alpha > 130.0 && alpha < 180.0,
+                "rect_mask inside should be opaque (avg≈155), got avg_a0={avg_a0} avg_a3={avg_a3}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rect_mask_inverted_makes_inside_transparent() {
+    // A 64×64 gray frame with an inverted 32×32 mask at (0, 0):
+    // - inside  (X in [0,31], Y in [0,31]):  alpha=0 (transparent)
+    // - outside (remaining 3072 px):         alpha=255 (opaque)
+    // Expected average alpha = 3072*255/4096 ≈ 191.25.
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .rect_mask(0, 0, 32, 32, true)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // geq outputs rgba (packed); alpha is at byte 3 (rgba) or byte 0 (argb).
+    if let Some(data) = out.plane(0) {
+        if data.len() == 64 * 64 * 4 {
+            let avg_a0 = data.chunks(4).map(|p| p[0] as f32).sum::<f32>() / (64.0 * 64.0);
+            let avg_a3 = data.chunks(4).map(|p| p[3] as f32).sum::<f32>() / (64.0 * 64.0);
+            // The alpha channel should average ~191 (75% opaque after inverting the 32×32 region).
+            let alpha = avg_a0.max(avg_a3);
+            assert!(
+                alpha > 165.0 && alpha < 215.0,
+                "inverted rect_mask outside should be opaque (avg≈191), got avg_a0={avg_a0} avg_a3={avg_a3}"
+            );
+        }
+    }
+}
