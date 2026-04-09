@@ -2490,3 +2490,88 @@ fn chromakey_green_screen_should_produce_transparent_green_area() {
         );
     }
 }
+
+// ── Luma key ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn lumakey_white_background_should_be_transparent_at_threshold_1() {
+    // White frame in limited-range YUV420p: Y=235 (≈1.0 normalized).
+    // lumakey(threshold=0.9, tolerance=0.1, softness=0.0, invert=false) keys out
+    // pixels with luma in [0.8, 1.0].  Y=235 ≈ 0.92 falls inside that range,
+    // so the output alpha (plane 3 of yuva420p) should be near 0 (transparent).
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .lumakey(0.9, 0.1, 0.0, false)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv_frame(64, 64, 235, 128, 128);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // yuva420p: plane(3) is the alpha channel; 0 = transparent.
+    if let Some(alpha) = out.plane(3) {
+        let avg = alpha.iter().map(|&b| b as f32).sum::<f32>() / alpha.len() as f32;
+        assert!(
+            avg < 10.0,
+            "white pixels should be keyed out (avg alpha={avg})"
+        );
+    }
+}
+
+#[test]
+fn lumakey_invert_should_key_out_dark_regions() {
+    // Black frame in limited-range YUV420p: Y=16 (≈0.0 normalized).
+    // lumakey(threshold=1.0, tolerance=0.1, softness=0.0, invert=true):
+    //   1. lumakey makes pixels near 1.0 (white) transparent; Y=16 stays opaque.
+    //   2. geq inverts alpha: Y=16 (was opaque) → transparent.
+    // So the output alpha (plane 3 of yuva420p) should be near 0.
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .lumakey(1.0, 0.1, 0.0, true)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv_frame(64, 64, 16, 128, 128);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // yuva420p: plane(3) is the alpha channel; 0 = transparent.
+    if let Some(alpha) = out.plane(3) {
+        let avg = alpha.iter().map(|&b| b as f32).sum::<f32>() / alpha.len() as f32;
+        assert!(
+            avg < 10.0,
+            "dark pixels should be keyed out after alpha invert (avg alpha={avg})"
+        );
+    }
+}

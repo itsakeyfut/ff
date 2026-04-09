@@ -77,6 +77,31 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Key out pixels by luminance value using `FFmpeg`'s `lumakey` filter.
+    ///
+    /// - `threshold`: luma cutoff in `[0.0, 1.0]`; `0.0` = black, `1.0` = white.
+    /// - `tolerance`: match radius around the threshold in `[0.0, 1.0]`.
+    /// - `softness`: edge feather width in `[0.0, 1.0]`; `0.0` = hard edge.
+    /// - `invert`: when `false`, keys out pixels matching the threshold; when `true`,
+    ///   the alpha channel is negated after keying, making the complementary region
+    ///   transparent (useful for dark-background sources).
+    ///
+    /// `threshold`, `tolerance`, and `softness` are validated in
+    /// [`build`](FilterGraphBuilder::build); out-of-range values return
+    /// [`FilterError::InvalidConfig`].
+    ///
+    /// The output pixel format is `yuva420p` (adds an alpha channel).
+    #[must_use]
+    pub fn lumakey(mut self, threshold: f32, tolerance: f32, softness: f32, invert: bool) -> Self {
+        self.steps.push(FilterStep::LumaKey {
+            threshold,
+            tolerance,
+            softness,
+            invert,
+        });
+        self
+    }
+
     /// Key out pixels matching `color` in RGB space using `FFmpeg`'s `colorkey` filter.
     ///
     /// - `color`: `FFmpeg` color string, e.g. `"green"`, `"0x00FF00"`, `"#00FF00"`.

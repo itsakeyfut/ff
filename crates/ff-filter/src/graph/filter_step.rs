@@ -442,6 +442,32 @@ pub enum FilterStep {
         /// Suppression intensity in `[0.0, 1.0]`; `0.0` = no effect, `1.0` = full suppression.
         strength: f32,
     },
+
+    /// Key out pixels by luminance value using `FFmpeg`'s `lumakey` filter.
+    ///
+    /// Pixels whose normalized luma is within `tolerance` of `threshold` are
+    /// made transparent.  When `invert` is `true`, a `geq` filter is appended
+    /// to negate the alpha channel, effectively swapping transparent and opaque
+    /// regions.
+    ///
+    /// - `threshold`: luma cutoff in `[0.0, 1.0]`; `0.0` = black, `1.0` = white.
+    /// - `tolerance`: match radius around the threshold in `[0.0, 1.0]`.
+    /// - `softness`: edge feather width in `[0.0, 1.0]`; `0.0` = hard edge.
+    /// - `invert`: when `false`, keys out bright regions (pixels matching the
+    ///   threshold); when `true`, the alpha is negated after keying, making
+    ///   the complementary region transparent instead.
+    ///
+    /// Output carries an alpha channel (`yuva420p`).
+    LumaKey {
+        /// Luma cutoff in `[0.0, 1.0]`.
+        threshold: f32,
+        /// Match radius around the threshold in `[0.0, 1.0]`.
+        tolerance: f32,
+        /// Edge feather width in `[0.0, 1.0]`; `0.0` = hard edge.
+        softness: f32,
+        /// When `true`, the alpha channel is negated after keying.
+        invert: bool,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -546,6 +572,9 @@ impl FilterStep {
             Self::ChromaKey { .. } => "chromakey",
             Self::ColorKey { .. } => "colorkey",
             Self::SpillSuppress { .. } => "hue",
+            // LumaKey is a compound step when invert=true (lumakey + geq);
+            // "lumakey" is used here for validate_filter_steps.
+            Self::LumaKey { .. } => "lumakey",
         }
     }
 
@@ -776,6 +805,12 @@ impl FilterStep {
                 blend,
             } => format!("color={color}:similarity={similarity}:blend={blend}"),
             Self::SpillSuppress { strength, .. } => format!("h=0:s={}", 1.0 - strength),
+            Self::LumaKey {
+                threshold,
+                tolerance,
+                softness,
+                ..
+            } => format!("threshold={threshold}:tolerance={tolerance}:softness={softness}"),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by
