@@ -397,6 +397,21 @@ pub enum FilterStep {
         /// Opacity of the top layer in `[0.0, 1.0]`; 1.0 = fully opaque.
         opacity: f32,
     },
+
+    /// Remove pixels matching `color` using `FFmpeg`'s `chromakey` filter,
+    /// producing a `yuva420p` output with transparent areas where the key
+    /// color was detected.
+    ///
+    /// Use this for YCbCr-encoded sources (most video).  For RGB sources
+    /// use `colorkey` instead.
+    ChromaKey {
+        /// `FFmpeg` color string, e.g. `"green"`, `"0x00FF00"`, `"#00FF00"`.
+        color: String,
+        /// Match radius in `[0.0, 1.0]`; higher = more pixels removed.
+        similarity: f32,
+        /// Edge softness in `[0.0, 1.0]`; `0.0` = hard edge.
+        blend: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -498,6 +513,7 @@ impl FilterStep {
             // for validate_filter_steps.  Unimplemented modes are caught by
             // build() before validate_filter_steps is reached.
             Self::Blend { .. } => "overlay",
+            Self::ChromaKey { .. } => "chromakey",
         }
     }
 
@@ -717,6 +733,11 @@ impl FilterStep {
             // bypassed in favour of add_blend_normal_step).  Provided for
             // completeness using the Normal-mode overlay args.
             Self::Blend { .. } => "format=auto:shortest=1".to_string(),
+            Self::ChromaKey {
+                color,
+                similarity,
+                blend,
+            } => format!("color={color}:similarity={similarity}:blend={blend}"),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by

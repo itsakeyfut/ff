@@ -39,4 +39,25 @@ impl FilterGraphBuilder {
         });
         self
     }
+
+    /// Key out pixels matching `color` using `FFmpeg`'s `chromakey` filter.
+    ///
+    /// - `color`: `FFmpeg` color string, e.g. `"green"`, `"0x00FF00"`, `"#00FF00"`.
+    /// - `similarity`: match radius in `[0.0, 1.0]`; higher = more pixels removed.
+    /// - `blend`: edge softness in `[0.0, 1.0]`; `0.0` = hard edge.
+    ///
+    /// `similarity` and `blend` are validated in [`build`](FilterGraphBuilder::build);
+    /// out-of-range values return [`FilterError::InvalidConfig`].
+    ///
+    /// The output pixel format is `yuva420p` (adds an alpha channel).
+    /// Use this for YCbCr-encoded sources (most video).
+    #[must_use]
+    pub fn chromakey(mut self, color: &str, similarity: f32, blend: f32) -> Self {
+        self.steps.push(FilterStep::ChromaKey {
+            color: color.to_string(),
+            similarity,
+            blend,
+        });
+        self
+    }
 }
