@@ -118,6 +118,29 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a rectangular alpha mask using `FFmpeg`'s `geq` filter.
+    ///
+    /// Pixels inside the rectangle (`x`, `y`, `width`, `height`) are fully
+    /// opaque; pixels outside are fully transparent.  When `invert` is `true`
+    /// the roles are swapped: inside becomes transparent and outside becomes
+    /// opaque.
+    ///
+    /// `width` and `height` must be > 0; zero values return
+    /// [`FilterError::InvalidConfig`] from [`build`](FilterGraphBuilder::build).
+    ///
+    /// The output carries an alpha channel (`rgba`).
+    #[must_use]
+    pub fn rect_mask(mut self, x: u32, y: u32, width: u32, height: u32, invert: bool) -> Self {
+        self.steps.push(FilterStep::RectMask {
+            x,
+            y,
+            width,
+            height,
+            invert,
+        });
+        self
+    }
+
     /// Key out pixels matching `color` in RGB space using `FFmpeg`'s `colorkey` filter.
     ///
     /// - `color`: `FFmpeg` color string, e.g. `"green"`, `"0x00FF00"`, `"#00FF00"`.
