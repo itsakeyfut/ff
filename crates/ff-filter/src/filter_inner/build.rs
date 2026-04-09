@@ -786,6 +786,218 @@ pub(super) unsafe fn add_blend_photographic_step(
     Ok(blend_ctx)
 }
 
+// ── Blend Porter-Duff Under compound step ────────────────────────────────────
+
+/// Insert a Porter-Duff Under blend step.
+///
+/// Equivalent to Over with inputs swapped: the top layer becomes the
+/// background and the bottom layer is composited on top of it.
+///
+/// ```text
+/// [in1]top_steps...[top_processed]
+/// [top_processed][bottom_ctx]overlay=format=auto:shortest=1[out]
+/// ```
+///
+/// # Safety
+///
+/// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
+/// same `AVFilterGraph`.
+pub(super) unsafe fn add_blend_under_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    bottom_ctx: *mut ff_sys::AVFilterContext,
+    top_src_ctx: *mut ff_sys::AVFilterContext,
+    top_steps: &[FilterStep],
+    opacity: f32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    // 1. Chain the top builder's steps starting from the in1 buffersrc.
+    let mut top_ctx = top_src_ctx;
+    for (j, step) in top_steps.iter().enumerate() {
+        if matches!(
+            step,
+            FilterStep::AReverse
+                | FilterStep::AFadeIn { .. }
+                | FilterStep::AFadeOut { .. }
+                | FilterStep::ParametricEq { .. }
+                | FilterStep::ANoiseGate { .. }
+                | FilterStep::ACompressor { .. }
+                | FilterStep::StereoToMono
+                | FilterStep::ChannelMap { .. }
+                | FilterStep::AudioDelay { .. }
+                | FilterStep::ConcatAudio { .. }
+                | FilterStep::LoudnessNormalize { .. }
+                | FilterStep::NormalizePeak { .. }
+        ) {
+            continue;
+        }
+        top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
+    }
+
+    // 2. When opacity < 1.0, attenuate the bottom (background) layer's alpha channel.
+    if opacity < 1.0 {
+        let ccm_name = CString::new(format!("blend_under_ccm{index}"))
+            .map_err(|_| FilterError::BuildFailed)?;
+        let ccm_args_str = format!("aa={opacity}");
+        let ccm_args = CString::new(ccm_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+        let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
+        if ccm_filter.is_null() {
+            log::warn!("filter not found name=colorchannelmixer (blend_under)");
+            return Err(FilterError::BuildFailed);
+        }
+        let mut ccm_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut ccm_ctx,
+            ccm_filter,
+            ccm_name.as_ptr(),
+            ccm_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            log::warn!("filter creation failed name=colorchannelmixer args={ccm_args_str}");
+            return Err(FilterError::BuildFailed);
+        }
+        log::debug!("filter added name=colorchannelmixer args={ccm_args_str} index={index}");
+        // SAFETY: top_ctx and ccm_ctx belong to the same graph; pad indices valid.
+        let ret = ff_sys::avfilter_link(top_ctx, 0, ccm_ctx, 0);
+        if ret < 0 {
+            return Err(FilterError::BuildFailed);
+        }
+        top_ctx = ccm_ctx;
+    }
+
+    // 3. Create the overlay filter.
+    let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
+    if overlay_filter.is_null() {
+        log::warn!("filter not found name=overlay (blend_under)");
+        return Err(FilterError::BuildFailed);
+    }
+    let overlay_name = CString::new(format!("blend_under_overlay{index}"))
+        .map_err(|_| FilterError::BuildFailed)?;
+    let overlay_args = c"format=auto:shortest=1";
+    let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut overlay_ctx,
+        overlay_filter,
+        overlay_name.as_ptr(),
+        overlay_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=overlay args=format=auto:shortest=1 (blend_under)");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!(
+        "filter added name=overlay args=format=auto:shortest=1 index={index} (blend_under)"
+    );
+
+    // 4. Link (swapped vs. Normal): top → overlay[0], bottom → overlay[1].
+    // SAFETY: bottom_ctx, top_ctx, overlay_ctx are all in the same graph.
+    let ret = ff_sys::avfilter_link(top_ctx, 0, overlay_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(bottom_ctx, 0, overlay_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    log::debug!("filter blend_under expanded opacity={opacity} index={index}");
+    Ok(overlay_ctx)
+}
+
+// ── Blend expression-based compound step ────────────────────────────────────
+
+/// Insert a Porter-Duff expression-based blend step (In, Out).
+///
+/// Chains `top_steps` on `top_src_ctx`, then creates
+/// `blend=all_expr=<expr>` and links both inputs.
+///
+/// ```text
+/// [in1]top_steps...[top_processed]
+/// [bottom_ctx][top_processed]blend=all_expr=<expr>[out]
+/// ```
+///
+/// # Safety
+///
+/// `graph`, `bottom_ctx`, and `top_src_ctx` must be valid pointers owned by the
+/// same `AVFilterGraph`.
+pub(super) unsafe fn add_blend_expr_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    bottom_ctx: *mut ff_sys::AVFilterContext,
+    top_src_ctx: *mut ff_sys::AVFilterContext,
+    top_steps: &[FilterStep],
+    expr: &str,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    // 1. Chain the top builder's steps starting from the in1 buffersrc.
+    let mut top_ctx = top_src_ctx;
+    for (j, step) in top_steps.iter().enumerate() {
+        if matches!(
+            step,
+            FilterStep::AReverse
+                | FilterStep::AFadeIn { .. }
+                | FilterStep::AFadeOut { .. }
+                | FilterStep::ParametricEq { .. }
+                | FilterStep::ANoiseGate { .. }
+                | FilterStep::ACompressor { .. }
+                | FilterStep::StereoToMono
+                | FilterStep::ChannelMap { .. }
+                | FilterStep::AudioDelay { .. }
+                | FilterStep::ConcatAudio { .. }
+                | FilterStep::LoudnessNormalize { .. }
+                | FilterStep::NormalizePeak { .. }
+        ) {
+            continue;
+        }
+        top_ctx = add_and_link_step(graph, top_ctx, step, index * 1000 + j, "blend_top")?;
+    }
+
+    // 2. Create the blend filter with the expression.
+    let blend_filter = ff_sys::avfilter_get_by_name(c"blend".as_ptr());
+    if blend_filter.is_null() {
+        log::warn!("filter not found name=blend (blend_expr)");
+        return Err(FilterError::BuildFailed);
+    }
+    let blend_name =
+        CString::new(format!("blend_expr{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let blend_args_str = format!("all_expr={expr}");
+    let blend_args = CString::new(blend_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut blend_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut blend_ctx,
+        blend_filter,
+        blend_name.as_ptr(),
+        blend_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=blend args={blend_args_str} (blend_expr)");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=blend args={blend_args_str} index={index} (blend_expr)");
+
+    // 3. Link: bottom → blend[0], top → blend[1].
+    // SAFETY: bottom_ctx, top_ctx, blend_ctx are all in the same graph.
+    let ret = ff_sys::avfilter_link(bottom_ctx, 0, blend_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(top_ctx, 0, blend_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    log::debug!("filter blend_expr expanded expr={expr} index={index}");
+    Ok(blend_ctx)
+}
+
 // ── buffersrc / buffersink arg-string helpers ──────────────────────────────────
 
 /// Build the `args` string passed to `avfilter_graph_create_filter` when
@@ -1305,6 +1517,59 @@ impl FilterGraphInner {
                     top.steps(),
                     mode_name,
                     *opacity,
+                    i,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            // Blend (PorterDuffUnder) — overlay with swapped input order.
+            if let FilterStep::Blend {
+                top,
+                mode: BlendMode::PorterDuffUnder,
+                opacity,
+            } = step
+            {
+                let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
+                    bail!(FilterError::BuildFailed)
+                };
+                prev_ctx = match add_blend_under_step(
+                    graph,
+                    prev_ctx,
+                    top_src.as_ptr(),
+                    top.steps(),
+                    *opacity,
+                    i,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            // Blend (PorterDuffIn / PorterDuffOut) — expression-based blend.
+            if let FilterStep::Blend {
+                top,
+                mode: mode @ (BlendMode::PorterDuffIn | BlendMode::PorterDuffOut),
+                ..
+            } = step
+            {
+                let Some(top_src) = src_ctxs.get(1).and_then(|o| *o) else {
+                    bail!(FilterError::BuildFailed)
+                };
+                let expr = match mode {
+                    BlendMode::PorterDuffIn => "B*A/255",
+                    BlendMode::PorterDuffOut => "B*(255-A)/255",
+                    _ => unreachable!(),
+                };
+                prev_ctx = match add_blend_expr_step(
+                    graph,
+                    prev_ctx,
+                    top_src.as_ptr(),
+                    top.steps(),
+                    expr,
                     i,
                 ) {
                     Ok(ctx) => ctx,
