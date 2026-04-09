@@ -36,6 +36,27 @@ fn make_yuv420p_frame(width: u32, height: u32) -> VideoFrame {
     .unwrap()
 }
 
+/// YUV420p frame with explicit luma and chroma values.
+fn make_yuv_frame(width: u32, height: u32, y: u8, u: u8, v: u8) -> VideoFrame {
+    let y_plane = vec![y; (width * height) as usize];
+    let u_plane = vec![u; ((width / 2) * (height / 2)) as usize];
+    let v_plane = vec![v; ((width / 2) * (height / 2)) as usize];
+    VideoFrame::new(
+        vec![
+            PooledBuffer::standalone(y_plane),
+            PooledBuffer::standalone(u_plane),
+            PooledBuffer::standalone(v_plane),
+        ],
+        vec![width as usize, (width / 2) as usize, (width / 2) as usize],
+        width,
+        height,
+        PixelFormat::Yuv420p,
+        Timestamp::default(),
+        true,
+    )
+    .unwrap()
+}
+
 /// Stereo packed F32 audio frame, 1024 samples @ 48 kHz.
 fn make_audio_frame() -> AudioFrame {
     AudioFrame::empty(1024, 2, 48000, SampleFormat::F32).unwrap()
@@ -2331,4 +2352,49 @@ fn porter_duff_out_should_produce_black_where_bottom_is_white() {
         avg < 10.0,
         "PorterDuffOut with white bottom should produce black output (avg={avg})"
     );
+}
+
+// ── Chroma key ────────────────────────────────────────────────────────────────
+
+#[test]
+fn chromakey_green_screen_should_produce_transparent_green_area() {
+    // Pure green (0x00FF00) in YUV420p: Y≈150, U≈44, V≈21 (BT.601 coefficients).
+    // chromakey(color="0x00FF00", similarity=0.3, blend=0.0) should detect the
+    // green chroma and key it out, producing a yuva420p frame where the alpha
+    // plane (index 3) is 0 (transparent) for the green pixels.
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .chromakey("0x00FF00", 0.3, 0.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    // Y≈150, U≈44, V≈21 approximates 0x00FF00 in YUV420p.
+    let frame = make_yuv_frame(64, 64, 150, 44, 21);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // The output is yuva420p; plane(3) is the alpha channel.
+    // Keyed (green) pixels have alpha=0 (transparent).
+    if let Some(alpha) = out.plane(3) {
+        let avg = alpha.iter().map(|&b| b as f32).sum::<f32>() / alpha.len() as f32;
+        assert!(
+            avg < 10.0,
+            "green pixels should be keyed out (avg alpha={avg})"
+        );
+    }
 }
