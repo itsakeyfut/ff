@@ -407,6 +407,13 @@ impl FilterGraphBuilder {
                     });
                 }
             }
+            if let FilterStep::FeatherMask { radius } = step
+                && *radius == 0
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: "feather_mask radius must be > 0".to_string(),
+                });
+            }
             if let FilterStep::RectMask { width, height, .. } = step
                 && (*width == 0 || *height == 0)
             {
@@ -833,6 +840,18 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "spill_suppress strength < 0.0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn feather_mask_zero_radius_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .feather_mask(0)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "feather_mask radius=0 must return InvalidConfig, got {result:?}"
         );
     }
 

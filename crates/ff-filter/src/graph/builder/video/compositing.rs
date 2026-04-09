@@ -141,6 +141,25 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Feather (soften) the alpha channel edges using a Gaussian blur.
+    ///
+    /// Splits the stream into a color copy and an alpha copy, blurs the alpha
+    /// plane with `gblur=sigma=<radius>`, then re-merges via `alphamerge`.
+    ///
+    /// `radius` is the blur kernel half-size in pixels and must be > 0.
+    /// A value of `0` returns [`FilterError::InvalidConfig`] from
+    /// [`build`](FilterGraphBuilder::build).
+    ///
+    /// Typically chained after a keying or masking step such as
+    /// [`chromakey`](FilterGraphBuilder::chromakey),
+    /// [`rect_mask`](FilterGraphBuilder::rect_mask), or
+    /// [`polygon_matte`](FilterGraphBuilder::polygon_matte).
+    #[must_use]
+    pub fn feather_mask(mut self, radius: u32) -> Self {
+        self.steps.push(FilterStep::FeatherMask { radius });
+        self
+    }
+
     /// Apply a polygon alpha mask defined by normalised vertex coordinates.
     ///
     /// Pixels inside the polygon are fully opaque; pixels outside are fully

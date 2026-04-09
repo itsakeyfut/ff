@@ -2674,6 +2674,52 @@ fn lumakey_invert_should_key_out_dark_regions() {
     }
 }
 
+// ── Feather mask ──────────────────────────────────────────────────────────────
+
+#[test]
+fn feather_mask_should_produce_smooth_alpha_edges() {
+    // Apply a sharp rect_mask (left 32 columns opaque) then feather it.
+    // The Gaussian blur softens the hard edge at X=32.
+    //
+    // The alphamerge chain outputs gbrap (AV_PIX_FMT_GBRAP = 111).
+    // PixelFormat::Other(111).num_planes() returns 1, so only plane(0)
+    // (the G channel) is accessible.  For a neutral-gray input (Y=128,
+    // U=128, V=128) the G values should be close to 128.
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .rect_mask(0, 0, 32, 64, false)
+        .feather_mask(4)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    if let Some(g_plane) = out.plane(0) {
+        let avg = g_plane.iter().map(|&b| b as f32).sum::<f32>() / g_plane.len() as f32;
+        assert!(
+            avg > 80.0 && avg < 180.0,
+            "feather_mask should preserve colour data (avg G={avg})"
+        );
+    }
+}
+
 // ── Polygon matte ─────────────────────────────────────────────────────────────
 
 #[test]

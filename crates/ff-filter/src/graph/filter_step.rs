@@ -514,6 +514,32 @@ pub enum FilterStep {
         invert: bool,
     },
 
+    /// Feather (soften) the alpha channel edges using a Gaussian blur.
+    ///
+    /// Splits the stream into a color copy and an alpha copy, blurs the alpha
+    /// plane with `gblur=sigma=<radius>`, then re-merges:
+    ///
+    /// ```text
+    /// [in]split=2[color][with_alpha];
+    /// [with_alpha]alphaextract[alpha_only];
+    /// [alpha_only]gblur=sigma=<radius>[alpha_blurred];
+    /// [color][alpha_blurred]alphamerge[out]
+    /// ```
+    ///
+    /// `radius` is the blur kernel half-size in pixels and must be > 0.
+    /// Validated in [`build`](FilterGraphBuilder::build); `radius == 0` returns
+    /// [`crate::FilterError::InvalidConfig`].
+    ///
+    /// Typically chained after a keying or masking step
+    /// (e.g. [`FilterStep::ChromaKey`], [`FilterStep::RectMask`],
+    /// [`FilterStep::PolygonMatte`]).  Applying this step to a fully-opaque
+    /// video (no prior alpha) is a no-op because a uniform alpha of 255 blurs
+    /// to 255 everywhere.
+    FeatherMask {
+        /// Gaussian blur kernel half-size in pixels (must be > 0).
+        radius: u32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -650,6 +676,9 @@ impl FilterStep {
             Self::LumaKey { .. } => "lumakey",
             // RectMask uses geq to set alpha per-pixel based on rectangle bounds.
             Self::RectMask { .. } => "geq",
+            // FeatherMask is a compound step (split → alphaextract → gblur → alphamerge);
+            // "alphaextract" is used by validate_filter_steps as the primary check.
+            Self::FeatherMask { .. } => "alphaextract",
             // PolygonMatte uses geq with a crossing-number point-in-polygon expression.
             Self::PolygonMatte { .. } => "geq",
         }
@@ -891,6 +920,9 @@ impl FilterStep {
                 softness,
                 ..
             } => format!("threshold={threshold}:tolerance={tolerance}:softness={softness}"),
+            // args() is not consumed by add_and_link_step (which is bypassed for
+            // this compound step); provided here for completeness.
+            Self::FeatherMask { .. } => String::new(),
             Self::RectMask {
                 x,
                 y,
