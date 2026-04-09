@@ -345,37 +345,6 @@ impl FilterGraphBuilder {
                     });
                 }
             }
-            if let FilterStep::Blend { mode, .. } = step
-                && !matches!(
-                    mode,
-                    BlendMode::Normal
-                        | BlendMode::Multiply
-                        | BlendMode::Screen
-                        | BlendMode::Overlay
-                        | BlendMode::SoftLight
-                        | BlendMode::HardLight
-                        | BlendMode::ColorDodge
-                        | BlendMode::ColorBurn
-                        | BlendMode::Darken
-                        | BlendMode::Lighten
-                        | BlendMode::Difference
-                        | BlendMode::Exclusion
-                        | BlendMode::Add
-                        | BlendMode::Subtract
-                        | BlendMode::Hue
-                        | BlendMode::Saturation
-                        | BlendMode::Color
-                        | BlendMode::Luminosity
-                        | BlendMode::PorterDuffOver
-                        | BlendMode::PorterDuffUnder
-                        | BlendMode::PorterDuffIn
-                        | BlendMode::PorterDuffOut
-                )
-            {
-                return Err(FilterError::InvalidConfig {
-                    reason: "blend mode not yet implemented".to_string(),
-                });
-            }
             if let FilterStep::OverlayImage { path, opacity, .. } = step {
                 let ext = Path::new(path)
                     .extension()
@@ -670,19 +639,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "blend(Normal, opacity=0.5) must build successfully, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn blend_unimplemented_mode_should_return_invalid_config() {
-        let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-        let result = FilterGraph::builder()
-            .trim(0.0, 5.0)
-            .blend(top, BlendMode::PorterDuffAtop, 1.0)
-            .build();
-        assert!(
-            matches!(result, Err(FilterError::InvalidConfig { .. })),
-            "unimplemented blend mode must return InvalidConfig, got {result:?}"
         );
     }
 

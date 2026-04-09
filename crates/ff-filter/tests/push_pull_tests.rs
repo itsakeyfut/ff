@@ -2193,6 +2193,100 @@ fn porter_duff_in_should_produce_black_where_bottom_is_black() {
     );
 }
 
+// ── Porter-Duff Atop ─────────────────────────────────────────────────────────
+
+#[test]
+fn porter_duff_atop_should_use_bottom_alpha_for_output() {
+    // Atop formula: B*A/255 + A*(255-B)/255 = A*(B + 255 - B)/255 = A.
+    // The output luma always equals the bottom luma regardless of the top value.
+    // bottom=Y100, top=Y200 → avg ≈ 100 (within ±15).
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::PorterDuffAtop, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 100);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg > 85.0 && avg < 115.0,
+        "PorterDuffAtop output luma should equal bottom luma (~100), got avg={avg}"
+    );
+}
+
+// ── Porter-Duff XOR ───────────────────────────────────────────────────────────
+
+#[test]
+fn porter_duff_xor_identical_shapes_should_produce_zero_alpha() {
+    // XOR formula with A=B=255: 255*(255-255)/255 + 255*(255-255)/255 = 0.
+    // Two fully-opaque identical layers cancel each other out.
+    // bottom=Y255, top=Y255 → avg ≈ 0.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::PorterDuffXor, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 255);
+    let top_frame = make_solid_yuv_frame(64, 64, 255);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg < 10.0,
+        "PorterDuffXor of identical full-luma shapes should produce black (avg={avg})"
+    );
+}
+
 // ── Porter-Duff Out ───────────────────────────────────────────────────────────
 
 #[test]
