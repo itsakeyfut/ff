@@ -998,6 +998,94 @@ pub(super) unsafe fn add_blend_expr_step(
     Ok(blend_ctx)
 }
 
+// ── AlphaMatte compound step ─────────────────────────────────────────────────
+
+/// Insert the alphamerge compound step.
+///
+/// Chains `matte_steps` on `matte_src_ctx` (the `in1` buffersrc), then creates
+/// the `alphamerge` filter and links:
+///
+/// ```text
+/// [in1]matte_steps...[matte_processed]
+/// [bottom_ctx][matte_processed]alphamerge[out]
+/// ```
+///
+/// # Safety
+///
+/// `graph`, `bottom_ctx`, and `matte_src_ctx` must be valid pointers owned by
+/// the same `AVFilterGraph`.
+pub(super) unsafe fn add_alphamerge_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    bottom_ctx: *mut ff_sys::AVFilterContext,
+    matte_src_ctx: *mut ff_sys::AVFilterContext,
+    matte_steps: &[FilterStep],
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    // 1. Chain the matte builder's steps starting from the in1 buffersrc.
+    let mut matte_ctx = matte_src_ctx;
+    for (j, step) in matte_steps.iter().enumerate() {
+        // Skip audio-only steps; they have no place in the matte chain.
+        if matches!(
+            step,
+            FilterStep::AReverse
+                | FilterStep::AFadeIn { .. }
+                | FilterStep::AFadeOut { .. }
+                | FilterStep::ParametricEq { .. }
+                | FilterStep::ANoiseGate { .. }
+                | FilterStep::ACompressor { .. }
+                | FilterStep::StereoToMono
+                | FilterStep::ChannelMap { .. }
+                | FilterStep::AudioDelay { .. }
+                | FilterStep::ConcatAudio { .. }
+                | FilterStep::LoudnessNormalize { .. }
+                | FilterStep::NormalizePeak { .. }
+        ) {
+            continue;
+        }
+        matte_ctx = add_and_link_step(graph, matte_ctx, step, index * 1000 + j, "matte")?;
+    }
+
+    // 2. Create the alphamerge filter.
+    let alphamerge_filter = ff_sys::avfilter_get_by_name(c"alphamerge".as_ptr());
+    if alphamerge_filter.is_null() {
+        log::warn!("filter not found name=alphamerge");
+        return Err(FilterError::BuildFailed);
+    }
+    let alphamerge_name =
+        CString::new(format!("alphamerge{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let mut alphamerge_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    // SAFETY: alphamerge_filter and graph are non-null; null opaque and args are accepted.
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut alphamerge_ctx,
+        alphamerge_filter,
+        alphamerge_name.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=alphamerge code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=alphamerge index={index}");
+
+    // 3. Link: main video → alphamerge[0], matte → alphamerge[1].
+    // SAFETY: bottom_ctx, matte_ctx, alphamerge_ctx are all in the same graph.
+    let ret = ff_sys::avfilter_link(bottom_ctx, 0, alphamerge_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(matte_ctx, 0, alphamerge_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    log::debug!("filter alphamerge linked index={index}");
+    Ok(alphamerge_ctx)
+}
+
 // ── buffersrc / buffersink arg-string helpers ──────────────────────────────────
 
 /// Build the `args` string passed to `avfilter_graph_create_filter` when
@@ -1428,6 +1516,25 @@ impl FilterGraphInner {
                     *clip_a_end,
                     *clip_b_start,
                     *dissolve_dur,
+                    i,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            // AlphaMatte — compound step: matte pipeline applied to in1, then
+            // alphamerge links main video (pad 0) with the matte (pad 1).
+            if let FilterStep::AlphaMatte { matte } = step {
+                let Some(matte_src) = src_ctxs.get(1).and_then(|o| *o) else {
+                    bail!(FilterError::BuildFailed)
+                };
+                prev_ctx = match add_alphamerge_step(
+                    graph,
+                    prev_ctx,
+                    matte_src.as_ptr(),
+                    matte.steps(),
                     i,
                 ) {
                     Ok(ctx) => ctx,

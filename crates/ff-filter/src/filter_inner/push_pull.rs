@@ -172,6 +172,7 @@ impl FilterGraphInner {
                     | FilterStep::XFade { .. }
                     | FilterStep::JoinWithDissolve { .. }
                     | FilterStep::Blend { .. }
+                    | FilterStep::AlphaMatte { .. }
             ) {
                 return 2;
             }

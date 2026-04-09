@@ -2402,6 +2402,104 @@ fn colorkey_solid_color_background_should_become_transparent() {
     }
 }
 
+// ── Alpha matte ───────────────────────────────────────────────────────────────
+
+#[test]
+fn alpha_matte_white_region_should_be_opaque() {
+    // White matte (Y=235) → alphamerge sets alpha to the matte's luma → high alpha.
+    // Main video: neutral gray; matte: white. Expected: output alpha near 255 (opaque).
+    let matte = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .alpha_matte(matte)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let main_frame = make_yuv420p_frame(64, 64);
+    let white_matte = make_solid_yuv_frame(64, 64, 235);
+    match graph.push_video(0, &main_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &white_matte) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // The output has an alpha channel; plane(3) is alpha for yuva420p.
+    if let Some(alpha) = out.plane(3) {
+        let avg = alpha.iter().map(|&b| b as f32).sum::<f32>() / alpha.len() as f32;
+        assert!(
+            avg > 200.0,
+            "white matte should produce high (opaque) alpha (avg={avg})"
+        );
+    }
+}
+
+#[test]
+fn alpha_matte_black_region_should_be_transparent() {
+    // Black matte (Y=16) → alphamerge sets alpha to the matte's luma → low alpha.
+    // Main video: neutral gray; matte: black. Expected: output alpha near 0 (transparent).
+    let matte = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .alpha_matte(matte)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let main_frame = make_yuv420p_frame(64, 64);
+    let black_matte = make_solid_yuv_frame(64, 64, 16);
+    match graph.push_video(0, &main_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &black_matte) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // The output has an alpha channel; plane(3) is alpha for yuva420p.
+    if let Some(alpha) = out.plane(3) {
+        let avg = alpha.iter().map(|&b| b as f32).sum::<f32>() / alpha.len() as f32;
+        assert!(
+            avg < 30.0,
+            "black matte should produce low (transparent) alpha (avg={avg})"
+        );
+    }
+}
+
 // ── Spill suppress ────────────────────────────────────────────────────────────
 
 #[test]

@@ -443,6 +443,22 @@ pub enum FilterStep {
         strength: f32,
     },
 
+    /// Merge a grayscale `matte` as the alpha channel of the input video using
+    /// `FFmpeg`'s `alphamerge` filter.
+    ///
+    /// White (luma=255) in the matte produces fully opaque output; black (luma=0)
+    /// produces fully transparent output.
+    ///
+    /// This is a compound step: the `matte` builder's pipeline is applied to the
+    /// second input slot (`in1`) before the `alphamerge` filter is linked.
+    ///
+    /// `Box<FilterGraphBuilder>` breaks the otherwise-recursive type, following
+    /// the same pattern as [`FilterStep::Blend`].
+    AlphaMatte {
+        /// Pipeline for the grayscale matte stream (slot 1).
+        matte: Box<FilterGraphBuilder>,
+    },
+
     /// Key out pixels by luminance value using `FFmpeg`'s `lumakey` filter.
     ///
     /// Pixels whose normalized luma is within `tolerance` of `threshold` are
@@ -572,6 +588,9 @@ impl FilterStep {
             Self::ChromaKey { .. } => "chromakey",
             Self::ColorKey { .. } => "colorkey",
             Self::SpillSuppress { .. } => "hue",
+            // AlphaMatte is a compound step (matte pipeline → alphamerge);
+            // "alphamerge" is used by validate_filter_steps as the primary check.
+            Self::AlphaMatte { .. } => "alphamerge",
             // LumaKey is a compound step when invert=true (lumakey + geq);
             // "lumakey" is used here for validate_filter_steps.
             Self::LumaKey { .. } => "lumakey",
@@ -805,6 +824,9 @@ impl FilterStep {
                 blend,
             } => format!("color={color}:similarity={similarity}:blend={blend}"),
             Self::SpillSuppress { strength, .. } => format!("h=0:s={}", 1.0 - strength),
+            // args() is not consumed by add_and_link_step (which is bypassed for
+            // this compound step); provided here for completeness.
+            Self::AlphaMatte { .. } => String::new(),
             Self::LumaKey {
                 threshold,
                 tolerance,
