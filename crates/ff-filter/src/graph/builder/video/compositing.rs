@@ -60,4 +60,26 @@ impl FilterGraphBuilder {
         });
         self
     }
+
+    /// Key out pixels matching `color` in RGB space using `FFmpeg`'s `colorkey` filter.
+    ///
+    /// - `color`: `FFmpeg` color string, e.g. `"green"`, `"0x00FF00"`, `"#00FF00"`.
+    /// - `similarity`: match radius in `[0.0, 1.0]`; higher = more pixels removed.
+    /// - `blend`: edge softness in `[0.0, 1.0]`; `0.0` = hard edge.
+    ///
+    /// `similarity` and `blend` are validated in [`build`](FilterGraphBuilder::build);
+    /// out-of-range values return [`FilterError::InvalidConfig`].
+    ///
+    /// The output pixel format is `rgba`.
+    /// Use this for RGB-encoded sources; prefer [`chromakey`](FilterGraphBuilder::chromakey)
+    /// for YCbCr-encoded video.
+    #[must_use]
+    pub fn colorkey(mut self, color: &str, similarity: f32, blend: f32) -> Self {
+        self.steps.push(FilterStep::ColorKey {
+            color: color.to_string(),
+            similarity,
+            blend,
+        });
+        self
+    }
 }

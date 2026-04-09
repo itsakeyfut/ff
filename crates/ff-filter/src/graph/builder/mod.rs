@@ -362,6 +362,21 @@ impl FilterGraphBuilder {
                     });
                 }
             }
+            if let FilterStep::ColorKey {
+                similarity, blend, ..
+            } = step
+            {
+                if !(0.0..=1.0).contains(similarity) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("colorkey similarity {similarity} out of range [0.0, 1.0]"),
+                    });
+                }
+                if !(0.0..=1.0).contains(blend) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("colorkey blend {blend} out of range [0.0, 1.0]"),
+                    });
+                }
+            }
             if let FilterStep::OverlayImage { path, opacity, .. } = step {
                 let ext = Path::new(path)
                     .extension()
@@ -670,6 +685,30 @@ mod tests {
         assert!(
             result.is_ok(),
             "blend with opacity=2.5 must clamp to 1.0 and build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn colorkey_out_of_range_similarity_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .colorkey("green", 1.5, 0.0)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "colorkey similarity > 1.0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn colorkey_out_of_range_blend_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .colorkey("green", 0.3, -0.1)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "colorkey blend < 0.0 must return InvalidConfig, got {result:?}"
         );
     }
 

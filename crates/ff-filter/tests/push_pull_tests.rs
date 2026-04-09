@@ -2354,6 +2354,54 @@ fn porter_duff_out_should_produce_black_where_bottom_is_white() {
     );
 }
 
+// ── Color key ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn colorkey_solid_color_background_should_become_transparent() {
+    // Neutral gray (Y=128, U=128, V=128) ≈ 0x808080 in RGB.
+    // colorkey("0x808080", 0.3, 0.0) should key it out in RGB space.
+    // Output is rgba (packed); alpha bytes are at indices 3, 7, 11, ... in plane 0.
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .colorkey("0x808080", 0.3, 0.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    // Neutral gray in YUV420p: Y=128, U=128, V=128 ≈ RGB(128,128,128) = 0x808080.
+    let frame = make_yuv_frame(64, 64, 128, 128, 128);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // colorkey outputs argb (alpha at byte 0) or rgba (alpha at byte 3).
+    // Check the minimum of both to be format-agnostic.
+    if let Some(data) = out.plane(0) {
+        if data.len() == 64 * 64 * 4 {
+            let avg_a0 = data.chunks(4).map(|p| p[0] as f32).sum::<f32>() / (64.0 * 64.0);
+            let avg_a3 = data.chunks(4).map(|p| p[3] as f32).sum::<f32>() / (64.0 * 64.0);
+            let avg_alpha = avg_a0.min(avg_a3);
+            assert!(
+                avg_alpha < 10.0,
+                "gray pixels should be keyed out (avg_a0={avg_a0} avg_a3={avg_a3})"
+            );
+        }
+    }
+}
+
 // ── Chroma key ────────────────────────────────────────────────────────────────
 
 #[test]
