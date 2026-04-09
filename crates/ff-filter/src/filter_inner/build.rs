@@ -998,6 +998,168 @@ pub(super) unsafe fn add_blend_expr_step(
     Ok(blend_ctx)
 }
 
+// ── FeatherMask compound step ─────────────────────────────────────────────────
+
+/// Insert the feather-mask compound step.
+///
+/// Splits the input into a color copy and an alpha copy, blurs the alpha
+/// using `gblur=sigma=<radius>`, then re-merges:
+///
+/// ```text
+/// [in]split=2[color][with_alpha];
+/// [with_alpha]alphaextract[alpha_only];
+/// [alpha_only]gblur=sigma=<radius>[alpha_blurred];
+/// [color][alpha_blurred]alphamerge[out]
+/// ```
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_feather_mask_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    radius: u32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    // 1. split=2 — duplicate the stream into a color copy and an alpha copy.
+    let split_filter = ff_sys::avfilter_get_by_name(c"split".as_ptr());
+    if split_filter.is_null() {
+        log::warn!("filter not found name=split (feather_mask)");
+        return Err(FilterError::BuildFailed);
+    }
+    let split_name =
+        CString::new(format!("feather_split{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let mut split_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    // SAFETY: split_filter and graph are non-null; "2" is valid args.
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut split_ctx,
+        split_filter,
+        split_name.as_ptr(),
+        c"2".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=split (feather_mask) code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=split args=2 index={index} (feather_mask)");
+
+    // Link: prev_ctx → split[0].
+    // SAFETY: prev_ctx and split_ctx belong to the same graph; pad indices valid.
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, split_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 2. alphaextract — convert the alpha plane from split output pad 1 into
+    //    a grayscale stream so it can be processed independently.
+    let alphaextract_filter = ff_sys::avfilter_get_by_name(c"alphaextract".as_ptr());
+    if alphaextract_filter.is_null() {
+        log::warn!("filter not found name=alphaextract (feather_mask)");
+        return Err(FilterError::BuildFailed);
+    }
+    let alphaextract_name = CString::new(format!("feather_alphaextract{index}"))
+        .map_err(|_| FilterError::BuildFailed)?;
+    let mut alphaextract_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut alphaextract_ctx,
+        alphaextract_filter,
+        alphaextract_name.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=alphaextract (feather_mask) code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=alphaextract index={index} (feather_mask)");
+
+    // Link: split[1] → alphaextract[0].
+    // SAFETY: split_ctx and alphaextract_ctx belong to the same graph; pad 1 of split valid.
+    let ret = ff_sys::avfilter_link(split_ctx, 1, alphaextract_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 3. gblur=sigma=<radius> — blur the extracted alpha plane.
+    let gblur_filter = ff_sys::avfilter_get_by_name(c"gblur".as_ptr());
+    if gblur_filter.is_null() {
+        log::warn!("filter not found name=gblur (feather_mask)");
+        return Err(FilterError::BuildFailed);
+    }
+    let gblur_name =
+        CString::new(format!("feather_gblur{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let gblur_args_str = format!("sigma={radius}");
+    let gblur_args = CString::new(gblur_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut gblur_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut gblur_ctx,
+        gblur_filter,
+        gblur_name.as_ptr(),
+        gblur_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!(
+            "filter creation failed name=gblur args={gblur_args_str} (feather_mask) code={ret}"
+        );
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=gblur args={gblur_args_str} index={index} (feather_mask)");
+
+    // Link: alphaextract → gblur.
+    let ret = ff_sys::avfilter_link(alphaextract_ctx, 0, gblur_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 4. alphamerge — re-merge color (split pad 0) with blurred alpha (gblur output).
+    let alphamerge_filter = ff_sys::avfilter_get_by_name(c"alphamerge".as_ptr());
+    if alphamerge_filter.is_null() {
+        log::warn!("filter not found name=alphamerge (feather_mask)");
+        return Err(FilterError::BuildFailed);
+    }
+    let alphamerge_name =
+        CString::new(format!("feather_alphamerge{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let mut alphamerge_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    // SAFETY: alphamerge_filter and graph are non-null; null args are accepted.
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut alphamerge_ctx,
+        alphamerge_filter,
+        alphamerge_name.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=alphamerge (feather_mask) code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=alphamerge index={index} (feather_mask)");
+
+    // Link: split[0] → alphamerge[0] (color path).
+    // SAFETY: split_ctx and alphamerge_ctx belong to the same graph; pad indices valid.
+    let ret = ff_sys::avfilter_link(split_ctx, 0, alphamerge_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Link: gblur → alphamerge[1] (blurred alpha path).
+    let ret = ff_sys::avfilter_link(gblur_ctx, 0, alphamerge_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    log::debug!("filter feather_mask expanded radius={radius} index={index}");
+    Ok(alphamerge_ctx)
+}
+
 // ── AlphaMatte compound step ─────────────────────────────────────────────────
 
 /// Insert the alphamerge compound step.
@@ -1518,6 +1680,16 @@ impl FilterGraphInner {
                     *dissolve_dur,
                     i,
                 ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            // FeatherMask — compound step: split → alphaextract → gblur → alphamerge.
+            // All filters operate on the single main stream; no extra buffersrc needed.
+            if let FilterStep::FeatherMask { radius } = step {
+                prev_ctx = match add_feather_mask_step(graph, prev_ctx, *radius, i) {
                     Ok(ctx) => ctx,
                     Err(e) => bail!(e),
                 };
