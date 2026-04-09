@@ -61,6 +61,22 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a grayscale `matte` as the alpha channel of `self`.
+    ///
+    /// White (255) in the matte produces fully opaque output; black (0) produces
+    /// fully transparent output.  Wraps `FFmpeg`'s `alphamerge` filter.
+    ///
+    /// The `matte` pipeline is applied to the second input slot (slot 1).
+    /// Call [`push_video`](crate::FilterGraph::push_video) with `slot=1` to
+    /// supply matte frames at runtime.
+    #[must_use]
+    pub fn alpha_matte(mut self, matte: FilterGraphBuilder) -> Self {
+        self.steps.push(FilterStep::AlphaMatte {
+            matte: Box::new(matte),
+        });
+        self
+    }
+
     /// Reduce color spill from the key color on subject edges.
     ///
     /// Applies `FFmpeg`'s `hue` filter with saturation `1.0 - strength`.
