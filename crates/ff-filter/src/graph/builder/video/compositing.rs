@@ -61,6 +61,22 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Reduce color spill from the key color on subject edges.
+    ///
+    /// Applies `FFmpeg`'s `hue` filter with saturation `1.0 - strength`.
+    /// The typical pipeline is `chromakey` → `spill_suppress`.
+    ///
+    /// `strength` must be in `[0.0, 1.0]`; out-of-range values return
+    /// [`FilterError::InvalidConfig`] from [`build`](FilterGraphBuilder::build).
+    #[must_use]
+    pub fn spill_suppress(mut self, key_color: &str, strength: f32) -> Self {
+        self.steps.push(FilterStep::SpillSuppress {
+            key_color: key_color.to_string(),
+            strength,
+        });
+        self
+    }
+
     /// Key out pixels matching `color` in RGB space using `FFmpeg`'s `colorkey` filter.
     ///
     /// - `color`: `FFmpeg` color string, e.g. `"green"`, `"0x00FF00"`, `"#00FF00"`.

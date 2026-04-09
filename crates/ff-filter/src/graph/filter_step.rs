@@ -427,6 +427,21 @@ pub enum FilterStep {
         /// Edge softness in `[0.0, 1.0]`; `0.0` = hard edge.
         blend: f32,
     },
+
+    /// Reduce color spill from the key color on subject edges using `FFmpeg`'s
+    /// `hue` filter to desaturate the spill hue region.
+    ///
+    /// Applies `hue=h=0:s=(1.0 - strength)`.  `strength=0.0` leaves the image
+    /// unchanged; `strength=1.0` fully desaturates.
+    ///
+    /// `key_color` is stored for future use by a more targeted per-hue
+    /// implementation.
+    SpillSuppress {
+        /// `FFmpeg` color string identifying the spill color, e.g. `"green"`.
+        key_color: String,
+        /// Suppression intensity in `[0.0, 1.0]`; `0.0` = no effect, `1.0` = full suppression.
+        strength: f32,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -530,6 +545,7 @@ impl FilterStep {
             Self::Blend { .. } => "overlay",
             Self::ChromaKey { .. } => "chromakey",
             Self::ColorKey { .. } => "colorkey",
+            Self::SpillSuppress { .. } => "hue",
         }
     }
 
@@ -759,6 +775,7 @@ impl FilterStep {
                 similarity,
                 blend,
             } => format!("color={color}:similarity={similarity}:blend={blend}"),
+            Self::SpillSuppress { strength, .. } => format!("h=0:s={}", 1.0 - strength),
             Self::FitToAspect { width, height, .. } => {
                 // Scale to fit within the target dimensions, preserving the source
                 // aspect ratio.  The accompanying pad filter (inserted by
