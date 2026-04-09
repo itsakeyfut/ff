@@ -377,6 +377,13 @@ impl FilterGraphBuilder {
                     });
                 }
             }
+            if let FilterStep::SpillSuppress { strength, .. } = step
+                && !(0.0..=1.0).contains(strength)
+            {
+                return Err(FilterError::InvalidConfig {
+                    reason: format!("spill_suppress strength {strength} out of range [0.0, 1.0]"),
+                });
+            }
             if let FilterStep::OverlayImage { path, opacity, .. } = step {
                 let ext = Path::new(path)
                     .extension()
@@ -709,6 +716,30 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "colorkey blend < 0.0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn spill_suppress_out_of_range_strength_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .spill_suppress("green", 1.5)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "spill_suppress strength > 1.0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn spill_suppress_negative_strength_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .spill_suppress("green", -0.1)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "spill_suppress strength < 0.0 must return InvalidConfig, got {result:?}"
         );
     }
 

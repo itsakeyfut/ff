@@ -2402,6 +2402,50 @@ fn colorkey_solid_color_background_should_become_transparent() {
     }
 }
 
+// ── Spill suppress ────────────────────────────────────────────────────────────
+
+#[test]
+fn spill_suppress_should_reduce_green_cast_on_subject_edges() {
+    // A frame with green chroma (Y=128, U=44, V=21) fed through
+    // spill_suppress("green", 1.0) → hue=h=0:s=0.0 → fully desaturated.
+    // After full desaturation the U and V planes should be near neutral (128).
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .spill_suppress("green", 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    // Green chroma in YUV420p: Y=128, U=44, V=21.
+    let frame = make_yuv_frame(64, 64, 128, 44, 21);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // After full desaturation the U plane should be higher than the input (44),
+    // proving the green spill was reduced toward neutral (128).
+    if let Some(u_plane) = out.plane(1) {
+        let avg_u = u_plane.iter().map(|&b| b as f32).sum::<f32>() / u_plane.len() as f32;
+        assert!(
+            avg_u > 55.0,
+            "U plane should move toward neutral after full desaturation (avg_u={avg_u})"
+        );
+    }
+}
+
 // ── Chroma key ────────────────────────────────────────────────────────────────
 
 #[test]
