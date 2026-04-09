@@ -384,6 +384,29 @@ impl FilterGraphBuilder {
                     reason: format!("spill_suppress strength {strength} out of range [0.0, 1.0]"),
                 });
             }
+            if let FilterStep::LumaKey {
+                threshold,
+                tolerance,
+                softness,
+                ..
+            } = step
+            {
+                if !(0.0..=1.0).contains(threshold) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("lumakey threshold {threshold} out of range [0.0, 1.0]"),
+                    });
+                }
+                if !(0.0..=1.0).contains(tolerance) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("lumakey tolerance {tolerance} out of range [0.0, 1.0]"),
+                    });
+                }
+                if !(0.0..=1.0).contains(softness) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("lumakey softness {softness} out of range [0.0, 1.0]"),
+                    });
+                }
+            }
             if let FilterStep::OverlayImage { path, opacity, .. } = step {
                 let ext = Path::new(path)
                     .extension()
@@ -716,6 +739,42 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "colorkey blend < 0.0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn lumakey_out_of_range_threshold_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .lumakey(1.5, 0.1, 0.0, false)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "lumakey threshold > 1.0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn lumakey_out_of_range_tolerance_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .lumakey(0.9, -0.1, 0.0, false)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "lumakey tolerance < 0.0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn lumakey_out_of_range_softness_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .lumakey(0.9, 0.1, 1.5, false)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "lumakey softness > 1.0 must return InvalidConfig, got {result:?}"
         );
     }
 

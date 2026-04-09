@@ -1613,6 +1613,23 @@ impl FilterGraphInner {
                 };
             }
 
+            // LumaKey with invert=true appends a geq filter that negates the
+            // alpha channel, turning the "key out pixels matching threshold"
+            // effect into "key out the complementary region".
+            if let FilterStep::LumaKey { invert: true, .. } = step {
+                prev_ctx = match add_raw_filter_step(
+                    graph,
+                    prev_ctx,
+                    "geq",
+                    "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255-alpha(X,Y)'",
+                    i,
+                    "geqluma",
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+            }
+
             // Overlay and xfade both consume a second input on pad 1.
             if matches!(step, FilterStep::Overlay { .. } | FilterStep::XFade { .. })
                 && let Some(Some(extra_src)) = src_ctxs.get(1)
