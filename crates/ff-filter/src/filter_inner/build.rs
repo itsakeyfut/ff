@@ -1549,10 +1549,14 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // Blend (PorterDuffIn / PorterDuffOut) — expression-based blend.
+            // Blend (PorterDuffIn / PorterDuffOut / PorterDuffAtop / PorterDuffXor) — expression-based blend.
             if let FilterStep::Blend {
                 top,
-                mode: mode @ (BlendMode::PorterDuffIn | BlendMode::PorterDuffOut),
+                mode:
+                    mode @ (BlendMode::PorterDuffIn
+                    | BlendMode::PorterDuffOut
+                    | BlendMode::PorterDuffAtop
+                    | BlendMode::PorterDuffXor),
                 ..
             } = step
             {
@@ -1562,6 +1566,8 @@ impl FilterGraphInner {
                 let expr = match mode {
                     BlendMode::PorterDuffIn => "B*A/255",
                     BlendMode::PorterDuffOut => "B*(255-A)/255",
+                    BlendMode::PorterDuffAtop => "B*A/255 + A*(255-B)/255",
+                    BlendMode::PorterDuffXor => "B*(255-A)/255 + A*(255-B)/255",
                     _ => unreachable!(),
                 };
                 prev_ctx = match add_blend_expr_step(
