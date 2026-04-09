@@ -366,6 +366,7 @@ impl FilterGraphBuilder {
                         | BlendMode::Saturation
                         | BlendMode::Color
                         | BlendMode::Luminosity
+                        | BlendMode::PorterDuffOver
                 )
             {
                 return Err(FilterError::InvalidConfig {
@@ -674,7 +675,7 @@ mod tests {
         let top = FilterGraphBuilder::new().trim(0.0, 5.0);
         let result = FilterGraph::builder()
             .trim(0.0, 5.0)
-            .blend(top, BlendMode::PorterDuffOver, 1.0)
+            .blend(top, BlendMode::PorterDuffUnder, 1.0)
             .build();
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),

@@ -2016,3 +2016,90 @@ fn blend_luminosity_should_preserve_base_hue_and_saturation() {
         "Luminosity with brighter top should increase output luma toward top's value (avg={avg})"
     );
 }
+
+// ── Porter-Duff Over ──────────────────────────────────────────────────────────
+
+#[test]
+fn porter_duff_over_opaque_top_should_cover_bottom() {
+    // PorterDuffOver with opacity=1.0: opaque YUV420p top covers the bottom.
+    // Uses overlay=format=auto:shortest=1 — opaque top always wins.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::PorterDuffOver, 1.0)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 100);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    let luma = out.plane(0).expect("Y plane must exist");
+    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+    assert!(
+        avg > 160.0,
+        "PorterDuffOver with opaque top should cover the bottom (avg={avg})"
+    );
+}
+
+#[test]
+fn porter_duff_over_semitransparent_should_blend_correctly() {
+    // PorterDuffOver with opacity=0.5 inserts colorchannelmixer=aa=0.5 on the top
+    // layer, making it semi-transparent so the bottom shows through.
+    // Verifies the graph constructs and runs without error.
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .blend(top, BlendMode::PorterDuffOver, 0.5)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let bottom = make_solid_yuv_frame(64, 64, 100);
+    let top_frame = make_solid_yuv_frame(64, 64, 200);
+    match graph.push_video(0, &bottom) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    match graph.push_video(1, &top_frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+}

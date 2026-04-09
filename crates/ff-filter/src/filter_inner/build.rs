@@ -1224,13 +1224,13 @@ impl FilterGraphInner {
                 continue;
             }
 
-            // Blend (Normal mode) is a compound step:
+            // Blend (Normal / PorterDuffOver) — both use overlay=format=auto:shortest=1.
             //   prev → [bottom]overlay=format=auto:shortest=1 ← [top][ccm]
             // where [top] is in1 with the top builder's steps applied.
             // Unimplemented modes are caught by build() before reaching here.
             if let FilterStep::Blend {
                 top,
-                mode: BlendMode::Normal,
+                mode: BlendMode::Normal | BlendMode::PorterDuffOver,
                 opacity,
             } = step
             {
