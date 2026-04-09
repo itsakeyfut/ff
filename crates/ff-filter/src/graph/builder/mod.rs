@@ -414,6 +414,33 @@ impl FilterGraphBuilder {
                     reason: "rect_mask width and height must be > 0".to_string(),
                 });
             }
+            if let FilterStep::PolygonMatte { vertices, .. } = step {
+                if vertices.len() < 3 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "polygon_matte requires at least 3 vertices, got {}",
+                            vertices.len()
+                        ),
+                    });
+                }
+                if vertices.len() > 16 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!(
+                            "polygon_matte supports up to 16 vertices, got {}",
+                            vertices.len()
+                        ),
+                    });
+                }
+                for &(x, y) in vertices {
+                    if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                        return Err(FilterError::InvalidConfig {
+                            reason: format!(
+                                "polygon_matte vertex ({x}, {y}) out of range [0.0, 1.0]"
+                            ),
+                        });
+                    }
+                }
+            }
             if let FilterStep::OverlayImage { path, opacity, .. } = step {
                 let ext = Path::new(path)
                     .extension()
@@ -830,6 +857,48 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "rect_mask height=0 must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn polygon_matte_fewer_than_3_vertices_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .polygon_matte(vec![(0.0, 0.0), (1.0, 0.0)], false)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "polygon_matte with < 3 vertices must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn polygon_matte_more_than_16_vertices_should_return_invalid_config() {
+        let verts = (0..17)
+            .map(|i| {
+                let angle = i as f32 * 2.0 * std::f32::consts::PI / 17.0;
+                (0.5 + 0.4 * angle.cos(), 0.5 + 0.4 * angle.sin())
+            })
+            .collect();
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .polygon_matte(verts, false)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "polygon_matte with > 16 vertices must return InvalidConfig, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn polygon_matte_out_of_range_vertex_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .polygon_matte(vec![(0.0, 0.0), (1.5, 0.0), (0.0, 1.0)], false)
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "polygon_matte with vertex x > 1.0 must return InvalidConfig, got {result:?}"
         );
     }
 

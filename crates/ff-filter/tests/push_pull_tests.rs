@@ -2674,6 +2674,53 @@ fn lumakey_invert_should_key_out_dark_regions() {
     }
 }
 
+// ── Polygon matte ─────────────────────────────────────────────────────────────
+
+#[test]
+fn polygon_matte_triangle_should_isolate_triangular_region() {
+    // Triangle (0,0)→(1,0)→(0,1) covers pixels where X + Y < frame_width.
+    // For a 64×64 frame: inside count = 64+63+…+1 = 2080 out of 4096 pixels.
+    // Expected average alpha (non-inverted) = 2080*255/4096 ≈ 129.5.
+    let mut graph = match FilterGraph::builder()
+        .trim(0.0, 5.0)
+        .polygon_matte(vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)], false)
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    let frame = make_yuv420p_frame(64, 64);
+    match graph.push_video(0, &frame) {
+        Ok(()) => {}
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    }
+    let out = graph
+        .pull_video()
+        .expect("pull_video must not fail")
+        .expect("expected Some(frame)");
+    assert_eq!(out.width(), 64, "output width must match input");
+    assert_eq!(out.height(), 64, "output height must match input");
+    // geq outputs rgba (packed); alpha is at byte 3 (rgba) or byte 0 (argb).
+    if let Some(data) = out.plane(0) {
+        if data.len() == 64 * 64 * 4 {
+            let avg_a0 = data.chunks(4).map(|p| p[0] as f32).sum::<f32>() / (64.0 * 64.0);
+            let avg_a3 = data.chunks(4).map(|p| p[3] as f32).sum::<f32>() / (64.0 * 64.0);
+            // Triangle covers ~50% of pixels; avg alpha ≈ 129.5.
+            let alpha = avg_a0.max(avg_a3);
+            assert!(
+                alpha > 100.0 && alpha < 160.0,
+                "triangle mask should cover ~50% of pixels (avg≈129), got avg_a0={avg_a0} avg_a3={avg_a3}"
+            );
+        }
+    }
+}
+
 // ── Rect mask ─────────────────────────────────────────────────────────────────
 
 #[test]

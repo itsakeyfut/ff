@@ -513,6 +513,31 @@ pub enum FilterStep {
         /// When `true`, the mask is inverted: outside is opaque, inside is transparent.
         invert: bool,
     },
+
+    /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
+    /// crossing-number point-in-polygon test.
+    ///
+    /// Pixels inside the polygon are fully opaque (`alpha=255`); pixels outside
+    /// are fully transparent (`alpha=0`).  When `invert` is `true` the roles
+    /// are swapped.
+    ///
+    /// - `vertices`: polygon corners as `(x, y)` in `[0.0, 1.0]` (normalised
+    ///   to frame size).  Minimum 3, maximum 16.
+    /// - `invert`: when `false`, inside = opaque; when `true`, outside = opaque.
+    ///
+    /// Vertex count and coordinates are validated in
+    /// [`build`](FilterGraphBuilder::build); out-of-range values return
+    /// [`crate::FilterError::InvalidConfig`].
+    ///
+    /// The `geq` expression is constructed from the vertex list at graph
+    /// build time.  Degenerate polygons (zero area) produce a fully-transparent
+    /// mask.  The output carries an alpha channel (`rgba`).
+    PolygonMatte {
+        /// Polygon corners in normalised `[0.0, 1.0]` frame coordinates.
+        vertices: Vec<(f32, f32)>,
+        /// When `true`, the mask is inverted: outside is opaque, inside is transparent.
+        invert: bool,
+    },
 }
 
 /// Convert a color temperature in Kelvin to linear RGB multipliers using
@@ -625,6 +650,8 @@ impl FilterStep {
             Self::LumaKey { .. } => "lumakey",
             // RectMask uses geq to set alpha per-pixel based on rectangle bounds.
             Self::RectMask { .. } => "geq",
+            // PolygonMatte uses geq with a crossing-number point-in-polygon expression.
+            Self::PolygonMatte { .. } => "geq",
         }
     }
 
@@ -877,6 +904,40 @@ impl FilterStep {
                 format!(
                     "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
                      a='if(between(X,{x},{xw})*between(Y,{y},{yh}),{inside},{outside})'"
+                )
+            }
+            Self::PolygonMatte { vertices, invert } => {
+                // Build a crossing-number point-in-polygon expression.
+                // For each edge (ax,ay)→(bx,by), a horizontal ray from (X,Y) going
+                // right crosses the edge when Y is in [min(ay,by), max(ay,by)) and
+                // the intersection x > X.  Exact horizontal edges (dy==0) are skipped.
+                let n = vertices.len();
+                let mut edge_exprs = Vec::new();
+                for i in 0..n {
+                    let (ax, ay) = vertices[i];
+                    let (bx, by) = vertices[(i + 1) % n];
+                    let dy = by - ay;
+                    if dy == 0.0 {
+                        // Horizontal edge — never crosses a horizontal ray; skip.
+                        continue;
+                    }
+                    let min_y = ay.min(by);
+                    let max_y = ay.max(by);
+                    let dx = bx - ax;
+                    // x_intersect = ax*iw + (Y - ay*ih) * dx*iw / (dy*ih)
+                    edge_exprs.push(format!(
+                        "if(gte(Y,{min_y}*ih)*lt(Y,{max_y}*ih)*gt({ax}*iw+(Y-{ay}*ih)*{dx}*iw/({dy}*ih),X),1,0)"
+                    ));
+                }
+                let sum = if edge_exprs.is_empty() {
+                    "0".to_string()
+                } else {
+                    edge_exprs.join("+")
+                };
+                let (inside, outside) = if *invert { (0, 255) } else { (255, 0) };
+                format!(
+                    "r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':\
+                     a='if(gt(mod({sum},2),0),{inside},{outside})'"
                 )
             }
             Self::FitToAspect { width, height, .. } => {

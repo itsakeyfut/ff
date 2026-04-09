@@ -141,6 +141,27 @@ impl FilterGraphBuilder {
         self
     }
 
+    /// Apply a polygon alpha mask defined by normalised vertex coordinates.
+    ///
+    /// Pixels inside the polygon are fully opaque; pixels outside are fully
+    /// transparent.  When `invert` is `true` the roles are swapped.
+    ///
+    /// - `vertices`: polygon corners as `(x, y)` in `[0.0, 1.0]` (normalised
+    ///   to frame size).  Minimum 3, maximum 16.
+    /// - `invert`: when `false`, inside = opaque; when `true`, outside = opaque.
+    ///
+    /// Vertex count and coordinates are validated in
+    /// [`build`](FilterGraphBuilder::build); out-of-range values return
+    /// [`FilterError::InvalidConfig`].
+    ///
+    /// The output carries an alpha channel (`rgba`).
+    #[must_use]
+    pub fn polygon_matte(mut self, vertices: Vec<(f32, f32)>, invert: bool) -> Self {
+        self.steps
+            .push(FilterStep::PolygonMatte { vertices, invert });
+        self
+    }
+
     /// Key out pixels matching `color` in RGB space using `FFmpeg`'s `colorkey` filter.
     ///
     /// - `color`: `FFmpeg` color string, e.g. `"green"`, `"0x00FF00"`, `"#00FF00"`.
