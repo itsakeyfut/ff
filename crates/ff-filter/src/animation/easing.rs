@@ -49,7 +49,8 @@ impl Easing {
             Easing::Linear => t,
             // Cubic ease-in: slow start, fast end (y = t³).
             Easing::EaseIn => t * t * t,
-            Easing::EaseOut => t,
+            // Cubic ease-out: fast start, slow end (y = 1 − (1−t)³).
+            Easing::EaseOut => 1.0 - (1.0 - t).powi(3),
             Easing::EaseInOut => t,
             Easing::Bezier { .. } => t,
         }
@@ -78,6 +79,14 @@ mod tests {
 
         let v = track.value_at(Duration::from_millis(500));
         assert!((v - 0.5).abs() < 0.001, "expected 0.5 at midpoint, got {v}");
+    }
+
+    #[test]
+    fn ease_out_should_be_above_linear_at_midpoint() {
+        // 1 − (1−0.5)³ = 1 − 0.125 = 0.875, well above the linear 0.5.
+        let u = Easing::EaseOut.apply(0.5);
+        assert!(u > 0.5, "ease-out at t=0.5 should be above 0.5, got {u}");
+        assert!((u - 0.875).abs() < f64::EPSILON, "expected 0.875, got {u}");
     }
 
     #[test]
