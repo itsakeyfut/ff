@@ -28,3 +28,22 @@ pub enum Easing {
         p2: (f64, f64),
     },
 }
+
+impl Easing {
+    /// Applies the easing function to a normalised progress value `t ∈ [0, 1]`.
+    ///
+    /// Returns a remapped progress value `u ∈ [0, 1]` that is then used to
+    /// drive `T::lerp`.  Full per-variant implementations are added in issues
+    /// #352–#357; variants not yet implemented fall back to linear.
+    pub(crate) fn apply(&self, t: f64) -> f64 {
+        match self {
+            Easing::Hold => 0.0,
+            Easing::Linear => t,
+            // Full cubic implementations added in #352–#357.
+            Easing::EaseIn => t,
+            Easing::EaseOut => t,
+            Easing::EaseInOut => t,
+            Easing::Bezier { .. } => t,
+        }
+    }
+}
