@@ -467,6 +467,11 @@ path = "examples/filter/luma_key_title_card.rs"
 required-features = ["decode", "encode", "filter"]
 
 [[example]]
+name = "polygon_garbage_matte"
+path = "examples/filter/polygon_garbage_matte.rs"
+required-features = ["decode", "encode", "filter"]
+
+[[example]]
 name = "chroma_key_green_screen"
 path = "examples/filter/chroma_key_green_screen.rs"
 required-features = ["decode", "encode", "filter"]
