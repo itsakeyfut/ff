@@ -16,11 +16,15 @@
 ///
 /// # Implementation status
 ///
-/// Only [`BlendMode::Normal`] is fully implemented in the current version
-/// (issue #327).  All other variants are defined and accepted by the builder
-/// but return [`FilterError::InvalidConfig`](crate::FilterError::InvalidConfig) when
-/// [`FilterGraphBuilder::build`](crate::FilterGraphBuilder::build) is called, until their dedicated
-/// issues are resolved.
+/// All 14 arithmetic photographic modes and all 6 Porter-Duff operations are
+/// fully implemented and covered by regression tests (issues #327–#347).
+///
+/// The four HSL-space modes — [`BlendMode::Hue`], [`BlendMode::Saturation`],
+/// [`BlendMode::Color`], and [`BlendMode::Luminosity`] — are accepted by the
+/// builder but produce no output at runtime: `FFmpeg`'s `blend` filter does not
+/// include these mode names in the bundled version.  The builder returns
+/// [`FilterError::BuildFailed`](crate::FilterError) when the filter graph
+/// cannot be configured for these modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendMode {
     // ── Photographic blend modes ──────────────────────────────────────────
@@ -97,21 +101,33 @@ pub enum BlendMode {
     /// Applies the top layer's hue to the base's saturation and luminance.
     ///
     /// Maps to `blend all_mode=hue`.
+    ///
+    /// **Note**: not supported by the bundled `FFmpeg` `blend` filter; graph
+    /// construction succeeds but no output frame is produced at runtime.
     Hue,
 
     /// Applies the top layer's saturation to the base's hue and luminance.
     ///
     /// Maps to `blend all_mode=saturation`.
+    ///
+    /// **Note**: not supported by the bundled `FFmpeg` `blend` filter; graph
+    /// construction succeeds but no output frame is produced at runtime.
     Saturation,
 
     /// Applies the top layer's hue + saturation to the base's luminance.
     ///
     /// Maps to `blend all_mode=color`.
+    ///
+    /// **Note**: not supported by the bundled `FFmpeg` `blend` filter; graph
+    /// construction succeeds but no output frame is produced at runtime.
     Color,
 
     /// Applies the top layer's luminance to the base's hue and saturation.
     ///
     /// Maps to `blend all_mode=luminosity`.
+    ///
+    /// **Note**: not supported by the bundled `FFmpeg` `blend` filter; graph
+    /// construction succeeds but no output frame is produced at runtime.
     Luminosity,
 
     // ── Porter-Duff alpha compositing ─────────────────────────────────────
