@@ -54,9 +54,48 @@ impl Easing {
             // Cubic ease-in-out: slow at both ends, fast middle (y = 3t² − 2t³).
             // Equivalent to Ken Perlin's smoothstep; symmetric about t = 0.5.
             Easing::EaseInOut => 3.0 * t * t - 2.0 * t * t * t,
-            Easing::Bezier { .. } => t,
+            // CSS cubic-bezier: find t via Newton–Raphson, return By(t).
+            // P0=(0,0) and P3=(1,1) are fixed; P1=p1, P2=p2.
+            // P1.x and P2.x are clamped to [0, 1] to preserve monotonicity.
+            Easing::Bezier { p1, p2 } => {
+                let p1x = p1.0.clamp(0.0, 1.0);
+                let p2x = p2.0.clamp(0.0, 1.0);
+
+                // Solve Bx(nt) = t via Newton–Raphson (4 iterations).
+                let mut nt = t;
+                for _ in 0..4 {
+                    let bx_prime = bez_x_prime(nt, p1x, p2x);
+                    if bx_prime.abs() < 1e-10 {
+                        break;
+                    }
+                    nt -= (bez_x(nt, p1x, p2x) - t) / bx_prime;
+                    nt = nt.clamp(0.0, 1.0);
+                }
+
+                bez_y(nt, p1.1, p2.1)
+            }
         }
     }
+}
+
+// ── Cubic Bézier helpers (P0=0, P3=1) ────────────────────────────────────────
+
+/// X position on the Bézier curve at parameter `t`.
+fn bez_x(t: f64, p1x: f64, p2x: f64) -> f64 {
+    let u = 1.0 - t;
+    3.0 * p1x * t * u * u + 3.0 * p2x * t * t * u + t * t * t
+}
+
+/// Derivative of `bez_x` with respect to `t`.
+fn bez_x_prime(t: f64, p1x: f64, p2x: f64) -> f64 {
+    let u = 1.0 - t;
+    3.0 * p1x * u * u + 6.0 * (p2x - p1x) * t * u + 3.0 * (1.0 - p2x) * t * t
+}
+
+/// Y position on the Bézier curve at parameter `t`.
+fn bez_y(t: f64, p1y: f64, p2y: f64) -> f64 {
+    let u = 1.0 - t;
+    3.0 * p1y * t * u * u + 3.0 * p2y * t * t * u + t * t * t
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -67,6 +106,31 @@ mod tests {
 
     use super::*;
     use crate::animation::{AnimationTrack, Keyframe};
+
+    #[test]
+    fn bezier_ease_css_preset_should_match_reference_values() {
+        // CSS `ease` = cubic-bezier(0.25, 0.1, 0.25, 1.0).
+        // At x=0.5 the CSS reference value is ~0.8029 (t ≈ 0.7 solves Bx(t)=0.5).
+        let ease = Easing::Bezier {
+            p1: (0.25, 0.1),
+            p2: (0.25, 1.0),
+        };
+        let v = ease.apply(0.5);
+        assert!(
+            (v - 0.8029_f64).abs() < 0.01,
+            "expected ~0.8029 for CSS ease at x=0.5, got {v}"
+        );
+
+        // Boundary conditions: apply(0.0) = 0.0 and apply(1.0) = 1.0.
+        assert!(
+            ease.apply(0.0).abs() < f64::EPSILON,
+            "apply(0.0) must be 0.0"
+        );
+        assert!(
+            (ease.apply(1.0) - 1.0).abs() < f64::EPSILON,
+            "apply(1.0) must be 1.0"
+        );
+    }
 
     #[test]
     fn linear_easing_should_return_half_at_midpoint() {
