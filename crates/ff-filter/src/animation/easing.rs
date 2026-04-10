@@ -60,7 +60,25 @@ impl Easing {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::animation::{AnimationTrack, Keyframe};
+
+    #[test]
+    fn linear_easing_should_return_half_at_midpoint() {
+        // Build a [0 s → 0.0, 1 s → 1.0] track with Linear easing.
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0_f64, Easing::Linear))
+            .push(Keyframe::new(
+                Duration::from_secs(1),
+                1.0_f64,
+                Easing::Linear,
+            ));
+
+        let v = track.value_at(Duration::from_millis(500));
+        assert!((v - 0.5).abs() < 0.001, "expected 0.5 at midpoint, got {v}");
+    }
 
     #[test]
     fn hold_easing_should_return_start_value_at_midpoint() {
