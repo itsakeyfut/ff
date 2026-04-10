@@ -56,12 +56,12 @@ pub enum BlendMode {
 
     /// Brightens the base by dividing it by the inverse of the blend.
     ///
-    /// Maps to `blend all_mode=colordodge`.
+    /// Maps to `blend all_mode=dodge`.
     ColorDodge,
 
     /// Darkens the base; inverse of Color Dodge.
     ///
-    /// Maps to `blend all_mode=colorburn`.
+    /// Maps to `blend all_mode=burn`.
     ColorBurn,
 
     /// Retains the darker of the two pixels per channel.

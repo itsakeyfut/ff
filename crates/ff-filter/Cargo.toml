@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 ff-encode = { workspace = true }
 ff-probe  = { workspace = true }
+image     = { workspace = true, features = ["png"] }
 
 [lints]
 workspace = true
