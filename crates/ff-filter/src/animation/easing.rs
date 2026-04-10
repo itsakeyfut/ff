@@ -47,8 +47,8 @@ impl Easing {
                 }
             }
             Easing::Linear => t,
-            // Full cubic implementations added in #353–#357.
-            Easing::EaseIn => t,
+            // Cubic ease-in: slow start, fast end (y = t³).
+            Easing::EaseIn => t * t * t,
             Easing::EaseOut => t,
             Easing::EaseInOut => t,
             Easing::Bezier { .. } => t,
@@ -78,6 +78,14 @@ mod tests {
 
         let v = track.value_at(Duration::from_millis(500));
         assert!((v - 0.5).abs() < 0.001, "expected 0.5 at midpoint, got {v}");
+    }
+
+    #[test]
+    fn ease_in_should_be_below_linear_at_midpoint() {
+        // t³ at t=0.5 → 0.125, well below the linear 0.5.
+        let u = Easing::EaseIn.apply(0.5);
+        assert!(u < 0.5, "ease-in at t=0.5 should be below 0.5, got {u}");
+        assert!((u - 0.125).abs() < f64::EPSILON, "expected 0.125, got {u}");
     }
 
     #[test]
