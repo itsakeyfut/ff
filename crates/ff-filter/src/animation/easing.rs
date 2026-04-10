@@ -37,13 +37,55 @@ impl Easing {
     /// #352–#357; variants not yet implemented fall back to linear.
     pub(crate) fn apply(&self, t: f64) -> f64 {
         match self {
-            Easing::Hold => 0.0,
+            // Hold: snap — stay at the start value until t reaches 1.0,
+            // then jump to the end value.
+            Easing::Hold => {
+                if t >= 1.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             Easing::Linear => t,
-            // Full cubic implementations added in #352–#357.
+            // Full cubic implementations added in #353–#357.
             Easing::EaseIn => t,
             Easing::EaseOut => t,
             Easing::EaseInOut => t,
             Easing::Bezier { .. } => t,
         }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hold_easing_should_return_start_value_at_midpoint() {
+        // t = 0.5: still holding at the start — must return 0.0.
+        let u = Easing::Hold.apply(0.5);
+        assert!(
+            (u - 0.0).abs() < f64::EPSILON,
+            "expected 0.0 at t=0.5, got {u}"
+        );
+    }
+
+    #[test]
+    fn hold_easing_should_snap_at_keyframe_boundary() {
+        // t = 1.0: exactly at the next keyframe — must snap to 1.0.
+        let u = Easing::Hold.apply(1.0);
+        assert!(
+            (u - 1.0).abs() < f64::EPSILON,
+            "expected 1.0 at t=1.0, got {u}"
+        );
+
+        // t slightly above 1.0 also returns 1.0.
+        let u2 = Easing::Hold.apply(1.5);
+        assert!(
+            (u2 - 1.0).abs() < f64::EPSILON,
+            "expected 1.0 at t=1.5, got {u2}"
+        );
     }
 }
