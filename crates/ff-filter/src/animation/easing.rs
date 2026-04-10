@@ -51,7 +51,9 @@ impl Easing {
             Easing::EaseIn => t * t * t,
             // Cubic ease-out: fast start, slow end (y = 1 − (1−t)³).
             Easing::EaseOut => 1.0 - (1.0 - t).powi(3),
-            Easing::EaseInOut => t,
+            // Cubic ease-in-out: slow at both ends, fast middle (y = 3t² − 2t³).
+            // Equivalent to Ken Perlin's smoothstep; symmetric about t = 0.5.
+            Easing::EaseInOut => 3.0 * t * t - 2.0 * t * t * t,
             Easing::Bezier { .. } => t,
         }
     }
@@ -79,6 +81,27 @@ mod tests {
 
         let v = track.value_at(Duration::from_millis(500));
         assert!((v - 0.5).abs() < 0.001, "expected 0.5 at midpoint, got {v}");
+    }
+
+    #[test]
+    fn ease_in_out_should_return_half_at_midpoint() {
+        // 3(0.5)² − 2(0.5)³ = 0.75 − 0.25 = 0.5 exactly.
+        let u = Easing::EaseInOut.apply(0.5);
+        assert!((u - 0.5).abs() < 0.001, "expected 0.5 at midpoint, got {u}");
+    }
+
+    #[test]
+    fn ease_in_out_should_be_below_linear_at_quarter() {
+        // Slow start: eased value at t=0.1 should be below 0.1.
+        let u = Easing::EaseInOut.apply(0.1);
+        assert!(u < 0.1, "ease-in-out at t=0.1 should be below 0.1, got {u}");
+    }
+
+    #[test]
+    fn ease_in_out_should_be_above_linear_at_three_quarters() {
+        // Slow end: eased value at t=0.9 should be above 0.9.
+        let u = Easing::EaseInOut.apply(0.9);
+        assert!(u > 0.9, "ease-in-out at t=0.9 should be above 0.9, got {u}");
     }
 
     #[test]
