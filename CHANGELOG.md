@@ -11,6 +11,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-04-10
+
+### Added
+
+#### ff-filter — blend modes
+- `BlendMode` enum with 14 photographic blend modes (Normal, Multiply, Screen, Overlay, SoftLight, HardLight, ColorDodge, ColorBurn, Darken, Lighten, Difference, Exclusion, Add, Subtract) and 4 HSL-space variants (accepted but unsupported by bundled FFmpeg) ([#327](https://github.com/itsakeyfut/avio/issues/327)–[#334](https://github.com/itsakeyfut/avio/issues/334))
+- `FilterGraphBuilder::blend()` — layer a top `FilterGraphBuilder` over the main stream with a specified `BlendMode` and opacity ([#327](https://github.com/itsakeyfut/avio/issues/327))
+- Porter-Duff Over compositing (`BlendMode::PorterDuffOver`) via `overlay=format=auto:shortest=1` ([#335](https://github.com/itsakeyfut/avio/issues/335))
+- Porter-Duff Under, In, Out operations ([#336](https://github.com/itsakeyfut/avio/issues/336))
+- Porter-Duff Atop and XOR operations ([#337](https://github.com/itsakeyfut/avio/issues/337))
+
+#### ff-filter — keying
+- `FilterGraphBuilder::chromakey()` — YCbCr chroma key with similarity and blend parameters ([#338](https://github.com/itsakeyfut/avio/issues/338))
+- `FilterGraphBuilder::colorkey()` — RGB-space color removal ([#339](https://github.com/itsakeyfut/avio/issues/339))
+- `FilterGraphBuilder::spill_suppress()` — reduce chroma spill on keyed subject edges ([#340](https://github.com/itsakeyfut/avio/issues/340))
+- `FilterGraphBuilder::lumakey()` — key out bright or dark regions by luminance ([#341](https://github.com/itsakeyfut/avio/issues/341))
+
+#### ff-filter — masking
+- `FilterGraphBuilder::alpha_matte()` — merge a grayscale matte stream as the alpha channel of the main video ([#342](https://github.com/itsakeyfut/avio/issues/342))
+- `FilterGraphBuilder::rect_mask()` — rectangular alpha mask via `geq` filter ([#343](https://github.com/itsakeyfut/avio/issues/343))
+- `FilterGraphBuilder::polygon_matte()` — polygon mask with up to 16 vertices in normalised coordinates, using a crossing-number point-in-polygon test ([#344](https://github.com/itsakeyfut/avio/issues/344))
+- `FilterGraphBuilder::feather_mask()` — Gaussian blur of the alpha channel edges for smooth compositing ([#345](https://github.com/itsakeyfut/avio/issues/345))
+
+#### avio (facade)
+- `BlendMode` re-exported under the `filter` feature flag ([#930](https://github.com/itsakeyfut/avio/issues/930))
+- New compositing examples: `chroma_key_green_screen`, `blend_modes_demo`, `luma_key_title_card`, `polygon_garbage_matte`, `mask_feathering`, `alpha_matte_external` ([#932](https://github.com/itsakeyfut/avio/issues/932)–[#937](https://github.com/itsakeyfut/avio/issues/937))
+
+### Fixed
+
+- `BlendMode::ColorDodge` mapped to wrong FFmpeg mode name (`colordodge` → `dodge`) ([#347](https://github.com/itsakeyfut/avio/issues/347))
+- `BlendMode::ColorBurn` mapped to wrong FFmpeg mode name (`colorburn` → `burn`) ([#347](https://github.com/itsakeyfut/avio/issues/347))
+
+### Tests
+
+- Golden-image regression test for all 18 photographic blend modes against committed reference PNGs within ±2 per-channel tolerance ([#347](https://github.com/itsakeyfut/avio/issues/347))
+- End-to-end compositing pipeline integration test: polygon garbage matte → chroma key → Porter-Duff Over blend ([#346](https://github.com/itsakeyfut/avio/issues/346))
+
+---
+
 ## [0.10.0] - 2026-04-08
 
 ### Added
