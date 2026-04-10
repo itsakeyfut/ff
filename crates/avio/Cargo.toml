@@ -457,6 +457,11 @@ path = "examples/encode/export_preset.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
+name = "blend_modes_demo"
+path = "examples/filter/blend_modes_demo.rs"
+required-features = ["decode", "encode", "filter"]
+
+[[example]]
 name = "chroma_key_green_screen"
 path = "examples/filter/chroma_key_green_screen.rs"
 required-features = ["decode", "encode", "filter"]
