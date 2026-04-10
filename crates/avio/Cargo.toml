@@ -457,6 +457,11 @@ path = "examples/encode/export_preset.rs"
 required-features = ["decode", "encode"]
 
 [[example]]
+name = "chroma_key_green_screen"
+path = "examples/filter/chroma_key_green_screen.rs"
+required-features = ["decode", "encode", "filter"]
+
+[[example]]
 name = "multi_track_compose"
 path = "examples/filter/multi_track_compose.rs"
 required-features = ["filter", "pipeline", "encode"]
