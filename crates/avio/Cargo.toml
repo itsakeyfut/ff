@@ -462,6 +462,11 @@ path = "examples/filter/blend_modes_demo.rs"
 required-features = ["decode", "encode", "filter"]
 
 [[example]]
+name = "luma_key_title_card"
+path = "examples/filter/luma_key_title_card.rs"
+required-features = ["decode", "encode", "filter"]
+
+[[example]]
 name = "chroma_key_green_screen"
 path = "examples/filter/chroma_key_green_screen.rs"
 required-features = ["decode", "encode", "filter"]
