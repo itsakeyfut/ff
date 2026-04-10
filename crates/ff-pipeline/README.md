@@ -8,7 +8,7 @@ Wire decode, filter, and encode into a single configured pipeline. Instead of ma
 
 ```toml
 [dependencies]
-ff-pipeline = "0.10"
+ff-pipeline = "0.11"
 ```
 
 ## Building a Pipeline
