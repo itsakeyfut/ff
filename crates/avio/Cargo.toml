@@ -467,6 +467,11 @@ path = "examples/filter/luma_key_title_card.rs"
 required-features = ["decode", "encode", "filter"]
 
 [[example]]
+name = "alpha_matte_external"
+path = "examples/filter/alpha_matte_external.rs"
+required-features = ["decode", "encode", "filter"]
+
+[[example]]
 name = "mask_feathering"
 path = "examples/filter/mask_feathering.rs"
 required-features = ["decode", "encode", "filter"]
