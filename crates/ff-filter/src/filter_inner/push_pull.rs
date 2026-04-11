@@ -10,6 +10,88 @@ use crate::error::FilterError;
 use std::ptr::NonNull;
 
 impl FilterGraphInner {
+    // ── Animation ─────────────────────────────────────────────────────────────
+
+    /// Evaluates every registered [`AnimationEntry`] at time `t` and sends the
+    /// updated value to the corresponding filter node via
+    /// `avfilter_graph_send_command`.
+    ///
+    /// **No-op** when the graph has not yet been initialised (i.e. before the
+    /// first `push_video` / `push_audio` call).  Individual `send_command`
+    /// failures are logged as `warn!` and do not abort the loop.
+    pub(crate) fn apply_animations(
+        &self,
+        animations: &[crate::animation::AnimationEntry],
+        t: std::time::Duration,
+    ) {
+        use std::ffi::CString;
+
+        // Declare `avfilter_graph_send_command` locally: bindgen includes it
+        // on some platforms (Windows/VCPKG) but omits it on others (Linux apt).
+        // Declaring it here avoids a platform-specific ff-sys gap while still
+        // linking against the same libavfilter that ff-sys already pulls in.
+        unsafe extern "C" {
+            fn avfilter_graph_send_command(
+                graph: *mut ff_sys::AVFilterGraph,
+                target: *const std::os::raw::c_char,
+                cmd: *const std::os::raw::c_char,
+                arg: *const std::os::raw::c_char,
+                res: *mut std::os::raw::c_char,
+                res_len: std::os::raw::c_int,
+                flags: std::os::raw::c_int,
+            ) -> std::os::raw::c_int;
+        }
+
+        let Some(graph_ptr) = self.graph.map(|nn| nn.as_ptr()) else {
+            return;
+        };
+
+        for entry in animations {
+            let value = entry.track.value_at(t);
+            let arg_str = format!("{value:.6}");
+
+            let Ok(target_cstr) = CString::new(entry.node_name.as_str()) else {
+                continue;
+            };
+            let Ok(cmd_cstr) = CString::new(entry.param) else {
+                continue;
+            };
+            let Ok(arg_cstr) = CString::new(arg_str.as_str()) else {
+                continue;
+            };
+
+            // `c_char` is `i8` on all supported targets.
+            let mut resp = [0_i8; 64];
+
+            // SAFETY: `graph_ptr` is non-null (derived from `NonNull` after a
+            // `Some` check above). `target_cstr`, `cmd_cstr`, and `arg_cstr`
+            // are valid null-terminated C strings held alive for the duration
+            // of this call. `resp` is a valid stack-allocated mutable buffer
+            // of 64 bytes. `FilterGraph` does not implement `Sync`, so this
+            // call is always single-threaded with no concurrent access to the
+            // same graph.
+            let ret = unsafe {
+                avfilter_graph_send_command(
+                    graph_ptr,
+                    target_cstr.as_ptr(),
+                    cmd_cstr.as_ptr(),
+                    arg_cstr.as_ptr(),
+                    resp.as_mut_ptr(),
+                    resp.len() as std::os::raw::c_int,
+                    0,
+                )
+            };
+
+            if ret < 0 {
+                log::warn!(
+                    "send_command failed target={} cmd={} value={value:.6} code={ret}",
+                    entry.node_name,
+                    entry.param,
+                );
+            }
+        }
+    }
+
     // ── Video ─────────────────────────────────────────────────────────────────
 
     /// Lazily initialise the video filter graph from the first pushed frame.
