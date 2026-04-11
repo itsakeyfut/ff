@@ -2,6 +2,7 @@
 
 use ff_format::{AudioFrame, VideoFrame};
 
+use crate::animation::AnimationEntry;
 use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
 
@@ -35,6 +36,12 @@ use super::builder::FilterGraphBuilder;
 pub struct FilterGraph {
     pub(crate) inner: FilterGraphInner,
     pub(crate) output_resolution: Option<(u32, u32)>,
+    /// Animation entries registered via `crop_animated` / `gblur_animated`.
+    ///
+    /// Consumed by per-frame `avfilter_graph_send_command` in #363.
+    // TODO(#363): remove allow once consumed by the send_command loop.
+    #[allow(dead_code)]
+    pub(crate) pending_animations: Vec<AnimationEntry>,
 }
 
 impl std::fmt::Debug for FilterGraph {
@@ -59,7 +66,19 @@ impl FilterGraph {
         Self {
             inner,
             output_resolution: None,
+            pending_animations: Vec::new(),
         }
+    }
+
+    /// Returns the registered animation entries accumulated by
+    /// [`crop_animated`](FilterGraphBuilder::crop_animated) and
+    /// [`gblur_animated`](FilterGraphBuilder::gblur_animated).
+    ///
+    /// These are consumed by per-frame `avfilter_graph_send_command` in #363.
+    // TODO(#363): remove allow once consumed by the send_command loop.
+    #[allow(dead_code)]
+    pub(crate) fn pending_animations(&self) -> &[AnimationEntry] {
+        &self.pending_animations
     }
 
     /// Returns the output resolution produced by this graph's `scale` filter step,

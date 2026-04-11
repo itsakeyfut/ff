@@ -1,9 +1,12 @@
 //! Internal filter step representation.
 
+use std::time::Duration;
+
 use super::builder::FilterGraphBuilder;
 use super::types::{
     DrawTextOptions, EqBand, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
+use crate::animation::AnimatedValue;
 use crate::blend::BlendMode;
 
 // ── FilterStep ────────────────────────────────────────────────────────────────
@@ -141,6 +144,28 @@ pub enum FilterStep {
     GBlur {
         /// Blur radius (standard deviation). Must be ≥ 0.0.
         sigma: f32,
+    },
+    /// Crop with optionally animated boundaries (pixels, `f64` for sub-pixel precision).
+    ///
+    /// Arguments are evaluated at [`Duration::ZERO`] for the initial graph build.
+    /// Per-frame updates are applied via `avfilter_graph_send_command` in #363.
+    CropAnimated {
+        /// X offset of the top-left corner, in pixels.
+        x: AnimatedValue<f64>,
+        /// Y offset of the top-left corner, in pixels.
+        y: AnimatedValue<f64>,
+        /// Width of the cropped region. Must evaluate to > 0 at `Duration::ZERO`.
+        width: AnimatedValue<f64>,
+        /// Height of the cropped region. Must evaluate to > 0 at `Duration::ZERO`.
+        height: AnimatedValue<f64>,
+    },
+    /// Gaussian blur with an optionally animated sigma (blur radius).
+    ///
+    /// Arguments are evaluated at [`Duration::ZERO`] for the initial graph build.
+    /// Per-frame updates are applied via `avfilter_graph_send_command` in #363.
+    GBlurAnimated {
+        /// Blur radius (standard deviation). Must evaluate to ≥ 0.0 at `Duration::ZERO`.
+        sigma: AnimatedValue<f64>,
     },
     /// Sharpen or blur via unsharp mask (luma + chroma strength).
     ///
@@ -681,6 +706,8 @@ impl FilterStep {
             Self::FeatherMask { .. } => "alphaextract",
             // PolygonMatte uses geq with a crossing-number point-in-polygon expression.
             Self::PolygonMatte { .. } => "geq",
+            Self::CropAnimated { .. } => "crop",
+            Self::GBlurAnimated { .. } => "gblur",
         }
     }
 
@@ -1041,6 +1068,22 @@ impl FilterStep {
                 dissolve_dur,
                 ..
             } => format!("transition=dissolve:duration={dissolve_dur}:offset={clip_a_end}"),
+            Self::CropAnimated {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let x0 = x.value_at(Duration::ZERO);
+                let y0 = y.value_at(Duration::ZERO);
+                let w0 = width.value_at(Duration::ZERO);
+                let h0 = height.value_at(Duration::ZERO);
+                format!("x={x0}:y={y0}:w={w0}:h={h0}")
+            }
+            Self::GBlurAnimated { sigma } => {
+                let s0 = sigma.value_at(Duration::ZERO);
+                format!("sigma={s0}")
+            }
         }
     }
 }

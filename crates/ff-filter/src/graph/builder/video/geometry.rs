@@ -21,9 +21,69 @@ impl FilterGraphBuilder {
     }
 
     /// Crop a rectangle starting at `(x, y)` with the given dimensions.
+    ///
+    /// Shorthand for [`crop_animated`](Self::crop_animated) with static values.
     #[must_use]
-    pub fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
-        self.steps.push(FilterStep::Crop {
+    pub fn crop(self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        self.crop_animated(
+            AnimatedValue::Static(f64::from(x)),
+            AnimatedValue::Static(f64::from(y)),
+            AnimatedValue::Static(f64::from(width)),
+            AnimatedValue::Static(f64::from(height)),
+        )
+    }
+
+    /// Crop with optionally animated boundaries (pixels).
+    ///
+    /// When an [`AnimatedValue::Track`] is supplied, the corresponding animation
+    /// is registered for per-frame `avfilter_graph_send_command` updates (#363).
+    /// The initial filter graph is built from the value at [`Duration::ZERO`].
+    ///
+    /// Filter node names are assigned deterministically: the first call produces
+    /// `"crop_0"`, the second `"crop_1"`, and so on.
+    #[must_use]
+    pub fn crop_animated(
+        mut self,
+        x: AnimatedValue<f64>,
+        y: AnimatedValue<f64>,
+        width: AnimatedValue<f64>,
+        height: AnimatedValue<f64>,
+    ) -> Self {
+        let n = self
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FilterStep::CropAnimated { .. }))
+            .count();
+        let node_name = format!("crop_{n}");
+        if let AnimatedValue::Track(track) = &x {
+            self.animations.push(AnimationEntry {
+                node_name: node_name.clone(),
+                param: "x",
+                track: track.clone(),
+            });
+        }
+        if let AnimatedValue::Track(track) = &y {
+            self.animations.push(AnimationEntry {
+                node_name: node_name.clone(),
+                param: "y",
+                track: track.clone(),
+            });
+        }
+        if let AnimatedValue::Track(track) = &width {
+            self.animations.push(AnimationEntry {
+                node_name: node_name.clone(),
+                param: "w",
+                track: track.clone(),
+            });
+        }
+        if let AnimatedValue::Track(track) = &height {
+            self.animations.push(AnimationEntry {
+                node_name: node_name.clone(),
+                param: "h",
+                track: track.clone(),
+            });
+        }
+        self.steps.push(FilterStep::CropAnimated {
             x,
             y,
             width,
@@ -535,6 +595,187 @@ mod tests {
         assert!(
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for opacity < 0.0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn crop_animated_static_values_should_produce_same_args_as_crop() {
+        let step_animated = FilterStep::CropAnimated {
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            width: AnimatedValue::Static(640.0),
+            height: AnimatedValue::Static(360.0),
+        };
+        assert_eq!(step_animated.filter_name(), "crop");
+        assert_eq!(step_animated.args(), "x=0:y=0:w=640:h=360");
+    }
+
+    #[test]
+    fn crop_animated_with_zero_width_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .crop_animated(
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(100.0),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for width=0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("crop width and height must be > 0"),
+                "reason should mention crop dimensions: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn crop_animated_with_zero_height_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .crop_animated(
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(100.0),
+                AnimatedValue::Static(0.0),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for height=0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn crop_animated_with_valid_dimensions_should_succeed() {
+        let result = FilterGraph::builder()
+            .crop_animated(
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(64.0),
+                AnimatedValue::Static(64.0),
+            )
+            .build();
+        assert!(
+            result.is_ok(),
+            "crop_animated with valid dimensions must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn crop_animated_with_track_should_register_animation_entry() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let track = crate::animation::AnimationTrack::new()
+            .push(Keyframe {
+                timestamp: Duration::ZERO,
+                value: 0.0_f64,
+                easing: Easing::Linear,
+            })
+            .push(Keyframe {
+                timestamp: Duration::from_secs(1),
+                value: 100.0_f64,
+                easing: Easing::Linear,
+            });
+
+        let graph = FilterGraph::builder()
+            .crop_animated(
+                AnimatedValue::Track(track),
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(64.0),
+                AnimatedValue::Static(64.0),
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            graph.pending_animations.len(),
+            1,
+            "one Track param should produce one AnimationEntry"
+        );
+        assert_eq!(graph.pending_animations[0].node_name, "crop_0");
+        assert_eq!(graph.pending_animations[0].param, "x");
+    }
+
+    #[test]
+    fn crop_animated_all_track_params_should_register_four_entries() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let make_track = |start: f64, end: f64| {
+            crate::animation::AnimationTrack::new()
+                .push(Keyframe {
+                    timestamp: Duration::ZERO,
+                    value: start,
+                    easing: Easing::Linear,
+                })
+                .push(Keyframe {
+                    timestamp: Duration::from_secs(1),
+                    value: end,
+                    easing: Easing::Linear,
+                })
+        };
+
+        let graph = FilterGraph::builder()
+            .crop_animated(
+                AnimatedValue::Track(make_track(0.0, 0.0)),
+                AnimatedValue::Track(make_track(0.0, 0.0)),
+                AnimatedValue::Track(make_track(640.0, 320.0)), // starts at 640 (valid)
+                AnimatedValue::Track(make_track(360.0, 180.0)), // starts at 360 (valid)
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            graph.pending_animations.len(),
+            4,
+            "four Track params should register four AnimationEntry items"
+        );
+        let params: Vec<&str> = graph.pending_animations.iter().map(|e| e.param).collect();
+        assert_eq!(params, ["x", "y", "w", "h"]);
+        assert!(
+            graph
+                .pending_animations
+                .iter()
+                .all(|e| e.node_name == "crop_0"),
+            "all entries must point to crop_0"
+        );
+    }
+
+    #[test]
+    fn crop_animated_second_call_should_use_crop_1_node_name() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let track = crate::animation::AnimationTrack::new().push(Keyframe {
+            timestamp: Duration::ZERO,
+            value: 50.0_f64,
+            easing: Easing::Linear,
+        });
+
+        let graph = FilterGraph::builder()
+            .crop_animated(
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(64.0),
+                AnimatedValue::Static(64.0),
+            )
+            .crop_animated(
+                AnimatedValue::Track(track),
+                AnimatedValue::Static(0.0),
+                AnimatedValue::Static(64.0),
+                AnimatedValue::Static(64.0),
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(graph.pending_animations.len(), 1);
+        assert_eq!(
+            graph.pending_animations[0].node_name, "crop_1",
+            "second crop_animated call must produce node name crop_1"
         );
     }
 }
