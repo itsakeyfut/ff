@@ -1884,6 +1884,20 @@ impl FilterGraphInner {
                         .count();
                     ("gblur_", n)
                 }
+                FilterStep::EqAnimated { .. } => {
+                    let n = steps[..i]
+                        .iter()
+                        .filter(|s| matches!(s, FilterStep::EqAnimated { .. }))
+                        .count();
+                    ("eq_", n)
+                }
+                FilterStep::ColorBalanceAnimated { .. } => {
+                    let n = steps[..i]
+                        .iter()
+                        .filter(|s| matches!(s, FilterStep::ColorBalanceAnimated { .. }))
+                        .count();
+                    ("colorbalance_", n)
+                }
                 _ => ("step", i),
             };
             prev_ctx = match add_and_link_step(graph, prev_ctx, step, step_index, step_prefix) {

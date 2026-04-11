@@ -70,6 +70,35 @@ pub enum FilterStep {
         contrast: f32,
         saturation: f32,
     },
+    /// Brightness / contrast / saturation / gamma via `FFmpeg` `eq` filter (optionally animated).
+    ///
+    /// Arguments are evaluated at [`Duration::ZERO`] for the initial graph build.
+    /// Per-frame updates are applied via `avfilter_graph_send_command` in #363.
+    EqAnimated {
+        /// Brightness offset. Range: −1.0 – 1.0 (neutral: 0.0).
+        brightness: AnimatedValue<f64>,
+        /// Contrast multiplier. Range: 0.0 – 3.0 (neutral: 1.0).
+        contrast: AnimatedValue<f64>,
+        /// Saturation multiplier. Range: 0.0 – 3.0 (neutral: 1.0; 0.0 = grayscale).
+        saturation: AnimatedValue<f64>,
+        /// Global gamma correction. Range: 0.1 – 10.0 (neutral: 1.0).
+        gamma: AnimatedValue<f64>,
+    },
+    /// Three-way color balance (shadows / midtones / highlights) via `FFmpeg` `colorbalance` filter
+    /// (optionally animated).
+    ///
+    /// Each tuple is `(R, G, B)`. Valid range per component: −1.0 – 1.0 (neutral: 0.0).
+    ///
+    /// Arguments are evaluated at [`Duration::ZERO`] for the initial graph build.
+    /// Per-frame updates are applied via `avfilter_graph_send_command` in #363.
+    ColorBalanceAnimated {
+        /// Shadows (lift) correction per channel. `FFmpeg` params: `"rs"`, `"gs"`, `"bs"`.
+        lift: AnimatedValue<(f64, f64, f64)>,
+        /// Midtones (gamma) correction per channel. `FFmpeg` params: `"rm"`, `"gm"`, `"bm"`.
+        gamma: AnimatedValue<(f64, f64, f64)>,
+        /// Highlights (gain) correction per channel. `FFmpeg` params: `"rh"`, `"gh"`, `"bh"`.
+        gain: AnimatedValue<(f64, f64, f64)>,
+    },
     /// Per-channel RGB color curves adjustment.
     Curves {
         master: Vec<(f32, f32)>,
@@ -640,6 +669,8 @@ impl FilterStep {
             Self::ParametricEq { .. } => "equalizer",
             Self::Lut3d { .. } => "lut3d",
             Self::Eq { .. } => "eq",
+            Self::EqAnimated { .. } => "eq",
+            Self::ColorBalanceAnimated { .. } => "colorbalance",
             Self::Curves { .. } => "curves",
             Self::WhiteBalance { .. } => "colorchannelmixer",
             Self::Hue { .. } => "hue",
@@ -769,6 +800,24 @@ impl FilterStep {
                 contrast,
                 saturation,
             } => format!("brightness={brightness}:contrast={contrast}:saturation={saturation}"),
+            Self::EqAnimated {
+                brightness,
+                contrast,
+                saturation,
+                gamma,
+            } => {
+                let b = brightness.value_at(Duration::ZERO);
+                let c = contrast.value_at(Duration::ZERO);
+                let s = saturation.value_at(Duration::ZERO);
+                let g = gamma.value_at(Duration::ZERO);
+                format!("brightness={b}:contrast={c}:saturation={s}:gamma={g}")
+            }
+            Self::ColorBalanceAnimated { lift, gamma, gain } => {
+                let (rl, gl, bl) = lift.value_at(Duration::ZERO);
+                let (rm, gm, bm) = gamma.value_at(Duration::ZERO);
+                let (rh, gh, bh) = gain.value_at(Duration::ZERO);
+                format!("rs={rl}:gs={gl}:bs={bl}:rm={rm}:gm={gm}:bm={bm}:rh={rh}:gh={gh}:bh={bh}")
+            }
             Self::Curves { master, r, g, b } => {
                 let fmt = |pts: &[(f32, f32)]| -> String {
                     pts.iter()

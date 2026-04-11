@@ -82,6 +82,11 @@ impl<T: Lerp> AnimationTrack<T> {
         T::lerp(&a.value, &b.value, u)
     }
 
+    /// Returns all keyframes in sorted (ascending-timestamp) order.
+    pub fn keyframes(&self) -> &[Keyframe<T>] {
+        &self.keyframes
+    }
+
     /// Returns the number of keyframes in the track.
     pub fn len(&self) -> usize {
         self.keyframes.len()

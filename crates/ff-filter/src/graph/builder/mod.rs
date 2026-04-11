@@ -169,6 +169,52 @@ impl FilterGraphBuilder {
                     });
                 }
             }
+            if let FilterStep::EqAnimated {
+                brightness,
+                contrast,
+                saturation,
+                gamma,
+            } = step
+            {
+                let b = brightness.value_at(Duration::ZERO);
+                if !(-1.0..=1.0).contains(&b) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq brightness {b} out of range [-1.0, 1.0]"),
+                    });
+                }
+                let c = contrast.value_at(Duration::ZERO);
+                if !(0.0..=3.0).contains(&c) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq contrast {c} out of range [0.0, 3.0]"),
+                    });
+                }
+                let s = saturation.value_at(Duration::ZERO);
+                if !(0.0..=3.0).contains(&s) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq saturation {s} out of range [0.0, 3.0]"),
+                    });
+                }
+                let g = gamma.value_at(Duration::ZERO);
+                if !(0.1..=10.0).contains(&g) {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("eq gamma {g} out of range [0.1, 10.0]"),
+                    });
+                }
+            }
+            if let FilterStep::ColorBalanceAnimated { lift, gamma, gain } = step {
+                for (label, av) in [("lift", lift), ("gamma", gamma), ("gain", gain)] {
+                    let (r, g, b) = av.value_at(Duration::ZERO);
+                    for (channel, v) in [("r", r), ("g", g), ("b", b)] {
+                        if !(-1.0..=1.0).contains(&v) {
+                            return Err(FilterError::InvalidConfig {
+                                reason: format!(
+                                    "color_correct {label}.{channel} {v} out of range [-1.0, 1.0]"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
             if let FilterStep::FadeIn { duration, .. }
             | FilterStep::FadeOut { duration, .. }
             | FilterStep::FadeInWhite { duration, .. }
