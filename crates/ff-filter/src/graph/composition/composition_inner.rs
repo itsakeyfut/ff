@@ -222,9 +222,11 @@ pub(super) unsafe fn build_video_composition(
         }
 
         // ── Optional scale ────────────────────────────────────────────────────
-        if (layer.scale - 1.0_f32).abs() > f32::EPSILON {
-            let sw = (canvas_width as f32 * layer.scale).round() as u32;
-            let sh = (canvas_height as f32 * layer.scale).round() as u32;
+        let sx = layer.scale_x.value_at(Duration::ZERO);
+        let sy = layer.scale_y.value_at(Duration::ZERO);
+        if (sx - 1.0).abs() > f64::EPSILON || (sy - 1.0).abs() > f64::EPSILON {
+            let sw = (f64::from(canvas_width) * sx).round() as u32;
+            let sh = (f64::from(canvas_height) * sy).round() as u32;
             let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
             if scale_filter.is_null() {
                 bail!(graph, "filter not found: scale");
@@ -257,9 +259,46 @@ pub(super) unsafe fn build_video_composition(
             chain_end = sc_ctx;
         }
 
+        // ── Optional rotation ─────────────────────────────────────────────────
+        let rotation_deg = layer.rotation.value_at(Duration::ZERO);
+        if rotation_deg.abs() > f64::EPSILON {
+            let angle_rad = rotation_deg.to_radians();
+            let rotate_filter = ff_sys::avfilter_get_by_name(c"rotate".as_ptr());
+            if rotate_filter.is_null() {
+                bail!(graph, "filter not found: rotate");
+            }
+            let Ok(rot_name) = CString::new(format!("layer_{idx}_rotate")) else {
+                bail!(graph, "CString::new failed for rotate name");
+            };
+            let Ok(rot_args) = CString::new(format!("{angle_rad}")) else {
+                bail!(graph, "CString::new failed for rotate args");
+            };
+            let mut rot_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut rot_ctx,
+                rotate_filter,
+                rot_name.as_ptr(),
+                rot_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create rotate filter layer={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, rot_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: →rotate layer={idx}"));
+            }
+            chain_end = rot_ctx;
+            log::debug!("video composition layer={idx} rotate angle_deg={rotation_deg}");
+        }
+
         // ── Optional opacity ──────────────────────────────────────────────────
-        if layer.opacity < 1.0 {
-            let opacity = layer.opacity.clamp(0.0, 1.0);
+        let opacity = layer.opacity.value_at(Duration::ZERO).clamp(0.0, 1.0);
+        if opacity < 1.0 {
             let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
             if ccm_filter.is_null() {
                 bail!(graph, "filter not found: colorchannelmixer");
@@ -307,8 +346,9 @@ pub(super) unsafe fn build_video_composition(
         let Ok(ov_name) = CString::new(format!("overlay{idx}")) else {
             bail!(graph, "CString::new failed for overlay name");
         };
-        let Ok(ov_args) = CString::new(format!("{}:{}:eof_action={eof_action}", layer.x, layer.y))
-        else {
+        let lx = layer.x.value_at(Duration::ZERO).round() as i64;
+        let ly = layer.y.value_at(Duration::ZERO).round() as i64;
+        let Ok(ov_args) = CString::new(format!("{lx}:{ly}:eof_action={eof_action}")) else {
             bail!(graph, "CString::new failed for overlay args");
         };
         let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();

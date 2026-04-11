@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use ff_encode::{AudioCodec, AudioEncoder, VideoCodec, VideoEncoder};
 use ff_filter::{
-    AudioConcatenator, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoConcatenator,
-    VideoLayer,
+    AnimatedValue, AudioConcatenator, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer,
+    VideoConcatenator, VideoLayer,
 };
 use ff_format::{AudioFrame, ChannelLayout, SampleFormat};
 use fixtures::{FileGuard, make_source_file, test_output_path, yuv420p_frame};
@@ -77,10 +77,12 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
     let mut composer = match MultiTrackComposer::new(CANVAS_W, CANVAS_H)
         .add_layer(VideoLayer {
             source: src1_path.clone(),
-            x: 0,
-            y: 0,
-            scale: 1.0,
-            opacity: 1.0,
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(1.0),
             z_order: 0,
             time_offset: Duration::ZERO,
             in_point: None,
@@ -88,10 +90,12 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         })
         .add_layer(VideoLayer {
             source: src2_path.clone(),
-            x: 160,
-            y: 0,
-            scale: 1.0,
-            opacity: 1.0,
+            x: AnimatedValue::Static(160.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(1.0),
             z_order: 1,
             time_offset: Duration::ZERO,
             in_point: None,
@@ -99,10 +103,12 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         })
         .add_layer(VideoLayer {
             source: src3_path.clone(),
-            x: 0,
-            y: 134,
-            scale: 1.0,
-            opacity: 1.0,
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(134.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(1.0),
             z_order: 2,
             time_offset: Duration::ZERO,
             in_point: None,

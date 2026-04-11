@@ -39,7 +39,7 @@ mod filter_inner;
 pub mod graph;
 
 pub use analysis::{LoudnessMeter, LoudnessResult, QualityMetrics};
-pub use animation::{AnimationTrack, Easing, Keyframe, Lerp};
+pub use animation::{AnimatedValue, AnimationTrack, Easing, Keyframe, Lerp};
 pub use blend::BlendMode;
 pub use error::FilterError;
 pub use graph::{
