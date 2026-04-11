@@ -1,12 +1,14 @@
 //! [`FilterGraphBuilder`] — consuming builder for filter graphs.
 
 use std::path::Path;
+use std::time::Duration;
 
 pub(super) use super::FilterGraph;
 pub(super) use super::filter_step::FilterStep;
 pub(super) use super::types::{
     DrawTextOptions, EqBand, HwAccel, Rgb, ScaleAlgorithm, ToneMap, XfadeTransition, YadifMode,
 };
+pub(super) use crate::animation::{AnimatedValue, AnimationEntry};
 pub(super) use crate::blend::BlendMode;
 pub(super) use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
@@ -35,6 +37,8 @@ mod video;
 pub struct FilterGraphBuilder {
     pub(super) steps: Vec<FilterStep>,
     pub(super) hw: Option<HwAccel>,
+    /// Registered animation entries, transferred to [`FilterGraph`] on [`build()`](Self::build).
+    pub(super) animations: Vec<AnimationEntry>,
 }
 
 impl FilterGraphBuilder {
@@ -147,6 +151,23 @@ impl FilterGraphBuilder {
                 return Err(FilterError::InvalidConfig {
                     reason: "crop width and height must be > 0".to_string(),
                 });
+            }
+            if let FilterStep::CropAnimated { width, height, .. } = step {
+                let w0 = width.value_at(Duration::ZERO);
+                let h0 = height.value_at(Duration::ZERO);
+                if w0 <= 0.0 || h0 <= 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: "crop width and height must be > 0".to_string(),
+                    });
+                }
+            }
+            if let FilterStep::GBlurAnimated { sigma } = step {
+                let s0 = sigma.value_at(Duration::ZERO);
+                if s0 < 0.0 {
+                    return Err(FilterError::InvalidConfig {
+                        reason: format!("gblur sigma {s0} must be >= 0.0"),
+                    });
+                }
             }
             if let FilterStep::FadeIn { duration, .. }
             | FilterStep::FadeOut { duration, .. }
@@ -640,6 +661,7 @@ impl FilterGraphBuilder {
         Ok(FilterGraph {
             inner: FilterGraphInner::new(self.steps, self.hw),
             output_resolution,
+            pending_animations: self.animations,
         })
     }
 }

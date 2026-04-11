@@ -10,13 +10,46 @@ impl FilterGraphBuilder {
     /// Values near `0.0` are nearly a no-op; values up to `10.0` produce
     /// progressively stronger blur.
     ///
+    /// Shorthand for [`gblur_animated`](Self::gblur_animated) with a static value.
+    ///
     /// # Validation
     ///
     /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
     /// `sigma` is negative.
     #[must_use]
-    pub fn gblur(mut self, sigma: f32) -> Self {
-        self.steps.push(FilterStep::GBlur { sigma });
+    pub fn gblur(self, sigma: f32) -> Self {
+        self.gblur_animated(AnimatedValue::Static(f64::from(sigma)))
+    }
+
+    /// Apply a Gaussian blur with an optionally animated `sigma` (blur radius).
+    ///
+    /// When an [`AnimatedValue::Track`] is supplied, the animation is registered
+    /// for per-frame `avfilter_graph_send_command` updates (#363).
+    /// The initial filter graph is built from the value at [`Duration::ZERO`].
+    ///
+    /// Filter node names are assigned deterministically: the first call produces
+    /// `"gblur_0"`, the second `"gblur_1"`, and so on.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if
+    /// `sigma` evaluates to a negative value at `Duration::ZERO`.
+    #[must_use]
+    pub fn gblur_animated(mut self, sigma: AnimatedValue<f64>) -> Self {
+        let n = self
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FilterStep::GBlurAnimated { .. }))
+            .count();
+        let node_name = format!("gblur_{n}");
+        if let AnimatedValue::Track(track) = &sigma {
+            self.animations.push(AnimationEntry {
+                node_name,
+                param: "sigma",
+                track: track.clone(),
+            });
+        }
+        self.steps.push(FilterStep::GBlurAnimated { sigma });
         self
     }
 
@@ -453,5 +486,93 @@ mod tests {
                 "yadif({mode:?}) must build successfully, got {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn gblur_animated_static_value_should_produce_correct_args() {
+        let step = FilterStep::GBlurAnimated {
+            sigma: AnimatedValue::Static(5.0_f64),
+        };
+        assert_eq!(step.filter_name(), "gblur");
+        assert_eq!(step.args(), "sigma=5");
+    }
+
+    #[test]
+    fn gblur_animated_with_negative_sigma_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .gblur_animated(AnimatedValue::Static(-1.0_f64))
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for sigma < 0.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("sigma"),
+                "reason should mention sigma: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn gblur_animated_with_valid_sigma_should_succeed() {
+        let result = FilterGraph::builder()
+            .gblur_animated(AnimatedValue::Static(3.0_f64))
+            .build();
+        assert!(
+            result.is_ok(),
+            "gblur_animated(3.0) must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gblur_animated_with_track_should_register_animation_entry() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let track = crate::animation::AnimationTrack::new()
+            .push(Keyframe {
+                timestamp: Duration::ZERO,
+                value: 0.0_f64,
+                easing: Easing::Linear,
+            })
+            .push(Keyframe {
+                timestamp: Duration::from_secs(1),
+                value: 8.0_f64,
+                easing: Easing::Linear,
+            });
+
+        let graph = FilterGraph::builder()
+            .gblur_animated(AnimatedValue::Track(track))
+            .build()
+            .unwrap();
+
+        assert_eq!(graph.pending_animations.len(), 1);
+        assert_eq!(graph.pending_animations[0].node_name, "gblur_0");
+        assert_eq!(graph.pending_animations[0].param, "sigma");
+    }
+
+    #[test]
+    fn gblur_animated_second_call_should_use_gblur_1_node_name() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let track = crate::animation::AnimationTrack::new().push(Keyframe {
+            timestamp: Duration::ZERO,
+            value: 5.0_f64,
+            easing: Easing::Linear,
+        });
+
+        let graph = FilterGraph::builder()
+            .gblur_animated(AnimatedValue::Static(2.0_f64))
+            .gblur_animated(AnimatedValue::Track(track))
+            .build()
+            .unwrap();
+
+        assert_eq!(graph.pending_animations.len(), 1);
+        assert_eq!(
+            graph.pending_animations[0].node_name, "gblur_1",
+            "second gblur_animated call must produce node name gblur_1"
+        );
     }
 }

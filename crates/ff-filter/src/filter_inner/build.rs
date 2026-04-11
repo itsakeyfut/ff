@@ -4,11 +4,13 @@ use super::{
     AUDIO_TIME_BASE_NUM, BuildResult, FilterCtxVec, VIDEO_TIME_BASE_DEN, VIDEO_TIME_BASE_NUM,
     VideoGraphResult, ffmpeg_err,
 };
+use std::ptr::NonNull;
+use std::time::Duration;
+
 use crate::blend::BlendMode;
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::types::{EqBand, HwAccel};
-use std::ptr::NonNull;
 
 // ── Hardware acceleration helpers ─────────────────────────────────────────────
 
@@ -1863,7 +1865,28 @@ impl FilterGraphInner {
                 continue;
             }
 
-            prev_ctx = match add_and_link_step(graph, prev_ctx, step, i, "step") {
+            // Animated filter steps use type-specific node names ("crop_N",
+            // "gblur_N") so that avfilter_graph_send_command targets the correct
+            // context in #363.  The per-type index is the count of preceding steps
+            // of the same animated type.
+            let (step_prefix, step_index): (&str, usize) = match step {
+                FilterStep::CropAnimated { .. } => {
+                    let n = steps[..i]
+                        .iter()
+                        .filter(|s| matches!(s, FilterStep::CropAnimated { .. }))
+                        .count();
+                    ("crop_", n)
+                }
+                FilterStep::GBlurAnimated { .. } => {
+                    let n = steps[..i]
+                        .iter()
+                        .filter(|s| matches!(s, FilterStep::GBlurAnimated { .. }))
+                        .count();
+                    ("gblur_", n)
+                }
+                _ => ("step", i),
+            };
+            prev_ctx = match add_and_link_step(graph, prev_ctx, step, step_index, step_prefix) {
                 Ok(ctx) => ctx,
                 Err(e) => bail!(e),
             };
@@ -1957,17 +1980,34 @@ impl FilterGraphInner {
             log::warn!("avfilter_graph_config failed code={ret}");
             // If there is a crop step the most likely cause is the rectangle
             // extending beyond the source frame dimensions.
-            if let Some(FilterStep::Crop {
-                x,
-                y,
-                width,
-                height,
-            }) = steps.iter().find(|s| matches!(s, FilterStep::Crop { .. }))
-            {
+            let crop_info = steps.iter().find_map(|s| match s {
+                FilterStep::Crop {
+                    x,
+                    y,
+                    width,
+                    height,
+                } => Some((
+                    f64::from(*x),
+                    f64::from(*y),
+                    f64::from(*width),
+                    f64::from(*height),
+                )),
+                FilterStep::CropAnimated {
+                    x,
+                    y,
+                    width,
+                    height,
+                } => Some((
+                    x.value_at(Duration::ZERO),
+                    y.value_at(Duration::ZERO),
+                    width.value_at(Duration::ZERO),
+                    height.value_at(Duration::ZERO),
+                )),
+                _ => None,
+            });
+            if let Some((x, y, w, h)) = crop_info {
                 bail!(FilterError::InvalidConfig {
-                    reason: format!(
-                        "crop rect {x},{y}+{width}x{height} exceeds source frame dimensions"
-                    ),
+                    reason: format!("crop rect {x},{y}+{w}x{h} exceeds source frame dimensions"),
                 });
             }
             bail!(ffmpeg_err(ret));
