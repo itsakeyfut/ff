@@ -36,11 +36,11 @@ use super::builder::FilterGraphBuilder;
 pub struct FilterGraph {
     pub(crate) inner: FilterGraphInner,
     pub(crate) output_resolution: Option<(u32, u32)>,
-    /// Animation entries registered via `crop_animated` / `gblur_animated`.
+    /// Animation entries registered via animated builder methods (e.g.
+    /// `crop_animated`, `gblur_animated`, `eq_animated`).
     ///
-    /// Consumed by per-frame `avfilter_graph_send_command` in #363.
-    // TODO(#363): remove allow once consumed by the send_command loop.
-    #[allow(dead_code)]
+    /// Evaluated on every `push_video` / `push_audio` call and applied to
+    /// the live filter graph via `avfilter_graph_send_command`.
     pub(crate) pending_animations: Vec<AnimationEntry>,
 }
 
@@ -86,17 +86,6 @@ impl FilterGraph {
         }
     }
 
-    /// Returns the registered animation entries accumulated by
-    /// [`crop_animated`](FilterGraphBuilder::crop_animated) and
-    /// [`gblur_animated`](FilterGraphBuilder::gblur_animated).
-    ///
-    /// These are consumed by per-frame `avfilter_graph_send_command` in #363.
-    // TODO(#363): remove allow once consumed by the send_command loop.
-    #[allow(dead_code)]
-    pub(crate) fn pending_animations(&self) -> &[AnimationEntry] {
-        &self.pending_animations
-    }
-
     /// Returns the output resolution produced by this graph's `scale` filter step,
     /// if one was configured.
     ///
@@ -112,12 +101,20 @@ impl FilterGraph {
     /// On the first call the filter graph is initialised using this frame's
     /// format, resolution, and time base.
     ///
+    /// All registered animation entries are evaluated at the frame's PTS and
+    /// applied to the live graph via `avfilter_graph_send_command` before the
+    /// frame is pushed.
+    ///
     /// # Errors
     ///
     /// - [`FilterError::InvalidInput`] if `slot` is out of range.
     /// - [`FilterError::BuildFailed`] if the graph cannot be initialised.
     /// - [`FilterError::ProcessFailed`] if the `FFmpeg` push fails.
     pub fn push_video(&mut self, slot: usize, frame: &VideoFrame) -> Result<(), FilterError> {
+        if !self.pending_animations.is_empty() {
+            let t = frame.timestamp().as_duration();
+            self.inner.apply_animations(&self.pending_animations, t);
+        }
         self.inner.push_video(slot, frame)
     }
 
@@ -138,12 +135,20 @@ impl FilterGraph {
     /// On the first call the audio filter graph is initialised using this
     /// frame's format, sample rate, and channel count.
     ///
+    /// All registered animation entries are evaluated at the frame's PTS and
+    /// applied to the live graph via `avfilter_graph_send_command` before the
+    /// frame is pushed.
+    ///
     /// # Errors
     ///
     /// - [`FilterError::InvalidInput`] if `slot` is out of range.
     /// - [`FilterError::BuildFailed`] if the graph cannot be initialised.
     /// - [`FilterError::ProcessFailed`] if the `FFmpeg` push fails.
     pub fn push_audio(&mut self, slot: usize, frame: &AudioFrame) -> Result<(), FilterError> {
+        if !self.pending_animations.is_empty() {
+            let t = frame.timestamp().as_duration();
+            self.inner.apply_animations(&self.pending_animations, t);
+        }
         self.inner.push_audio(slot, frame)
     }
 

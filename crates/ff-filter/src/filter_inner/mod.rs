@@ -412,6 +412,59 @@ mod tests {
         }
     }
 
+    // ── apply_animations ──────────────────────────────────────────────────────
+
+    /// `apply_animations` must be a no-op when the graph has not yet been
+    /// initialised (i.e. `graph == None`).  It must not panic or access any
+    /// FFmpeg API.
+    #[test]
+    fn apply_animations_with_no_graph_should_be_a_no_op() {
+        use crate::animation::{AnimatedValue, AnimationEntry, AnimationTrack, Easing, Keyframe};
+        use std::time::Duration;
+
+        let inner = FilterGraphInner::new(
+            vec![FilterStep::Scale {
+                width: 1280,
+                height: 720,
+                algorithm: crate::graph::ScaleAlgorithm::Fast,
+            }],
+            None,
+        );
+
+        assert!(
+            inner.graph.is_none(),
+            "graph must be None before first push"
+        );
+
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0_f64, Easing::Linear))
+            .push(Keyframe::new(
+                Duration::from_secs(1),
+                1.0_f64,
+                Easing::Linear,
+            ));
+
+        let animations = vec![AnimationEntry {
+            node_name: "gblur_0".to_owned(),
+            param: "sigma",
+            track,
+        }];
+
+        // Must not panic even though graph == None.
+        inner.apply_animations(&animations, Duration::from_millis(500));
+    }
+
+    /// Calling `apply_animations` with an empty slice must be a no-op
+    /// regardless of graph state.
+    #[test]
+    fn apply_animations_with_empty_slice_should_be_a_no_op() {
+        use std::time::Duration;
+
+        let inner = FilterGraphInner::new(vec![], None);
+        // No FFmpeg calls expected; must not panic.
+        inner.apply_animations(&[], Duration::ZERO);
+    }
+
     // ── validate_filter_steps ─────────────────────────────────────────────────
 
     /// `validate_filter_steps` must return `Ok` for a known-good filter name.
