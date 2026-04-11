@@ -26,6 +26,22 @@ impl FilterGraphInner {
     ) {
         use std::ffi::CString;
 
+        // Declare `avfilter_graph_send_command` locally: bindgen includes it
+        // on some platforms (Windows/VCPKG) but omits it on others (Linux apt).
+        // Declaring it here avoids a platform-specific ff-sys gap while still
+        // linking against the same libavfilter that ff-sys already pulls in.
+        unsafe extern "C" {
+            fn avfilter_graph_send_command(
+                graph: *mut ff_sys::AVFilterGraph,
+                target: *const std::os::raw::c_char,
+                cmd: *const std::os::raw::c_char,
+                arg: *const std::os::raw::c_char,
+                res: *mut std::os::raw::c_char,
+                res_len: std::os::raw::c_int,
+                flags: std::os::raw::c_int,
+            ) -> std::os::raw::c_int;
+        }
+
         let Some(graph_ptr) = self.graph.map(|nn| nn.as_ptr()) else {
             return;
         };
@@ -55,7 +71,7 @@ impl FilterGraphInner {
             // call is always single-threaded with no concurrent access to the
             // same graph.
             let ret = unsafe {
-                ff_sys::avfilter_graph_send_command(
+                avfilter_graph_send_command(
                     graph_ptr,
                     target_cstr.as_ptr(),
                     cmd_cstr.as_ptr(),

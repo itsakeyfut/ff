@@ -662,6 +662,18 @@ pub unsafe fn avfilter_graph_config(
 
 pub unsafe fn avfilter_graph_set_auto_convert(_graph: *mut AVFilterGraph, _flags: c_uint) {}
 
+pub unsafe fn avfilter_graph_send_command(
+    _graph: *mut AVFilterGraph,
+    _target: *const c_char,
+    _cmd: *const c_char,
+    _arg: *const c_char,
+    _res: *mut c_char,
+    _res_len: c_int,
+    _flags: c_int,
+) -> c_int {
+    0
+}
+
 pub unsafe fn av_buffersrc_add_frame_flags(
     _ctx: *mut AVFilterContext,
     _frame: *mut AVFrame,
