@@ -144,8 +144,8 @@ impl Timeline {
                 for clip in track {
                     mixer = mixer.add_track(AudioTrack {
                         source: clip.source.clone(),
-                        volume_db: 0.0,
-                        pan: 0.0,
+                        volume: AnimatedValue::Static(0.0),
+                        pan: AnimatedValue::Static(0.0),
                         time_offset: clip.timeline_offset,
                         effects: vec![],
                         sample_rate: 48_000,

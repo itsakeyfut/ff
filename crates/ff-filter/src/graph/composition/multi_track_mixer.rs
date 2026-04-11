@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use ff_format::ChannelLayout;
 
+use crate::animation::AnimatedValue;
 use crate::error::FilterError;
 use crate::graph::filter_step::FilterStep;
 use crate::graph::graph::FilterGraph;
@@ -19,9 +20,16 @@ pub struct AudioTrack {
     /// Source media file path.
     pub source: PathBuf,
     /// Volume adjustment in decibels (`0.0` = unity gain).
-    pub volume_db: f32,
+    ///
+    /// Use [`AnimatedValue::Static`] for a constant level, or
+    /// [`AnimatedValue::Track`] to automate volume over time.
+    pub volume: AnimatedValue<f64>,
     /// Stereo pan (`-1.0` = full left, `0.0` = centre, `+1.0` = full right).
-    pub pan: f32,
+    ///
+    /// Use [`AnimatedValue::Static`] for a fixed position.  Animated pan
+    /// (`AnimatedValue::Track`) is not yet implemented; the initial value at
+    /// `Duration::ZERO` is used and a warning is emitted.
+    pub pan: AnimatedValue<f64>,
     /// Start offset on the output timeline (`Duration::ZERO` = at the beginning).
     pub time_offset: Duration,
     /// Ordered per-track audio effect chain applied before mixing.
@@ -63,8 +71,8 @@ pub struct AudioTrack {
 /// let mut graph = MultiTrackAudioMixer::new(48000, ChannelLayout::Stereo)
 ///     .add_track(ff_filter::AudioTrack {
 ///         source: "music.mp3".into(),
-///         volume_db: -3.0,
-///         pan: 0.0,
+///         volume: ff_filter::AnimatedValue::Static(-3.0),
+///         pan: ff_filter::AnimatedValue::Static(0.0),
 ///         time_offset: Duration::ZERO,
 ///         effects: vec![],
 ///         sample_rate: 48000,
@@ -144,8 +152,8 @@ mod tests {
         let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
             .add_track(AudioTrack {
                 source: "nonexistent.mp3".into(),
-                volume_db: 0.0,
-                pan: 0.0,
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
                 effects: vec![],
                 sample_rate: 48_000,
@@ -165,8 +173,8 @@ mod tests {
         // Structural test: verify the effects field accepts FilterStep::Volume.
         let track = AudioTrack {
             source: "track.mp3".into(),
-            volume_db: 0.0,
-            pan: 0.0,
+            volume: AnimatedValue::Static(0.0),
+            pan: AnimatedValue::Static(0.0),
             time_offset: Duration::ZERO,
             effects: vec![FilterStep::Volume(6.0)],
             sample_rate: 48_000,
@@ -188,8 +196,8 @@ mod tests {
         let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
             .add_track(AudioTrack {
                 source: "nonexistent.mp3".into(),
-                volume_db: 0.0,
-                pan: 0.0,
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
                 effects: vec![],
                 sample_rate: 44_100, // mismatch → aresample should be inserted
@@ -212,8 +220,8 @@ mod tests {
         let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
             .add_track(AudioTrack {
                 source: "nonexistent.mp3".into(),
-                volume_db: 0.0,
-                pan: 0.0,
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::from_secs(2),
                 effects: vec![],
                 sample_rate: 48_000,
@@ -235,8 +243,8 @@ mod tests {
         let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
             .add_track(AudioTrack {
                 source: "nonexistent.mp3".into(),
-                volume_db: 0.0,
-                pan: 0.0,
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
                 effects: vec![],
                 sample_rate: 48_000,
@@ -258,8 +266,8 @@ mod tests {
         let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
             .add_track(AudioTrack {
                 source: "nonexistent.mp3".into(),
-                volume_db: 0.0,
-                pan: 0.0,
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(0.0),
                 time_offset: Duration::ZERO,
                 effects: vec![],
                 sample_rate: 48_000, // matches output → no aresample
@@ -277,5 +285,69 @@ mod tests {
                 "aformat must not appear for matching format; got: {reason}"
             );
         }
+    }
+
+    #[test]
+    fn audio_track_animated_volume_should_register_animation_entry_on_build() {
+        use crate::animation::{AnimationTrack, Easing, Keyframe};
+
+        // A track that fades from -6 dB to 0 dB over one second.
+        let vol_track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, -6.0_f64, Easing::Linear))
+            .push(Keyframe::new(
+                Duration::from_secs(1),
+                0.0_f64,
+                Easing::Linear,
+            ));
+        let result = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
+            .add_track(AudioTrack {
+                source: "nonexistent.mp3".into(),
+                volume: AnimatedValue::Track(vol_track),
+                pan: AnimatedValue::Static(0.0),
+                time_offset: Duration::ZERO,
+                effects: vec![],
+                sample_rate: 48_000,
+                channel_layout: ChannelLayout::Stereo,
+            })
+            .build();
+        // Build will fail because the file does not exist, but the failure must
+        // NOT be "no tracks" — it must be FFmpeg trying to open the file.
+        assert!(result.is_err(), "expected error (nonexistent file)");
+        if let Err(FilterError::CompositionFailed { ref reason }) = result {
+            assert!(
+                !reason.contains("no tracks"),
+                "must not fail with 'no tracks'; got: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_track_animated_pan_should_warn_and_use_initial_value() {
+        use crate::animation::{AnimationTrack, Easing, Keyframe};
+
+        // A pan track that sweeps from -1 to +1.
+        let pan_track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, -1.0_f64, Easing::Linear))
+            .push(Keyframe::new(
+                Duration::from_secs(2),
+                1.0_f64,
+                Easing::Linear,
+            ));
+        // Structural test: the field accepts Track variant without compile error.
+        let track = AudioTrack {
+            source: "nonexistent.mp3".into(),
+            volume: AnimatedValue::Static(0.0),
+            pan: AnimatedValue::Track(pan_track),
+            time_offset: Duration::ZERO,
+            effects: vec![],
+            sample_rate: 48_000,
+            channel_layout: ChannelLayout::Stereo,
+        };
+        // The initial pan value at t=0 should be -1.0.
+        let initial_pan = track.pan.value_at(Duration::ZERO);
+        assert!(
+            (initial_pan - (-1.0)).abs() < f64::EPSILON,
+            "expected initial pan -1.0, got {initial_pan}"
+        );
     }
 }

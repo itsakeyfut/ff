@@ -127,8 +127,8 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
     let mut mixer = match MultiTrackAudioMixer::new(SAMPLE_RATE, ChannelLayout::Stereo)
         .add_track(AudioTrack {
             source: src1_path.clone(),
-            volume_db: 0.0,
-            pan: 0.0,
+            volume: AnimatedValue::Static(0.0),
+            pan: AnimatedValue::Static(0.0),
             time_offset: Duration::ZERO,
             effects: vec![],
             sample_rate: SAMPLE_RATE,
@@ -136,8 +136,8 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
         })
         .add_track(AudioTrack {
             source: src2_path.clone(),
-            volume_db: -3.0,
-            pan: 0.0,
+            volume: AnimatedValue::Static(-3.0),
+            pan: AnimatedValue::Static(0.0),
             time_offset: Duration::ZERO,
             effects: vec![],
             sample_rate: SAMPLE_RATE,

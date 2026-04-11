@@ -130,8 +130,8 @@ fn main() {
         match MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo)
             .add_track(AudioTrack {
                 source: audio_a.clone(),
-                volume_db: 0.0,
-                pan: -0.2, // slight left pan
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(-0.2), // slight left pan
                 time_offset: Duration::ZERO,
                 effects: vec![],
                 sample_rate: 48_000,
@@ -139,8 +139,8 @@ fn main() {
             })
             .add_track(AudioTrack {
                 source: audio_b.clone(),
-                volume_db: 0.0,
-                pan: 0.2, // slight right pan
+                volume: AnimatedValue::Static(0.0),
+                pan: AnimatedValue::Static(0.2), // slight right pan
                 time_offset: Duration::ZERO,
                 effects: vec![],
                 sample_rate: 48_000,
