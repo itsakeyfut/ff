@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::{Keyframe, Lerp};
+use super::{Easing, Keyframe, Lerp};
 
 /// A sorted collection of keyframes with interpolated `value_at(t)` lookup.
 ///
@@ -98,6 +98,31 @@ impl<T: Lerp> AnimationTrack<T> {
     }
 }
 
+impl AnimationTrack<f64> {
+    /// Creates a two-keyframe track that ramps linearly (or with `easing`) from
+    /// `from` to `to` between `start` and `end`.
+    ///
+    /// - Before `start`: value is held at `from`.
+    /// - Between `start` and `end`: value is interpolated using `easing`.
+    /// - After `end`: value is held at `to`.
+    ///
+    /// This is the common-case shorthand for a volume fade, opacity ramp, or
+    /// position sweep.  Equivalent to:
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use ff_filter::animation::{AnimationTrack, Easing, Keyframe};
+    /// AnimationTrack::new()
+    ///     .push(Keyframe::new(Duration::ZERO, 0.0_f64, Easing::Linear))
+    ///     .push(Keyframe::new(Duration::from_secs(2), 1.0_f64, Easing::Linear));
+    /// ```
+    pub fn fade(from: f64, to: f64, start: Duration, end: Duration, easing: Easing) -> Self {
+        Self::new()
+            .push(Keyframe::new(start, from, easing))
+            .push(Keyframe::new(end, to, Easing::Linear))
+    }
+}
+
 impl<T: Lerp> Default for AnimationTrack<T> {
     fn default() -> Self {
         Self::new()
@@ -151,6 +176,67 @@ mod tests {
         assert!(
             (v2 - 0.25).abs() < 1e-9,
             "expected 0.25 at quarter-point, got {v2}"
+        );
+    }
+
+    #[test]
+    fn fade_shorthand_should_produce_linear_ramp() {
+        // fade(0.0, 1.0, 0 ms, 2000 ms, Linear) must interpolate linearly.
+        let track = AnimationTrack::fade(
+            0.0,
+            1.0,
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Easing::Linear,
+        );
+
+        assert_eq!(track.len(), 2, "fade must produce exactly 2 keyframes");
+
+        let mid = track.value_at(Duration::from_secs(1));
+        assert!(
+            (mid - 0.5).abs() < 1e-9,
+            "expected 0.5 at midpoint (1 s), got {mid}"
+        );
+
+        let quarter = track.value_at(Duration::from_millis(500));
+        assert!(
+            (quarter - 0.25).abs() < 1e-9,
+            "expected 0.25 at quarter-point (500 ms), got {quarter}"
+        );
+    }
+
+    #[test]
+    fn fade_shorthand_should_hold_before_start_and_after_end() {
+        let track = AnimationTrack::fade(
+            10.0,
+            20.0,
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Easing::Linear,
+        );
+
+        // Before start — held at `from`.
+        let before = track.value_at(Duration::ZERO);
+        assert!(
+            (before - 10.0).abs() < f64::EPSILON,
+            "expected 10.0 before start, got {before}"
+        );
+        let at_start = track.value_at(Duration::from_millis(999));
+        assert!(
+            (at_start - 10.0).abs() < f64::EPSILON,
+            "expected 10.0 just before start, got {at_start}"
+        );
+
+        // After end — held at `to`.
+        let after = track.value_at(Duration::from_secs(3));
+        assert!(
+            (after - 20.0).abs() < f64::EPSILON,
+            "expected 20.0 at end, got {after}"
+        );
+        let long_after = track.value_at(Duration::from_secs(9999));
+        assert!(
+            (long_after - 20.0).abs() < f64::EPSILON,
+            "expected 20.0 long after end, got {long_after}"
         );
     }
 }
