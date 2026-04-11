@@ -5,11 +5,14 @@
 //! `Timeline` holds no `FFmpeg` context; all rendering is done in
 //! [`Timeline::render()`].
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
-use ff_filter::{AnimatedValue, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoLayer};
+use ff_filter::{
+    AnimatedValue, AnimationTrack, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoLayer,
+};
 use ff_format::ChannelLayout;
 
 use crate::clip::Clip;
@@ -51,6 +54,18 @@ pub struct Timeline {
     /// `video_tracks[track_idx][clip_idx]`; track 0 = bottom layer.
     pub(crate) video_tracks: Vec<Vec<Clip>>,
     pub(crate) audio_tracks: Vec<Vec<Clip>>,
+    /// Animation tracks for video layer properties.
+    ///
+    /// Key format: `"video_{track_index}_{property}"`, e.g. `"video_0_opacity"`.
+    ///
+    /// Supported properties: `x`, `y`, `scale_x`, `scale_y`, `rotation`, `opacity`.
+    pub(crate) video_animations: HashMap<String, AnimationTrack<f64>>,
+    /// Animation tracks for audio track properties.
+    ///
+    /// Key format: `"audio_{track_index}_{property}"`, e.g. `"audio_1_volume"`.
+    ///
+    /// Supported properties: `volume`, `pan`.
+    pub(crate) audio_animations: HashMap<String, AnimationTrack<f64>>,
 }
 
 impl Timeline {
@@ -86,6 +101,11 @@ impl Timeline {
 
     /// Renders the timeline to an output file.
     ///
+    /// Animation tracks registered via [`TimelineBuilder::video_animation`] and
+    /// [`TimelineBuilder::audio_animation`] are forwarded to the corresponding
+    /// [`VideoLayer`] / [`AudioTrack`] fields before the filter graphs are built.
+    /// Unrecognised animation keys are ignored and logged as `warn!`.
+    ///
     /// # Errors
     ///
     /// - [`PipelineError::ClipNotFound`] — a clip's source file is missing
@@ -98,11 +118,22 @@ impl Timeline {
         config: EncoderConfig,
     ) -> Result<(), PipelineError> {
         let output = output.as_ref();
-        let nv = self.video_tracks.len();
-        let na = self.audio_tracks.len();
+
+        let Timeline {
+            canvas_width,
+            canvas_height,
+            frame_rate,
+            video_tracks,
+            audio_tracks,
+            video_animations,
+            audio_animations,
+        } = self;
+
+        let nv = video_tracks.len();
+        let na = audio_tracks.len();
 
         // 1. Pre-check: all clip sources must exist on disk.
-        for track in self.video_tracks.iter().chain(self.audio_tracks.iter()) {
+        for track in video_tracks.iter().chain(audio_tracks.iter()) {
             for clip in track {
                 if !clip.source.exists() {
                     return Err(PipelineError::ClipNotFound {
@@ -112,20 +143,63 @@ impl Timeline {
             }
         }
 
-        // 2. Build video composition graph.
+        // 2. Warn on unrecognised animation keys.
+        let valid_video_props = ["x", "y", "scale_x", "scale_y", "rotation", "opacity"];
+        for key in video_animations.keys() {
+            let parts: Vec<&str> = key.splitn(3, '_').collect();
+            let ok = parts.len() == 3
+                && parts[0] == "video"
+                && parts[1].parse::<usize>().is_ok()
+                && valid_video_props.contains(&parts[2]);
+            if !ok {
+                log::warn!("unknown animation key key={key}");
+            }
+        }
+
+        let valid_audio_props = ["volume", "pan"];
+        for key in audio_animations.keys() {
+            let parts: Vec<&str> = key.splitn(3, '_').collect();
+            let ok = parts.len() == 3
+                && parts[0] == "audio"
+                && parts[1].parse::<usize>().is_ok()
+                && valid_audio_props.contains(&parts[2]);
+            if !ok {
+                log::warn!("unknown animation key key={key}");
+            }
+        }
+
+        // Helper: look up a video-layer animated value by track index + property.
+        let va = |track_idx: usize, prop: &str, default: f64| -> AnimatedValue<f64> {
+            let key = format!("video_{track_idx}_{prop}");
+            video_animations
+                .get(&key)
+                .cloned()
+                .map_or(AnimatedValue::Static(default), AnimatedValue::Track)
+        };
+
+        // Helper: look up an audio-track animated value by track index + property.
+        let aa = |track_idx: usize, prop: &str, default: f64| -> AnimatedValue<f64> {
+            let key = format!("audio_{track_idx}_{prop}");
+            audio_animations
+                .get(&key)
+                .cloned()
+                .map_or(AnimatedValue::Static(default), AnimatedValue::Track)
+        };
+
+        // 3. Build video composition graph.
         let mut video_graph = None;
-        if !self.video_tracks.is_empty() {
-            let mut composer = MultiTrackComposer::new(self.canvas_width, self.canvas_height);
-            for (track_idx, track) in self.video_tracks.iter().enumerate() {
+        if !video_tracks.is_empty() {
+            let mut composer = MultiTrackComposer::new(canvas_width, canvas_height);
+            for (track_idx, track) in video_tracks.iter().enumerate() {
                 for clip in track {
                     composer = composer.add_layer(VideoLayer {
                         source: clip.source.clone(),
-                        x: AnimatedValue::Static(0.0),
-                        y: AnimatedValue::Static(0.0),
-                        scale_x: AnimatedValue::Static(1.0),
-                        scale_y: AnimatedValue::Static(1.0),
-                        rotation: AnimatedValue::Static(0.0),
-                        opacity: AnimatedValue::Static(1.0),
+                        x: va(track_idx, "x", 0.0),
+                        y: va(track_idx, "y", 0.0),
+                        scale_x: va(track_idx, "scale_x", 1.0),
+                        scale_y: va(track_idx, "scale_y", 1.0),
+                        rotation: va(track_idx, "rotation", 0.0),
+                        opacity: va(track_idx, "opacity", 1.0),
                         z_order: u32::try_from(track_idx).unwrap_or(u32::MAX),
                         time_offset: clip.timeline_offset,
                         in_point: clip.in_point,
@@ -136,16 +210,16 @@ impl Timeline {
             video_graph = Some(composer.build().map_err(PipelineError::Filter)?);
         }
 
-        // 3. Build audio mix graph.
+        // 4. Build audio mix graph.
         let mut audio_graph = None;
-        if !self.audio_tracks.is_empty() {
+        if !audio_tracks.is_empty() {
             let mut mixer = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo);
-            for track in &self.audio_tracks {
+            for (track_idx, track) in audio_tracks.iter().enumerate() {
                 for clip in track {
                     mixer = mixer.add_track(AudioTrack {
                         source: clip.source.clone(),
-                        volume: AnimatedValue::Static(0.0),
-                        pan: AnimatedValue::Static(0.0),
+                        volume: aa(track_idx, "volume", 0.0),
+                        pan: aa(track_idx, "pan", 0.0),
                         time_offset: clip.timeline_offset,
                         effects: vec![],
                         sample_rate: 48_000,
@@ -156,10 +230,10 @@ impl Timeline {
             audio_graph = Some(mixer.build().map_err(PipelineError::Filter)?);
         }
 
-        // 4. Build encoder.
+        // 5. Build encoder.
         let hw = hwaccel_to_hardware_encoder(config.hardware);
         let mut enc_builder = VideoEncoder::create(output)
-            .video(self.canvas_width, self.canvas_height, self.frame_rate)
+            .video(canvas_width, canvas_height, frame_rate)
             .video_codec(config.video_codec)
             .bitrate_mode(config.bitrate_mode)
             .hardware_encoder(hw);
@@ -168,21 +242,21 @@ impl Timeline {
         }
         let mut encoder = enc_builder.build().map_err(PipelineError::Encode)?;
 
-        // 5. Drain video graph → encoder.
+        // 6. Drain video graph → encoder.
         if let Some(mut vgraph) = video_graph {
             while let Some(frame) = vgraph.pull_video().map_err(PipelineError::Filter)? {
                 encoder.push_video(&frame).map_err(PipelineError::Encode)?;
             }
         }
 
-        // 6. Drain audio graph → encoder.
+        // 7. Drain audio graph → encoder.
         if let Some(mut agraph) = audio_graph {
             while let Some(frame) = agraph.pull_audio().map_err(PipelineError::Filter)? {
                 encoder.push_audio(&frame).map_err(PipelineError::Encode)?;
             }
         }
 
-        // 7. Flush encoder.
+        // 8. Flush encoder.
         encoder.finish().map_err(PipelineError::Encode)?;
 
         log::info!(
@@ -202,6 +276,8 @@ pub struct TimelineBuilder {
     frame_rate: Option<f64>,
     video_tracks: Vec<Vec<Clip>>,
     audio_tracks: Vec<Vec<Clip>>,
+    video_animations: HashMap<String, AnimationTrack<f64>>,
+    audio_animations: HashMap<String, AnimationTrack<f64>>,
 }
 
 impl Default for TimelineBuilder {
@@ -219,6 +295,8 @@ impl TimelineBuilder {
             frame_rate: None,
             video_tracks: Vec::new(),
             audio_tracks: Vec::new(),
+            video_animations: HashMap::new(),
+            audio_animations: HashMap::new(),
         }
     }
 
@@ -263,6 +341,38 @@ impl TimelineBuilder {
         }
     }
 
+    /// Registers a video-layer animation track.
+    ///
+    /// Key format: `"video_{track_index}_{property}"`, e.g. `"video_0_opacity"`.
+    ///
+    /// Supported properties: `x`, `y`, `scale_x`, `scale_y`, `rotation`, `opacity`.
+    /// Unrecognised keys are stored but emit `log::warn!` during [`Timeline::render()`].
+    #[must_use]
+    pub fn video_animation(self, key: impl Into<String>, track: AnimationTrack<f64>) -> Self {
+        let mut video_animations = self.video_animations;
+        video_animations.insert(key.into(), track);
+        Self {
+            video_animations,
+            ..self
+        }
+    }
+
+    /// Registers an audio-track animation track.
+    ///
+    /// Key format: `"audio_{track_index}_{property}"`, e.g. `"audio_0_volume"`.
+    ///
+    /// Supported properties: `volume`, `pan`.
+    /// Unrecognised keys are stored but emit `log::warn!` during [`Timeline::render()`].
+    #[must_use]
+    pub fn audio_animation(self, key: impl Into<String>, track: AnimationTrack<f64>) -> Self {
+        let mut audio_animations = self.audio_animations;
+        audio_animations.insert(key.into(), track);
+        Self {
+            audio_animations,
+            ..self
+        }
+    }
+
     /// Builds the [`Timeline`].
     ///
     /// # Errors
@@ -284,6 +394,8 @@ impl TimelineBuilder {
             frame_rate,
             video_tracks: self.video_tracks,
             audio_tracks: self.audio_tracks,
+            video_animations: self.video_animations,
+            audio_animations: self.audio_animations,
         })
     }
 
@@ -345,5 +457,55 @@ mod tests {
         assert!((timeline.frame_rate - 30.0).abs() < f64::EPSILON);
         assert_eq!(timeline.video_tracks.len(), 1);
         assert!(timeline.audio_tracks.is_empty());
+    }
+
+    #[test]
+    fn timeline_builder_should_store_video_animation_track() {
+        use ff_filter::{AnimationTrack, Easing, Keyframe};
+        use std::time::Duration;
+
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 1.0_f64, Easing::Linear))
+            .push(Keyframe::new(
+                Duration::from_secs(2),
+                0.0_f64,
+                Easing::Linear,
+            ));
+
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new("video.mp4")])
+            .video_animation("video_0_opacity", track)
+            .build()
+            .unwrap();
+
+        assert_eq!(timeline.video_animations.len(), 1);
+        assert!(timeline.video_animations.contains_key("video_0_opacity"));
+    }
+
+    #[test]
+    fn timeline_builder_should_store_audio_animation_track() {
+        use ff_filter::{AnimationTrack, Easing, Keyframe};
+        use std::time::Duration;
+
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0_f64, Easing::Linear))
+            .push(Keyframe::new(
+                Duration::from_secs(2),
+                -6.0_f64,
+                Easing::Linear,
+            ));
+
+        let timeline = Timeline::builder()
+            .canvas(1920, 1080)
+            .frame_rate(30.0)
+            .audio_track(vec![Clip::new("audio.mp4")])
+            .audio_animation("audio_0_volume", track)
+            .build()
+            .unwrap();
+
+        assert_eq!(timeline.audio_animations.len(), 1);
+        assert!(timeline.audio_animations.contains_key("audio_0_volume"));
     }
 }
