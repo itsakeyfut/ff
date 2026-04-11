@@ -259,10 +259,11 @@ pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 // ── filter feature ────────────────────────────────────────────────────────────
 #[cfg(feature = "filter")]
 pub use ff_filter::{
-    AudioConcatenator, AudioTrack, BlendMode, ClipJoiner, DrawTextOptions, EqBand, FilterError,
-    FilterGraph, FilterGraphBuilder, FilterStep, HwAccel, LoudnessMeter, LoudnessResult,
-    MultiTrackAudioMixer, MultiTrackComposer, QualityMetrics, Rgb, ScaleAlgorithm, ToneMap,
-    VideoConcatenator, VideoLayer, XfadeTransition, YadifMode,
+    AnimatedValue, AnimationTrack, AudioConcatenator, AudioTrack, BlendMode, ClipJoiner,
+    DrawTextOptions, Easing, EqBand, FilterError, FilterGraph, FilterGraphBuilder, FilterStep,
+    HwAccel, Keyframe, Lerp, LoudnessMeter, LoudnessResult, MultiTrackAudioMixer,
+    MultiTrackComposer, QualityMetrics, Rgb, ScaleAlgorithm, ToneMap, VideoConcatenator,
+    VideoLayer, XfadeTransition, YadifMode,
 };
 
 // ── pipeline feature ──────────────────────────────────────────────────────────
