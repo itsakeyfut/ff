@@ -22,8 +22,8 @@
 use std::{path::PathBuf, process, time::Duration};
 
 use avio::{
-    AudioCodec, AudioTrack, ChannelLayout, MultiTrackAudioMixer, MultiTrackComposer, VideoCodec,
-    VideoEncoder, VideoLayer,
+    AnimatedValue, AudioCodec, AudioTrack, ChannelLayout, MultiTrackAudioMixer, MultiTrackComposer,
+    VideoCodec, VideoEncoder, VideoLayer,
 };
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -90,10 +90,12 @@ fn main() {
     let mut video_graph = match MultiTrackComposer::new(args.width, args.height)
         .add_layer(VideoLayer {
             source: args.base.clone(),
-            x: 0,
-            y: 0,
-            scale: 1.0,
-            opacity: 1.0,
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(1.0),
             z_order: 0,
             time_offset: Duration::ZERO,
             in_point: None,
@@ -101,10 +103,12 @@ fn main() {
         })
         .add_layer(VideoLayer {
             source: args.overlay.clone(),
-            x: overlay_x.cast_signed(),
-            y: 0,
-            scale: 0.5,
-            opacity: 0.85,
+            x: AnimatedValue::Static(f64::from(overlay_x)),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(0.5),
+            scale_y: AnimatedValue::Static(0.5),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(0.85),
             z_order: 1,
             time_offset: Duration::ZERO,
             in_point: None,
