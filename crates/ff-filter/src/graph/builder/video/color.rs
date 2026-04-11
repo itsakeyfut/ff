@@ -2,6 +2,49 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::animation::{AnimationTrack, Keyframe};
+
+// ── Tuple-track projection helper ─────────────────────────────────────────────
+
+/// Projects each component of an `AnimatedValue<(f64, f64, f64)>` track into
+/// three separate `f64` `AnimationEntry` items and appends them to `animations`.
+///
+/// Called by [`FilterGraphBuilder::color_correct_animated`] to register
+/// per-channel animation entries for `avfilter_graph_send_command` in #363.
+///
+/// If `av` is `Static`, nothing is pushed (static values need no per-frame update).
+fn push_tuple_track_entries(
+    animations: &mut Vec<AnimationEntry>,
+    node_name: &str,
+    params: [&'static str; 3],
+    av: &AnimatedValue<(f64, f64, f64)>,
+) {
+    let AnimatedValue::Track(track) = av else {
+        return;
+    };
+    for (i, param) in params.into_iter().enumerate() {
+        let f64_track = track
+            .keyframes()
+            .iter()
+            .fold(AnimationTrack::new(), |t, kf| {
+                let v = match i {
+                    0 => kf.value.0,
+                    1 => kf.value.1,
+                    _ => kf.value.2,
+                };
+                t.push(Keyframe {
+                    timestamp: kf.timestamp,
+                    value: v,
+                    easing: kf.easing.clone(),
+                })
+            });
+        animations.push(AnimationEntry {
+            node_name: node_name.to_owned(),
+            param,
+            track: f64_track,
+        });
+    }
+}
 
 impl FilterGraphBuilder {
     /// Apply HDR-to-SDR tone mapping using the given `algorithm`.
@@ -35,17 +78,148 @@ impl FilterGraphBuilder {
     /// - `contrast`: 0.0 – 3.0 (neutral: 1.0)
     /// - `saturation`: 0.0 – 3.0 (neutral: 1.0; 0.0 = grayscale)
     ///
+    /// Shorthand for [`eq_animated`](Self::eq_animated) with static values and a
+    /// neutral gamma (`1.0`).
+    ///
     /// # Validation
     ///
     /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
     /// value is outside its valid range.
     #[must_use]
-    pub fn eq(mut self, brightness: f32, contrast: f32, saturation: f32) -> Self {
-        self.steps.push(FilterStep::Eq {
+    pub fn eq(self, brightness: f32, contrast: f32, saturation: f32) -> Self {
+        self.eq_animated(
+            AnimatedValue::Static(f64::from(brightness)),
+            AnimatedValue::Static(f64::from(contrast)),
+            AnimatedValue::Static(f64::from(saturation)),
+            AnimatedValue::Static(1.0_f64),
+        )
+    }
+
+    /// Adjust brightness, contrast, saturation, and gamma using `FFmpeg`'s `eq` filter,
+    /// with optionally animated parameters.
+    ///
+    /// When an [`AnimatedValue::Track`] is supplied for any parameter, the animation
+    /// is registered for per-frame `avfilter_graph_send_command` updates (#363).
+    /// The initial filter graph is built from values at [`Duration::ZERO`].
+    ///
+    /// Filter node names are assigned deterministically: the first call produces
+    /// `"eq_0"`, the second `"eq_1"`, and so on.
+    ///
+    /// Valid ranges (at `Duration::ZERO`):
+    /// - `brightness`: −1.0 – 1.0
+    /// - `contrast`: 0.0 – 3.0
+    /// - `saturation`: 0.0 – 3.0
+    /// - `gamma`: 0.1 – 10.0
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
+    /// parameter evaluates outside its valid range at `Duration::ZERO`.
+    #[must_use]
+    pub fn eq_animated(
+        mut self,
+        brightness: AnimatedValue<f64>,
+        contrast: AnimatedValue<f64>,
+        saturation: AnimatedValue<f64>,
+        gamma: AnimatedValue<f64>,
+    ) -> Self {
+        let n = self
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FilterStep::EqAnimated { .. }))
+            .count();
+        let node_name = format!("eq_{n}");
+        for (av, param) in [
+            (&brightness, "brightness"),
+            (&contrast, "contrast"),
+            (&saturation, "saturation"),
+            (&gamma, "gamma"),
+        ] {
+            if let AnimatedValue::Track(track) = av {
+                self.animations.push(AnimationEntry {
+                    node_name: node_name.clone(),
+                    param,
+                    track: track.clone(),
+                });
+            }
+        }
+        self.steps.push(FilterStep::EqAnimated {
             brightness,
             contrast,
             saturation,
+            gamma,
         });
+        self
+    }
+
+    /// Apply a three-way color balance (lift / gamma / gain) using `FFmpeg`'s
+    /// `colorbalance` filter.
+    ///
+    /// Each parameter is an `(R, G, B)` tuple; neutral for all three is `(0.0, 0.0, 0.0)`.
+    ///
+    /// - **lift**: additive correction for shadows. Range per component: −1.0 – 1.0.
+    /// - **gamma**: additive correction for midtones. Range per component: −1.0 – 1.0.
+    /// - **gain**: additive correction for highlights. Range per component: −1.0 – 1.0.
+    ///
+    /// Shorthand for [`color_correct_animated`](Self::color_correct_animated) with
+    /// static values.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
+    /// component is outside `[−1.0, 1.0]`.
+    #[must_use]
+    pub fn color_correct(
+        self,
+        lift: (f64, f64, f64),
+        gamma: (f64, f64, f64),
+        gain: (f64, f64, f64),
+    ) -> Self {
+        self.color_correct_animated(
+            AnimatedValue::Static(lift),
+            AnimatedValue::Static(gamma),
+            AnimatedValue::Static(gain),
+        )
+    }
+
+    /// Apply a three-way color balance (lift / gamma / gain) using `FFmpeg`'s
+    /// `colorbalance` filter, with optionally animated parameters.
+    ///
+    /// When an [`AnimatedValue::Track`] is supplied, the animation is registered
+    /// for per-frame `avfilter_graph_send_command` updates (#363).  For tuple tracks
+    /// three separate entries are registered (one per RGB channel).
+    ///
+    /// Filter node names: `"colorbalance_0"`, `"colorbalance_1"`, …
+    ///
+    /// `FFmpeg` param names per parameter:
+    /// - `lift`  → `"rs"`, `"gs"`, `"bs"` (shadows)
+    /// - `gamma` → `"rm"`, `"gm"`, `"bm"` (midtones)
+    /// - `gain`  → `"rh"`, `"gh"`, `"bh"` (highlights)
+    ///
+    /// Valid range per component at `Duration::ZERO`: −1.0 – 1.0.
+    ///
+    /// # Validation
+    ///
+    /// [`build`](Self::build) returns [`FilterError::InvalidConfig`] if any
+    /// component evaluates outside `[−1.0, 1.0]` at `Duration::ZERO`.
+    #[must_use]
+    pub fn color_correct_animated(
+        mut self,
+        lift: AnimatedValue<(f64, f64, f64)>,
+        gamma: AnimatedValue<(f64, f64, f64)>,
+        gain: AnimatedValue<(f64, f64, f64)>,
+    ) -> Self {
+        let n = self
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FilterStep::ColorBalanceAnimated { .. }))
+            .count();
+        let node_name = format!("colorbalance_{n}");
+        push_tuple_track_entries(&mut self.animations, &node_name, ["rs", "gs", "bs"], &lift);
+        push_tuple_track_entries(&mut self.animations, &node_name, ["rm", "gm", "bm"], &gamma);
+        push_tuple_track_entries(&mut self.animations, &node_name, ["rh", "gh", "bh"], &gain);
+        self.steps
+            .push(FilterStep::ColorBalanceAnimated { lift, gamma, gain });
         self
     }
 
@@ -813,5 +987,328 @@ mod tests {
             matches!(result, Err(FilterError::InvalidConfig { .. })),
             "expected InvalidConfig for angle < 0.0, got {result:?}"
         );
+    }
+
+    // ── eq_animated tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn eq_animated_with_valid_static_values_should_succeed() {
+        let result = FilterGraph::builder()
+            .eq_animated(
+                AnimatedValue::Static(0.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+            )
+            .build();
+        assert!(
+            result.is_ok(),
+            "neutral eq_animated params must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn eq_animated_static_should_produce_correct_args() {
+        let step = FilterStep::EqAnimated {
+            brightness: AnimatedValue::Static(0.1_f64),
+            contrast: AnimatedValue::Static(1.5_f64),
+            saturation: AnimatedValue::Static(0.8_f64),
+            gamma: AnimatedValue::Static(2.0_f64),
+        };
+        assert_eq!(step.filter_name(), "eq");
+        assert_eq!(
+            step.args(),
+            "brightness=0.1:contrast=1.5:saturation=0.8:gamma=2"
+        );
+    }
+
+    #[test]
+    fn eq_animated_with_brightness_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .eq_animated(
+                AnimatedValue::Static(1.5_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for brightness > 1.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("brightness"),
+                "reason should mention brightness: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn eq_animated_with_contrast_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .eq_animated(
+                AnimatedValue::Static(0.0_f64),
+                AnimatedValue::Static(4.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for contrast > 3.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("contrast"),
+                "reason should mention contrast: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn eq_animated_with_saturation_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .eq_animated(
+                AnimatedValue::Static(0.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(-0.5_f64),
+                AnimatedValue::Static(1.0_f64),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for saturation < 0.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("saturation"),
+                "reason should mention saturation: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn eq_animated_with_gamma_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .eq_animated(
+                AnimatedValue::Static(0.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(0.0_f64),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for gamma < 0.1, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("gamma"),
+                "reason should mention gamma: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn animated_saturation_track_should_register_animation_entry() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let track = crate::animation::AnimationTrack::new()
+            .push(Keyframe {
+                timestamp: Duration::ZERO,
+                value: 1.0_f64,
+                easing: Easing::Linear,
+            })
+            .push(Keyframe {
+                timestamp: Duration::from_secs(2),
+                value: 2.0_f64,
+                easing: Easing::Linear,
+            });
+
+        let graph = FilterGraph::builder()
+            .eq_animated(
+                AnimatedValue::Static(0.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Track(track),
+                AnimatedValue::Static(1.0_f64),
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(graph.pending_animations.len(), 1);
+        assert_eq!(graph.pending_animations[0].node_name, "eq_0");
+        assert_eq!(graph.pending_animations[0].param, "saturation");
+    }
+
+    #[test]
+    fn eq_animated_second_call_should_use_eq_1_node_name() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let track = crate::animation::AnimationTrack::new().push(Keyframe {
+            timestamp: Duration::ZERO,
+            value: 0.5_f64,
+            easing: Easing::Linear,
+        });
+
+        let graph = FilterGraph::builder()
+            .eq_animated(
+                AnimatedValue::Static(0.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+            )
+            .eq_animated(
+                AnimatedValue::Track(track),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+                AnimatedValue::Static(1.0_f64),
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(graph.pending_animations.len(), 1);
+        assert_eq!(
+            graph.pending_animations[0].node_name, "eq_1",
+            "second eq_animated call must produce node name eq_1"
+        );
+        assert_eq!(graph.pending_animations[0].param, "brightness");
+    }
+
+    // ── color_correct / color_correct_animated tests ──────────────────────────
+
+    #[test]
+    fn color_correct_static_should_build_successfully() {
+        let result = FilterGraph::builder()
+            .color_correct((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+            .build();
+        assert!(
+            result.is_ok(),
+            "neutral color_correct must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn color_correct_animated_with_valid_static_values_should_succeed() {
+        let result = FilterGraph::builder()
+            .color_correct_animated(
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+            )
+            .build();
+        assert!(
+            result.is_ok(),
+            "neutral color_correct_animated must build successfully, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn color_correct_animated_lift_track_should_register_three_entries_with_rs_gs_bs_params() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let lift_track = crate::animation::AnimationTrack::new()
+            .push(Keyframe {
+                timestamp: Duration::ZERO,
+                value: (0.0_f64, 0.0_f64, 0.0_f64),
+                easing: Easing::Linear,
+            })
+            .push(Keyframe {
+                timestamp: Duration::from_secs(1),
+                value: (0.5_f64, -0.3_f64, 0.2_f64),
+                easing: Easing::Linear,
+            });
+
+        let graph = FilterGraph::builder()
+            .color_correct_animated(
+                AnimatedValue::Track(lift_track),
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            graph.pending_animations.len(),
+            3,
+            "lift track must register 3 entries"
+        );
+        let params: Vec<&str> = graph.pending_animations.iter().map(|e| e.param).collect();
+        assert_eq!(params, ["rs", "gs", "bs"]);
+        for entry in &graph.pending_animations {
+            assert_eq!(entry.node_name, "colorbalance_0");
+        }
+    }
+
+    #[test]
+    fn color_correct_animated_gamma_track_should_register_three_entries_with_rm_gm_bm_params() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let gamma_track = crate::animation::AnimationTrack::new().push(Keyframe {
+            timestamp: Duration::ZERO,
+            value: (0.1_f64, 0.0_f64, -0.1_f64),
+            easing: Easing::Linear,
+        });
+
+        let graph = FilterGraph::builder()
+            .color_correct_animated(
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+                AnimatedValue::Track(gamma_track),
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+            )
+            .build()
+            .unwrap();
+
+        let params: Vec<&str> = graph.pending_animations.iter().map(|e| e.param).collect();
+        assert_eq!(params, ["rm", "gm", "bm"]);
+    }
+
+    #[test]
+    fn color_correct_animated_gain_track_should_register_three_entries_with_rh_gh_bh_params() {
+        use crate::animation::{Easing, Keyframe};
+        use std::time::Duration;
+
+        let gain_track = crate::animation::AnimationTrack::new().push(Keyframe {
+            timestamp: Duration::ZERO,
+            value: (0.5_f64, 0.5_f64, 0.5_f64),
+            easing: Easing::Linear,
+        });
+
+        let graph = FilterGraph::builder()
+            .color_correct_animated(
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+                AnimatedValue::Track(gain_track),
+            )
+            .build()
+            .unwrap();
+
+        let params: Vec<&str> = graph.pending_animations.iter().map(|e| e.param).collect();
+        assert_eq!(params, ["rh", "gh", "bh"]);
+    }
+
+    #[test]
+    fn color_correct_animated_component_out_of_range_should_return_invalid_config() {
+        let result = FilterGraph::builder()
+            .color_correct_animated(
+                AnimatedValue::Static((1.5, 0.0, 0.0)),
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+                AnimatedValue::Static((0.0, 0.0, 0.0)),
+            )
+            .build();
+        assert!(
+            matches!(result, Err(FilterError::InvalidConfig { .. })),
+            "expected InvalidConfig for lift.r > 1.0, got {result:?}"
+        );
+        if let Err(FilterError::InvalidConfig { reason }) = result {
+            assert!(
+                reason.contains("lift") && reason.contains("r"),
+                "reason should mention lift.r: {reason}"
+            );
+        }
     }
 }
