@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::animation::AnimatedValue;
 use crate::error::FilterError;
 use crate::graph::graph::FilterGraph;
 use crate::graph::types::Rgb;
@@ -15,18 +16,27 @@ use crate::graph::types::Rgb;
 ///
 /// Layers are composited in ascending [`z_order`](Self::z_order), with
 /// `0` rendered first (bottom of the stack).
+///
+/// The `x`, `y`, `scale_x`, `scale_y`, `rotation`, and `opacity` fields accept
+/// either a constant ([`AnimatedValue::Static`]) or a time-varying keyframe
+/// track ([`AnimatedValue::Track`]).  The initial filter graph is built from
+/// the value at `Duration::ZERO`; per-frame updates are added in issue #363.
 #[derive(Debug, Clone)]
 pub struct VideoLayer {
     /// Source media file path.
     pub source: PathBuf,
     /// X offset on the canvas in pixels (top-left origin).
-    pub x: i32,
+    pub x: AnimatedValue<f64>,
     /// Y offset on the canvas in pixels.
-    pub y: i32,
-    /// Uniform scale factor applied to the source frame (`1.0` = original size).
-    pub scale: f32,
+    pub y: AnimatedValue<f64>,
+    /// Horizontal scale factor applied to the source frame (`1.0` = original width).
+    pub scale_x: AnimatedValue<f64>,
+    /// Vertical scale factor applied to the source frame (`1.0` = original height).
+    pub scale_y: AnimatedValue<f64>,
+    /// Clockwise rotation in degrees (`0.0` = no rotation).
+    pub rotation: AnimatedValue<f64>,
     /// Opacity (`0.0` = fully transparent, `1.0` = fully opaque).
-    pub opacity: f32,
+    pub opacity: AnimatedValue<f64>,
     /// Compositing order (`0` = bottom layer; higher values render on top).
     pub z_order: u32,
     /// Start offset on the output timeline (`Duration::ZERO` = at the beginning).
@@ -49,14 +59,22 @@ pub struct VideoLayer {
 /// # Examples
 ///
 /// ```ignore
-/// use ff_filter::{MultiTrackComposer, VideoLayer};
+/// use ff_filter::{AnimatedValue, MultiTrackComposer, VideoLayer};
 /// use std::time::Duration;
 ///
 /// let mut graph = MultiTrackComposer::new(1920, 1080)
 ///     .add_layer(VideoLayer {
 ///         source: "clip.mp4".into(),
-///         x: 0, y: 0, scale: 1.0, opacity: 1.0, z_order: 0,
-///         time_offset: Duration::ZERO, in_point: None, out_point: None,
+///         x: AnimatedValue::Static(0.0),
+///         y: AnimatedValue::Static(0.0),
+///         scale_x: AnimatedValue::Static(1.0),
+///         scale_y: AnimatedValue::Static(1.0),
+///         rotation: AnimatedValue::Static(0.0),
+///         opacity: AnimatedValue::Static(1.0),
+///         z_order: 0,
+///         time_offset: Duration::ZERO,
+///         in_point: None,
+///         out_point: None,
 ///     })
 ///     .build()?;
 ///
@@ -155,10 +173,12 @@ mod tests {
         let result = MultiTrackComposer::new(0, 1080)
             .add_layer(VideoLayer {
                 source: "clip.mp4".into(),
-                x: 0,
-                y: 0,
-                scale: 1.0,
-                opacity: 1.0,
+                x: AnimatedValue::Static(0.0),
+                y: AnimatedValue::Static(0.0),
+                scale_x: AnimatedValue::Static(1.0),
+                scale_y: AnimatedValue::Static(1.0),
+                rotation: AnimatedValue::Static(0.0),
+                opacity: AnimatedValue::Static(1.0),
                 z_order: 0,
                 time_offset: Duration::ZERO,
                 in_point: None,
@@ -174,10 +194,12 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 0)
             .add_layer(VideoLayer {
                 source: "clip.mp4".into(),
-                x: 0,
-                y: 0,
-                scale: 1.0,
-                opacity: 1.0,
+                x: AnimatedValue::Static(0.0),
+                y: AnimatedValue::Static(0.0),
+                scale_x: AnimatedValue::Static(1.0),
+                scale_y: AnimatedValue::Static(1.0),
+                rotation: AnimatedValue::Static(0.0),
+                opacity: AnimatedValue::Static(1.0),
                 z_order: 0,
                 time_offset: Duration::ZERO,
                 in_point: None,
@@ -201,10 +223,12 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent_640x480.mp4".into(),
-                x: 100,
-                y: 100,
-                scale: 1.0,
-                opacity: 1.0,
+                x: AnimatedValue::Static(100.0),
+                y: AnimatedValue::Static(100.0),
+                scale_x: AnimatedValue::Static(1.0),
+                scale_y: AnimatedValue::Static(1.0),
+                rotation: AnimatedValue::Static(0.0),
+                opacity: AnimatedValue::Static(1.0),
                 z_order: 0,
                 time_offset: Duration::ZERO,
                 in_point: None,
@@ -236,10 +260,12 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent.mp4".into(),
-                x: 0,
-                y: 0,
-                scale: 1.0,
-                opacity: 1.0,
+                x: AnimatedValue::Static(0.0),
+                y: AnimatedValue::Static(0.0),
+                scale_x: AnimatedValue::Static(1.0),
+                scale_y: AnimatedValue::Static(1.0),
+                rotation: AnimatedValue::Static(0.0),
+                opacity: AnimatedValue::Static(1.0),
                 z_order: 0,
                 time_offset: Duration::from_secs(2),
                 in_point: None,
@@ -261,10 +287,12 @@ mod tests {
         let result = MultiTrackComposer::new(1920, 1080)
             .add_layer(VideoLayer {
                 source: "nonexistent.mp4".into(),
-                x: 0,
-                y: 0,
-                scale: 1.0,
-                opacity: 1.0,
+                x: AnimatedValue::Static(0.0),
+                y: AnimatedValue::Static(0.0),
+                scale_x: AnimatedValue::Static(1.0),
+                scale_y: AnimatedValue::Static(1.0),
+                rotation: AnimatedValue::Static(0.0),
+                opacity: AnimatedValue::Static(1.0),
                 z_order: 0,
                 time_offset: Duration::ZERO,
                 in_point: None,

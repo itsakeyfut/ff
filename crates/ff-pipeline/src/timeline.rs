@@ -9,7 +9,7 @@ use std::path::Path;
 
 use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
-use ff_filter::{AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoLayer};
+use ff_filter::{AnimatedValue, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoLayer};
 use ff_format::ChannelLayout;
 
 use crate::clip::Clip;
@@ -120,10 +120,12 @@ impl Timeline {
                 for clip in track {
                     composer = composer.add_layer(VideoLayer {
                         source: clip.source.clone(),
-                        x: 0,
-                        y: 0,
-                        scale: 1.0,
-                        opacity: 1.0,
+                        x: AnimatedValue::Static(0.0),
+                        y: AnimatedValue::Static(0.0),
+                        scale_x: AnimatedValue::Static(1.0),
+                        scale_y: AnimatedValue::Static(1.0),
+                        rotation: AnimatedValue::Static(0.0),
+                        opacity: AnimatedValue::Static(1.0),
                         z_order: u32::try_from(track_idx).unwrap_or(u32::MAX),
                         time_offset: clip.timeline_offset,
                         in_point: clip.in_point,

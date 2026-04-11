@@ -7,13 +7,16 @@
 //!    `EaseInOut`, `Bezier` (#352–#357)
 //! 3. [`Keyframe<T>`] — timestamp + value + per-segment easing (#349)
 //! 4. [`AnimationTrack<T>`] — sorted collection with `value_at(t)` (#350)
+//! 5. [`AnimatedValue<T>`] — `Static(T)` or `Track(AnimationTrack<T>)` (#358)
 
 mod easing;
 mod keyframe;
 mod lerp;
 mod track;
+mod value;
 
 pub use easing::Easing;
 pub use keyframe::Keyframe;
 pub use lerp::Lerp;
 pub use track::AnimationTrack;
+pub use value::AnimatedValue;
