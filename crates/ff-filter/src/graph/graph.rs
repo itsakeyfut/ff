@@ -70,6 +70,22 @@ impl FilterGraph {
         }
     }
 
+    /// Creates a `FilterGraph` from a pre-built [`FilterGraphInner`] with
+    /// animation entries accumulated during graph construction.
+    ///
+    /// Used by [`MultiTrackAudioMixer`](crate::MultiTrackAudioMixer) when
+    /// one or more tracks have an animated `volume` field.
+    pub(crate) fn from_prebuilt_animated(
+        inner: FilterGraphInner,
+        animations: Vec<AnimationEntry>,
+    ) -> Self {
+        Self {
+            inner,
+            output_resolution: None,
+            pending_animations: animations,
+        }
+    }
+
     /// Returns the registered animation entries accumulated by
     /// [`crop_animated`](FilterGraphBuilder::crop_animated) and
     /// [`gblur_animated`](FilterGraphBuilder::gblur_animated).

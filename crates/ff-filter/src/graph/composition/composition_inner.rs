@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use ff_format::ChannelLayout;
 
+use crate::animation::{AnimatedValue, AnimationEntry};
 use crate::error::FilterError;
 use crate::filter_inner::FilterGraphInner;
 use crate::graph::graph::FilterGraph;
@@ -446,6 +447,7 @@ pub(super) unsafe fn build_audio_mix(
 
     let track_count = tracks.len();
     let mut end_ctxs: Vec<*mut ff_sys::AVFilterContext> = Vec::with_capacity(track_count);
+    let mut animations: Vec<AnimationEntry> = Vec::new();
 
     for (idx, track) in tracks.iter().enumerate() {
         let path = track
@@ -602,16 +604,23 @@ pub(super) unsafe fn build_audio_mix(
             log::debug!("audio track delayed track={idx} delay_ms={delay_ms}");
         }
 
-        // ── Optional volume ───────────────────────────────────────────────────
-        if track.volume_db.abs() > f32::EPSILON {
+        // ── Volume (always inserted so the node can be targeted by send_command) ─
+        {
+            // Warn if animated pan was requested — not yet implemented.
+            if matches!(track.pan, AnimatedValue::Track(_)) {
+                log::warn!("animated pan not supported; using initial value track_index={idx}");
+            }
+
+            let vol_db = track.volume.value_at(Duration::ZERO);
+            let node_name = format!("audio_{idx}_volume");
             let vol_filter = ff_sys::avfilter_get_by_name(c"volume".as_ptr());
             if vol_filter.is_null() {
                 bail!(graph, "filter not found: volume");
             }
-            let Ok(vol_name) = CString::new(format!("volume{idx}")) else {
+            let Ok(vol_name) = CString::new(node_name.as_str()) else {
                 bail!(graph, "CString::new failed for volume name");
             };
-            let Ok(vol_args) = CString::new(format!("{}dB", track.volume_db)) else {
+            let Ok(vol_args) = CString::new(format!("{vol_db}dB")) else {
                 bail!(graph, "CString::new failed for volume args");
             };
             let mut vol_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
@@ -634,6 +643,15 @@ pub(super) unsafe fn build_audio_mix(
                 bail!(graph, format!("link failed: →volume track={idx}"));
             }
             chain_end = vol_ctx;
+
+            // Register animation entry if the volume is time-varying.
+            if let AnimatedValue::Track(ref vol_track) = track.volume {
+                animations.push(AnimationEntry {
+                    node_name: node_name.clone(),
+                    param: "volume",
+                    track: vol_track.clone(),
+                });
+            }
         }
 
         // ── Per-track effects chain ───────────────────────────────────────────
@@ -750,7 +768,7 @@ pub(super) unsafe fn build_audio_mix(
     let sink_nn = NonNull::new_unchecked(sink_ctx);
     let inner = FilterGraphInner::with_prebuilt_audio_graph(graph_nn, sink_nn);
     log::info!("audio mix graph built tracks={track_count} sample_rate={sample_rate}");
-    Ok(FilterGraph::from_prebuilt(inner))
+    Ok(FilterGraph::from_prebuilt_animated(inner, animations))
 }
 
 // ── Video concat graph builder ────────────────────────────────────────────────
