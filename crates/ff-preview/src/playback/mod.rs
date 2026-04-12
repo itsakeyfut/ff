@@ -5,7 +5,16 @@
 
 mod playback_inner;
 
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, sync_channel};
+use std::thread;
 use std::time::{Duration, Instant};
+
+use ff_format::VideoFrame;
+
+use crate::error::PreviewError;
 
 /// Internal state machine for `PlaybackClock`.
 ///
@@ -237,9 +246,134 @@ impl Default for PlaybackClock {
 /// ```
 pub struct PreviewPlayer;
 
+// ── DecodeBuffer ──────────────────────────────────────────────────────────────
+
+/// Default ring buffer capacity for [`DecodeBuffer`] (frames).
+const DEFAULT_DECODE_BUFFER_CAPACITY: usize = 8;
+
+/// Builder for [`DecodeBuffer`].
+///
+/// Created via [`DecodeBuffer::open`]; call [`capacity`](Self::capacity) to
+/// override the default ring buffer size, then [`build`](Self::build) to start
+/// the background decode thread and obtain a [`DecodeBuffer`].
+pub struct DecodeBufferBuilder {
+    path: PathBuf,
+    capacity: usize,
+}
+
+impl DecodeBufferBuilder {
+    /// Set the ring buffer capacity in frames. Default: 8.
+    ///
+    /// The background thread blocks when the buffer is full and resumes as soon
+    /// as the consumer calls [`DecodeBuffer::pop_frame`].
+    #[must_use]
+    pub fn capacity(self, n: usize) -> Self {
+        Self {
+            capacity: n,
+            ..self
+        }
+    }
+
+    /// Build and start the background decode thread.
+    ///
+    /// The thread pre-fills the ring buffer; frames are delivered in
+    /// presentation order. The caller receives a [`DecodeBuffer`] immediately;
+    /// frames become available as the thread decodes them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] if the video file cannot be opened or contains
+    /// no decodable video stream.
+    pub fn build(self) -> Result<DecodeBuffer, PreviewError> {
+        let (tx, rx) = sync_channel(self.capacity);
+        let buffered = Arc::new(AtomicUsize::new(0));
+        let buffered_thread = Arc::clone(&buffered);
+        let path = self.path;
+        // Stub: spawn the background decode thread.
+        // Full decode loop (open VideoDecoder, push frames, increment counter) is
+        // implemented in #374.
+        let _handle = thread::spawn(move || {
+            // TODO(#374): open VideoDecoder at `path`, loop decode_one(), send each
+            //             frame via `tx`, and call `buffered_thread.fetch_add(1, ...)`.
+            let _ = (tx, path, buffered_thread);
+        });
+        Ok(DecodeBuffer { rx, buffered })
+    }
+}
+
+/// Pre-decodes frames from a video file into a ring buffer on a background thread.
+///
+/// `DecodeBuffer` decouples decoder latency from the presentation loop: the
+/// background thread keeps the buffer filled so [`pop_frame`](Self::pop_frame)
+/// can return the next frame without waiting for the decoder.
+///
+/// The default ring buffer capacity is 8 frames. Use
+/// [`open`](Self::open) → [`capacity`](DecodeBufferBuilder::capacity) →
+/// [`build`](DecodeBufferBuilder::build) to configure a different size.
+///
+/// # Usage (stub — full implementation in #374)
+///
+/// ```ignore
+/// let mut buf = DecodeBuffer::open(Path::new("clip.mp4"))
+///     .capacity(16)
+///     .build()?;
+///
+/// while let Some(frame) = buf.pop_frame() {
+///     // present frame…
+/// }
+/// ```
+///
+/// # Thread safety
+///
+/// `DecodeBuffer` is `Send` but **not** `Sync`; it must be owned by a single
+/// consumer. The internal [`std::sync::mpsc::Receiver`] enforces this.
+pub struct DecodeBuffer {
+    rx: Receiver<VideoFrame>,
+    /// Approximate count of frames waiting in the ring buffer.
+    /// Incremented by the background thread on send; decremented by `pop_frame`.
+    buffered: Arc<AtomicUsize>,
+}
+
+impl DecodeBuffer {
+    /// Open the video at `path` and return a builder for configuring the buffer.
+    ///
+    /// Chain with [`DecodeBufferBuilder::capacity`] and
+    /// [`DecodeBufferBuilder::build`] to start decoding.
+    #[must_use]
+    pub fn open(path: &Path) -> DecodeBufferBuilder {
+        DecodeBufferBuilder {
+            path: path.to_path_buf(),
+            capacity: DEFAULT_DECODE_BUFFER_CAPACITY,
+        }
+    }
+
+    /// Pop the next decoded frame.
+    ///
+    /// Blocks until a frame is available in the buffer or the background thread
+    /// reaches end of file (EOF). Returns `None` at EOF.
+    pub fn pop_frame(&mut self) -> Option<VideoFrame> {
+        let frame = self.rx.recv().ok();
+        if frame.is_some() {
+            self.buffered.fetch_sub(1, Ordering::Relaxed);
+        }
+        frame
+    }
+
+    /// Returns an approximation of the number of decoded frames currently
+    /// waiting in the buffer.
+    ///
+    /// This value is advisory only; it may lag the actual buffer state by one
+    /// scheduling quantum. Use it for diagnostics, not flow control.
+    #[must_use]
+    pub fn buffered_frames(&self) -> usize {
+        self.buffered.load(Ordering::Relaxed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::thread;
 
     #[test]
@@ -504,6 +638,46 @@ mod tests {
             clock.current_pts(),
             Duration::ZERO,
             "stop() must reset seek_offset to ZERO"
+        );
+    }
+
+    // ── DecodeBuffer tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_buffer_open_should_use_default_capacity() {
+        // open() returns a builder; build() succeeds in the stub regardless of path.
+        let buf = DecodeBuffer::open(Path::new("placeholder.mp4"))
+            .build()
+            .expect("DecodeBuffer::build must succeed in stub");
+        // Stub thread drops tx immediately → sender gone → buffered_frames = 0.
+        assert_eq!(
+            buf.buffered_frames(),
+            0,
+            "buffer must be empty before any frames are decoded"
+        );
+    }
+
+    #[test]
+    fn decode_buffer_capacity_should_be_configurable() {
+        // Verify the capacity setter is chainable.
+        let buf = DecodeBuffer::open(Path::new("placeholder.mp4"))
+            .capacity(16)
+            .build()
+            .expect("DecodeBuffer::build with capacity(16) must succeed");
+        assert_eq!(buf.buffered_frames(), 0);
+    }
+
+    #[test]
+    fn decode_buffer_pop_frame_should_return_none_at_eof() {
+        // Stub thread drops the sender immediately → pop_frame() returns None (EOF).
+        let mut buf = DecodeBuffer::open(Path::new("placeholder.mp4"))
+            .build()
+            .expect("build must succeed");
+        // Give the stub thread a moment to start and drop the sender.
+        thread::sleep(Duration::from_millis(5));
+        assert!(
+            buf.pop_frame().is_none(),
+            "pop_frame() must return None when sender has been dropped (EOF)"
         );
     }
 }
