@@ -32,7 +32,7 @@ enum ClockState {
 /// `PlaybackClock` is a value type — it is not `Arc<Mutex<...>>` internally.
 /// When multi-thread access is required, wrap it in a `Mutex`.
 ///
-/// # Usage (stub — full implementation in #370 / #371)
+/// # Usage
 ///
 /// ```ignore
 /// let mut clock = PlaybackClock::new();
@@ -42,10 +42,11 @@ enum ClockState {
 /// // current_time() is now frozen
 /// clock.resume();
 /// // current_time() continues advancing from the frozen point
+/// clock.set_rate(2.0); // fast-forward at 2×
 /// ```
 pub struct PlaybackClock {
     state: ClockState,
-    /// Playback rate multiplier. 1.0 = real-time. Set via `set_rate` (#371).
+    /// Playback rate multiplier. 1.0 = real-time.
     rate: f64,
 }
 
@@ -127,6 +128,38 @@ impl PlaybackClock {
     #[must_use]
     pub fn is_running(&self) -> bool {
         matches!(self.state, ClockState::Running { .. })
+    }
+
+    /// Sets the playback rate multiplier.
+    ///
+    /// - `1.0` = real-time (default).
+    /// - `2.0` = double speed; `0.5` = half speed.
+    /// - Values ≤ `0.0` are invalid and silently ignored (a warning is logged).
+    ///
+    /// When called while the clock is `Running`, the transition is seamless:
+    /// `current_time()` is captured at the old rate and used as the new base,
+    /// so no time is skipped or repeated.
+    pub fn set_rate(&mut self, rate: f64) {
+        if rate <= 0.0 {
+            log::warn!("invalid playback rate ignored rate={rate}");
+            return;
+        }
+        if matches!(self.state, ClockState::Running { .. }) {
+            let now = self.current_time();
+            self.rate = rate;
+            self.state = ClockState::Running {
+                started_at: Instant::now(),
+                base: now,
+            };
+        } else {
+            self.rate = rate;
+        }
+    }
+
+    /// Returns the current playback rate multiplier. Default: `1.0`.
+    #[must_use]
+    pub fn rate(&self) -> f64 {
+        self.rate
     }
 }
 
@@ -256,5 +289,79 @@ mod tests {
         let b = PlaybackClock::default();
         assert_eq!(a.current_time(), b.current_time());
         assert_eq!(a.is_running(), b.is_running());
+    }
+
+    #[test]
+    fn set_rate_should_reject_non_positive_values() {
+        let mut clock = PlaybackClock::new();
+
+        clock.set_rate(0.0);
+        assert!(
+            (clock.rate() - 1.0).abs() < f64::EPSILON,
+            "rate must remain 1.0 after set_rate(0.0)"
+        );
+
+        clock.set_rate(-1.0);
+        assert!(
+            (clock.rate() - 1.0).abs() < f64::EPSILON,
+            "rate must remain 1.0 after set_rate(-1.0)"
+        );
+    }
+
+    #[test]
+    fn set_rate_should_update_rate_when_stopped_or_paused() {
+        // Stopped → rate updates.
+        let mut clock = PlaybackClock::new();
+        clock.set_rate(0.5);
+        assert!((clock.rate() - 0.5).abs() < f64::EPSILON);
+
+        // Paused → rate updates without resuming.
+        let mut clock = PlaybackClock::new();
+        clock.start();
+        clock.pause();
+        clock.set_rate(2.0);
+        assert!((clock.rate() - 2.0).abs() < f64::EPSILON);
+        assert!(
+            !clock.is_running(),
+            "clock must remain paused after set_rate"
+        );
+    }
+
+    #[test]
+    fn set_rate_running_should_not_jump_current_time() {
+        let mut clock = PlaybackClock::new();
+        clock.start();
+        thread::sleep(Duration::from_millis(10));
+        let before = clock.current_time();
+        clock.set_rate(2.0);
+        let after = clock.current_time();
+
+        // current_time() must not jump backward or skip more than a scheduler
+        // quantum (~16 ms) forward after set_rate while running.
+        assert!(
+            after >= before,
+            "current_time() must not go backward on set_rate; before={before:?} after={after:?}"
+        );
+        assert!(
+            after - before < Duration::from_millis(20),
+            "current_time() must not jump forward on set_rate; before={before:?} after={after:?}"
+        );
+        assert!((clock.rate() - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    #[ignore = "performance thresholds are environment-dependent; run explicitly with -- --include-ignored"]
+    fn rate_two_x_should_advance_at_double_speed() {
+        let mut clock = PlaybackClock::new();
+        clock.set_rate(2.0);
+        clock.start();
+        thread::sleep(Duration::from_millis(50));
+        let elapsed = clock.current_time();
+
+        // At 2×, 50 ms wall time should produce ≥80 ms of media time.
+        assert!(
+            elapsed >= Duration::from_millis(80),
+            "2× rate: expected ≥80 ms after 50 ms wall time, got {elapsed:?}"
+        );
     }
 }
