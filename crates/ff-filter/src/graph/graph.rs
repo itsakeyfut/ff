@@ -1,5 +1,7 @@
 //! [`FilterGraph`] struct definition and push/pull implementations.
 
+use std::time::Duration;
+
 use ff_format::{AudioFrame, VideoFrame};
 
 use crate::animation::AnimationEntry;
@@ -83,6 +85,20 @@ impl FilterGraph {
             inner,
             output_resolution: None,
             pending_animations: animations,
+        }
+    }
+
+    /// Applies all registered animation entries at time `t`.
+    ///
+    /// Call this before each [`pull_video`](Self::pull_video) on source-only
+    /// graphs (e.g. from [`MultiTrackComposer`](crate::MultiTrackComposer)) to
+    /// update animated filter parameters for the next frame.
+    ///
+    /// On graphs that use [`push_video`](Self::push_video), animations are
+    /// applied automatically at the pushed frame's PTS — `tick` is not needed.
+    pub fn tick(&mut self, t: Duration) {
+        if !self.pending_animations.is_empty() {
+            self.inner.apply_animations(&self.pending_animations, t);
         }
     }
 
