@@ -37,17 +37,21 @@ enum ClockState {
 /// ```ignore
 /// let mut clock = PlaybackClock::new();
 /// clock.start();
-/// let pts = clock.current_time();
+/// let pts = clock.current_pts();
 /// clock.pause();
-/// // current_time() is now frozen
+/// // current_pts() is now frozen
 /// clock.resume();
-/// // current_time() continues advancing from the frozen point
-/// clock.set_rate(2.0); // fast-forward at 2×
+/// // current_pts() continues advancing from the frozen point
+/// clock.set_rate(2.0);          // fast-forward at 2×
+/// clock.set_position(Duration::from_secs(30)); // seek to 30 s
 /// ```
 pub struct PlaybackClock {
     state: ClockState,
     /// Playback rate multiplier. 1.0 = real-time.
     rate: f64,
+    /// Pending seek position. Applied as the `base` when `start()` is called
+    /// from the `Stopped` state. Cleared by `stop()`.
+    seek_offset: Duration,
 }
 
 impl PlaybackClock {
@@ -57,18 +61,21 @@ impl PlaybackClock {
         Self {
             state: ClockState::Stopped,
             rate: 1.0,
+            seek_offset: Duration::ZERO,
         }
     }
 
     /// Start the clock from the current position.
     ///
-    /// - If the clock is `Stopped`, it starts from `Duration::ZERO`.
+    /// - If the clock is `Stopped`, it starts from the position last set by
+    ///   [`set_position`](Self::set_position), or `Duration::ZERO` if no seek
+    ///   has been performed.
     /// - If the clock is `Paused`, it starts from the frozen position.
     /// - If the clock is already `Running`, this is a no-op.
     pub fn start(&mut self) {
         let base = match &self.state {
             ClockState::Running { .. } => return,
-            ClockState::Stopped => Duration::ZERO,
+            ClockState::Stopped => self.seek_offset,
             ClockState::Paused { frozen_at } => *frozen_at,
         };
         self.state = ClockState::Running {
@@ -79,9 +86,11 @@ impl PlaybackClock {
 
     /// Stop the clock and reset the position to `Duration::ZERO`.
     ///
-    /// `current_time()` will return `Duration::ZERO` until `start()` is called.
+    /// `current_time()` and `current_pts()` will return `Duration::ZERO`
+    /// until `start()` or `set_position()` is called again.
     pub fn stop(&mut self) {
         self.state = ClockState::Stopped;
+        self.seek_offset = Duration::ZERO;
     }
 
     /// Pause the clock. `current_time()` is frozen at the current position.
@@ -160,6 +169,49 @@ impl PlaybackClock {
     #[must_use]
     pub fn rate(&self) -> f64 {
         self.rate
+    }
+
+    /// Returns the current presentation timestamp (PTS) in media time.
+    ///
+    /// This is the authoritative position query for `PreviewPlayer`. It equals
+    /// [`current_time`](Self::current_time) for `Running` and `Paused` states,
+    /// and returns the last position set by [`set_position`](Self::set_position)
+    /// for the `Stopped` state.
+    ///
+    /// - `Stopped`: the pending seek offset (default `Duration::ZERO`).
+    /// - `Paused`: the frozen timestamp at the moment `pause()` was called.
+    /// - `Running`: `base + elapsed × rate`.
+    #[must_use]
+    pub fn current_pts(&self) -> Duration {
+        if matches!(self.state, ClockState::Stopped) {
+            self.seek_offset
+        } else {
+            self.current_time()
+        }
+    }
+
+    /// Jump to an arbitrary position in media time.
+    ///
+    /// - `Running`: the clock continues advancing from `pts` immediately.
+    /// - `Paused`: the frozen position is updated to `pts`.
+    /// - `Stopped`: `pts` is stored and applied as the starting position when
+    ///   [`start`](Self::start) is next called.
+    ///
+    /// After `set_position(t)` + `start()`, [`current_pts`](Self::current_pts)
+    /// will immediately return values ≥ `t`.
+    pub fn set_position(&mut self, pts: Duration) {
+        // seek_offset is always updated so current_pts() is consistent for all states.
+        self.seek_offset = pts;
+        if matches!(self.state, ClockState::Running { .. }) {
+            // Re-anchor the running base at the new position.
+            self.state = ClockState::Running {
+                started_at: Instant::now(),
+                base: pts,
+            };
+        } else if matches!(self.state, ClockState::Paused { .. }) {
+            self.state = ClockState::Paused { frozen_at: pts };
+        }
+        // Stopped: seek_offset is set above; start() will use it as the initial base.
     }
 }
 
@@ -362,6 +414,96 @@ mod tests {
         assert!(
             elapsed >= Duration::from_millis(80),
             "2× rate: expected ≥80 ms after 50 ms wall time, got {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn set_position_should_shift_pts_by_seek_offset() {
+        let seek_target = Duration::from_secs(30);
+
+        // Stopped: current_pts() returns the offset immediately.
+        let mut clock = PlaybackClock::new();
+        clock.set_position(seek_target);
+        assert_eq!(
+            clock.current_pts(),
+            seek_target,
+            "current_pts() must reflect seek_offset when stopped"
+        );
+
+        // start() must begin from the seek position.
+        clock.start();
+        let pts = clock.current_pts();
+        assert!(
+            pts >= seek_target,
+            "current_pts() must be ≥ seek target after start(); target={seek_target:?} pts={pts:?}"
+        );
+        assert!(
+            clock.is_running(),
+            "clock must be running after set_position + start()"
+        );
+    }
+
+    #[test]
+    fn set_position_while_paused_should_update_frozen_time() {
+        let mut clock = PlaybackClock::new();
+        clock.start();
+        thread::sleep(Duration::from_millis(5));
+        clock.pause();
+
+        let seek_target = Duration::from_secs(10);
+        clock.set_position(seek_target);
+
+        let pts = clock.current_pts();
+        assert_eq!(
+            pts, seek_target,
+            "frozen time must update to seek target; expected={seek_target:?} got={pts:?}"
+        );
+        assert!(
+            !clock.is_running(),
+            "clock must remain paused after set_position"
+        );
+
+        // resume() must continue advancing from the new position.
+        clock.resume();
+        thread::sleep(Duration::from_millis(5));
+        let pts_after = clock.current_pts();
+        assert!(
+            pts_after > seek_target,
+            "current_pts() must advance past seek target after resume(); target={seek_target:?} after={pts_after:?}"
+        );
+    }
+
+    #[test]
+    fn set_position_while_running_should_continue_from_new_position() {
+        let mut clock = PlaybackClock::new();
+        clock.start();
+        thread::sleep(Duration::from_millis(5));
+
+        let seek_target = Duration::from_secs(60);
+        clock.set_position(seek_target);
+
+        let pts = clock.current_pts();
+        assert!(
+            pts >= seek_target,
+            "current_pts() must be ≥ seek target immediately after set_position while running; \
+             target={seek_target:?} pts={pts:?}"
+        );
+        assert!(
+            clock.is_running(),
+            "clock must remain running after set_position"
+        );
+    }
+
+    #[test]
+    fn stop_should_clear_seek_offset() {
+        let mut clock = PlaybackClock::new();
+        clock.set_position(Duration::from_secs(30));
+        clock.stop();
+
+        assert_eq!(
+            clock.current_pts(),
+            Duration::ZERO,
+            "stop() must reset seek_offset to ZERO"
         );
     }
 }
