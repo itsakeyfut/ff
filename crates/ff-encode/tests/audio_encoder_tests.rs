@@ -1,8 +1,5 @@
 //! Audio encoder tests.
 
-use std::path::PathBuf;
-
-use ff_decode::AudioDecoder;
 use ff_encode::{
     AacOptions, AacProfile, AudioCodec, AudioCodecOptions, AudioEncoder, EncodeError, FlacOptions,
     Mp3Options, Mp3Quality, OpusApplication, OpusOptions, OutputContainer,
@@ -12,12 +9,28 @@ use ff_format::{AudioFrame, SampleFormat};
 mod fixtures;
 use fixtures::{FileGuard, assert_valid_output_file, test_output_path};
 
-fn assets_dir() -> PathBuf {
-    PathBuf::from(format!("{}/../../assets", env!("CARGO_MANIFEST_DIR")))
-}
-
-fn test_mp3_path() -> PathBuf {
-    assets_dir().join("audio/konekonoosanpo.mp3")
+/// Pushes `n_frames` × `samples_per_frame` synthetic stereo F32 frames at
+/// `sample_rate` Hz into `encoder`.  Used by the transcode tests to avoid
+/// a dev-dependency on `ff-decode`.
+fn push_synthetic_audio(
+    encoder: &mut AudioEncoder,
+    sample_rate: u32,
+    channels: u32,
+    n_frames: usize,
+    samples_per_frame: usize,
+) {
+    for i in 0..n_frames {
+        let mut frame =
+            AudioFrame::empty(samples_per_frame, channels, sample_rate, SampleFormat::F32)
+                .expect("failed to create audio frame");
+        if let Some(samples) = frame.as_f32_mut() {
+            for (j, s) in samples.iter_mut().enumerate() {
+                let t = (i * samples_per_frame + j / channels as usize) as f32 / sample_rate as f32;
+                *s = (t * 440.0 * 2.0 * std::f32::consts::PI).sin() * 0.5;
+            }
+        }
+        encoder.push(&frame).expect("push failed");
+    }
 }
 
 #[test]
@@ -126,30 +139,20 @@ fn test_audio_encoder_planar_format() {
 }
 
 // ============================================================================
-// Transcode tests (MP3 → lossy/lossless)
+// Encode-from-synthetic-PCM tests (formerly MP3 → lossy/lossless transcode)
+//
+// These tests verify that AudioEncoder accepts a stream of AudioFrame objects
+// and writes a valid output file.  Synthetic 440 Hz sine-wave frames replace
+// the decoded MP3 source so that ff-decode is not needed as a dev-dependency.
 // ============================================================================
 
 #[test]
-fn mp3_to_aac_transcode_should_succeed() {
-    let mp3_path = test_mp3_path();
-
-    let mut decoder = match AudioDecoder::open(&mp3_path).build() {
-        Ok(d) => d,
-        Err(e) => {
-            println!("Skipping: decoder unavailable: {e}");
-            return;
-        }
-    };
-
-    let info = decoder.stream_info();
-    let sample_rate = info.sample_rate();
-    let channels = info.channels();
-
+fn synthetic_pcm_to_aac_should_produce_valid_output() {
     let output = test_output_path("transcode_mp3_to_aac.m4a");
     let _guard = FileGuard::new(output.clone());
 
     let mut encoder = match AudioEncoder::create(&output)
-        .audio(sample_rate, channels)
+        .audio(44_100, 2)
         .audio_codec(AudioCodec::Aac)
         .build()
     {
@@ -160,19 +163,11 @@ fn mp3_to_aac_transcode_should_succeed() {
         }
     };
 
-    loop {
-        match decoder.decode_one() {
-            Ok(Some(frame)) => encoder.push(&frame).expect("Failed to push frame"),
-            Ok(None) => break,
-            Err(e) => panic!("Decode error: {e}"),
-        }
-    }
+    push_synthetic_audio(&mut encoder, 44_100, 2, 50, 1024);
 
     match encoder.finish() {
         Ok(()) => {}
         Err(e) => {
-            // Some platforms / FFmpeg builds produce NaN/Inf when decoding this
-            // MP3 file, which can cause the AAC encoder to fail during flush.
             println!("Skipping: {e}");
             return;
         }
@@ -181,26 +176,12 @@ fn mp3_to_aac_transcode_should_succeed() {
 }
 
 #[test]
-fn mp3_to_flac_transcode_should_succeed() {
-    let mp3_path = test_mp3_path();
-
-    let mut decoder = match AudioDecoder::open(&mp3_path).build() {
-        Ok(d) => d,
-        Err(e) => {
-            println!("Skipping: decoder unavailable: {e}");
-            return;
-        }
-    };
-
-    let info = decoder.stream_info();
-    let sample_rate = info.sample_rate();
-    let channels = info.channels();
-
+fn synthetic_pcm_to_flac_should_produce_valid_output() {
     let output = test_output_path("transcode_mp3_to_flac.flac");
     let _guard = FileGuard::new(output.clone());
 
     let mut encoder = match AudioEncoder::create(&output)
-        .audio(sample_rate, channels)
+        .audio(44_100, 2)
         .audio_codec(AudioCodec::Flac)
         .build()
     {
@@ -211,14 +192,7 @@ fn mp3_to_flac_transcode_should_succeed() {
         }
     };
 
-    loop {
-        match decoder.decode_one() {
-            Ok(Some(frame)) => encoder.push(&frame).expect("Failed to push frame"),
-            Ok(None) => break,
-            Err(e) => panic!("Decode error: {e}"),
-        }
-    }
-
+    push_synthetic_audio(&mut encoder, 44_100, 2, 50, 1024);
     encoder.finish().expect("Failed to finish encoding");
     assert_valid_output_file(&output);
 }
