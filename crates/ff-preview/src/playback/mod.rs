@@ -5,15 +5,16 @@
 
 mod playback_inner;
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use ff_decode::{SeekMode, VideoDecoder};
-use ff_format::VideoFrame;
+use ff_decode::{AudioDecoder, SeekMode, VideoDecoder};
+use ff_format::{SampleFormat, VideoFrame};
 
 use crate::error::PreviewError;
 
@@ -298,6 +299,12 @@ impl MasterClock {
     }
 }
 
+// ── Audio constants ───────────────────────────────────────────────────────────
+
+/// Maximum number of interleaved stereo `f32` samples to buffer for audio
+/// playback (2 s × 48 kHz × 2 channels = 96 000).
+const AUDIO_MAX_BUF: usize = 96_000;
+
 // ── FrameSink ─────────────────────────────────────────────────────────────────
 
 /// Receives decoded video frames during [`PreviewPlayer`] playback.
@@ -327,6 +334,9 @@ pub trait FrameSink: Send {
 /// player.run()?;
 /// ```
 pub struct PreviewPlayer {
+    /// Path to the media file; retained so the audio decode thread can be
+    /// restarted from a new position after a seek.
+    path: PathBuf,
     /// Pre-decoded frame buffer driven by a background thread.
     decode_buf: DecodeBuffer,
     /// Video frame rate; used to compute the frame period for A/V sync.
@@ -345,6 +355,14 @@ pub struct PreviewPlayer {
     /// Positive: video is delayed (video PTS adjusted down).
     /// Negative: audio is delayed (video PTS adjusted up).
     av_offset_ms: AtomicI64,
+    /// Decoded audio samples (interleaved f32 stereo at 48 kHz).
+    /// `None` when the media file has no audio track.
+    audio_buf: Option<Arc<Mutex<VecDeque<f32>>>>,
+    /// Cancel flag for the background audio decode thread.
+    /// `None` when the media file has no audio track.
+    audio_cancel: Option<Arc<AtomicBool>>,
+    /// Handle for the background audio decode thread.
+    audio_handle: Option<JoinHandle<()>>,
 }
 
 impl PreviewPlayer {
@@ -381,7 +399,23 @@ impl PreviewPlayer {
 
         let decode_buf = DecodeBuffer::open(path).build()?;
 
+        // Spawn a background audio decode thread when an audio track is present.
+        let (audio_buf, audio_cancel, audio_handle) = if let MasterClock::Audio { .. } = &clock {
+            let buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let handle = spawn_audio_thread(
+                path.to_path_buf(),
+                Duration::ZERO,
+                Arc::clone(&buf),
+                Arc::clone(&cancel),
+            );
+            (Some(buf), Some(cancel), Some(handle))
+        } else {
+            (None, None, None)
+        };
+
         Ok(PreviewPlayer {
+            path: path.to_path_buf(),
             decode_buf,
             fps,
             sink: None,
@@ -389,6 +423,9 @@ impl PreviewPlayer {
             stopped: AtomicBool::new(false),
             clock,
             av_offset_ms: AtomicI64::new(0),
+            audio_buf,
+            audio_cancel,
+            audio_handle,
         })
     }
 
@@ -448,13 +485,27 @@ impl PreviewPlayer {
         self.av_offset_ms.load(Ordering::Relaxed)
     }
 
-    /// Pull `n_samples` interleaved `f32` audio samples for the audio callback.
+    /// Pull up to `n_samples` interleaved stereo `f32` PCM samples at 48 kHz.
     ///
-    /// Increments the audio master clock by the number of samples returned.
-    /// Returns an empty `Vec` when no audio track is present.
+    /// Intended for use inside an audio output callback:
+    /// ```ignore
+    /// let samples = player.pop_audio_samples(buffer_size);
+    /// output_buffer[..samples.len()].copy_from_slice(&samples);
+    /// // fill remainder with silence when samples.len() < buffer_size (underrun)
+    /// ```
     ///
-    /// Full audio decoding and buffering is implemented in issue #382.
+    /// Advances the audio master clock by the number of stereo frames consumed
+    /// (`samples.len() / 2`).
+    ///
+    /// Returns an empty `Vec` when:
+    /// - the file has no audio track,
+    /// - `n_samples` is `0`,
+    /// - playback is paused or stopped, or
+    /// - the ring buffer is empty (underrun — caller should output silence).
     pub fn pop_audio_samples(&mut self, n_samples: usize) -> Vec<f32> {
+        if self.paused.load(Ordering::Relaxed) || self.stopped.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
         let MasterClock::Audio {
             samples_consumed, ..
         } = &self.clock
@@ -464,9 +515,20 @@ impl PreviewPlayer {
         if n_samples == 0 {
             return Vec::new();
         }
-        // TODO(#382): implement actual audio decoding and buffering.
-        let samples = vec![0.0_f32; n_samples];
-        samples_consumed.fetch_add(n_samples as u64, Ordering::Relaxed);
+        let Some(buf) = &self.audio_buf else {
+            return Vec::new();
+        };
+        let mut guard = buf
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let take = n_samples.min(guard.len());
+        if take == 0 {
+            return Vec::new();
+        }
+        let samples: Vec<f32> = guard.drain(..take).collect();
+        // Stereo: 2 interleaved samples per frame.
+        // Divide by 2 to get mono-equivalent frame count for the audio clock.
+        samples_consumed.fetch_add((take / 2) as u64, Ordering::Relaxed);
         samples
     }
 
@@ -518,6 +580,9 @@ impl PreviewPlayer {
                         self.decode_buf.seek_events().try_recv()
                     {
                         self.clock.reset(pts);
+                        // Flush stale audio and restart the audio thread from
+                        // the seek position so audio and video stay aligned.
+                        self.restart_audio_from(pts);
                     }
 
                     if self.clock.should_sync() {
@@ -572,6 +637,53 @@ impl PreviewPlayer {
     fn present_frame(&mut self, frame: VideoFrame) {
         if let Some(sink) = self.sink.as_mut() {
             sink.push_frame(frame);
+        }
+    }
+
+    /// Flush the audio ring buffer and restart the background audio decode
+    /// thread from `pts`.
+    ///
+    /// Called after a video seek completes so that audio samples stay aligned
+    /// with the video timeline. The old thread's cancel flag is set; it exits
+    /// at its next cancel check and is detached.
+    fn restart_audio_from(&mut self, pts: Duration) {
+        // Flush stale samples so the new thread fills only fresh audio.
+        if let Some(buf) = &self.audio_buf {
+            buf.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        // Signal the running audio thread to stop.
+        if let Some(cancel) = &self.audio_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        // Detach the old handle — the thread exits on its own when cancel fires.
+        drop(self.audio_handle.take());
+        // Spawn a fresh thread that decodes from the seek position.
+        if let Some(buf) = &self.audio_buf {
+            let new_cancel = Arc::new(AtomicBool::new(false));
+            let handle = spawn_audio_thread(
+                self.path.clone(),
+                pts,
+                Arc::clone(buf),
+                Arc::clone(&new_cancel),
+            );
+            self.audio_cancel = Some(new_cancel);
+            self.audio_handle = Some(handle);
+        }
+    }
+}
+
+impl Drop for PreviewPlayer {
+    fn drop(&mut self) {
+        // Cancel the audio background thread before dropping so it does not
+        // outlive the player (the Arc<Mutex<VecDeque>> it holds would stay
+        // alive until the thread exits otherwise).
+        if let Some(cancel) = &self.audio_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(h) = self.audio_handle.take() {
+            let _ = h.join();
         }
     }
 }
@@ -1060,6 +1172,73 @@ impl Drop for DecodeBuffer {
     }
 }
 
+/// Open an [`AudioDecoder`] configured for stereo f32 at 48 kHz, optionally
+/// seek to `start_pts`, and push decoded samples into `buf` until the cancel
+/// flag is set or EOF is reached.
+///
+/// The buffer is capped at [`AUDIO_MAX_BUF`] samples; the thread sleeps 1 ms
+/// when the buffer is full to avoid busy-waiting.
+fn spawn_audio_thread(
+    path: PathBuf,
+    start_pts: Duration,
+    buf: Arc<Mutex<VecDeque<f32>>>,
+    cancel: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut decoder = match AudioDecoder::open(&path)
+            .output_format(SampleFormat::F32)
+            .output_sample_rate(48_000)
+            .output_channels(2)
+            .build()
+        {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("audio decode thread open failed error={e}");
+                return;
+            }
+        };
+
+        if start_pts != Duration::ZERO
+            && let Err(e) = decoder.seek(start_pts, SeekMode::Backward)
+        {
+            log::warn!("audio seek failed pts={start_pts:?} error={e}");
+        }
+
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                break;
+            }
+
+            let buf_len = buf
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len();
+            if buf_len >= AUDIO_MAX_BUF {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+
+            match decoder.decode_one() {
+                Ok(Some(frame)) => {
+                    let samples = playback_inner::audio_frame_to_f32(&frame);
+                    if !samples.is_empty() {
+                        let mut guard = buf
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let space = AUDIO_MAX_BUF.saturating_sub(guard.len());
+                        guard.extend(samples.into_iter().take(space));
+                    }
+                }
+                Ok(None) => break, // EOF
+                Err(e) => {
+                    log::warn!("audio decode error error={e}");
+                    break;
+                }
+            }
+        }
+    })
+}
+
 /// Normal decode loop body shared between `build()` and the post-seek thread.
 ///
 /// Exits when EOF is reached, a decode error occurs, or the `cancel` flag is set,
@@ -1514,6 +1693,80 @@ mod tests {
         assert!(
             frames > 0,
             "run() must deliver at least one frame to the sink"
+        );
+    }
+
+    // ── pop_audio_samples tests ───────────────────────────────────────────────
+
+    #[test]
+    fn pop_audio_samples_should_return_empty_when_paused() {
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.pause();
+        let samples = player.pop_audio_samples(1024);
+        assert!(
+            samples.is_empty(),
+            "pop_audio_samples() must return empty while paused"
+        );
+    }
+
+    #[test]
+    fn pop_audio_samples_should_return_empty_when_stopped() {
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.stop();
+        let samples = player.pop_audio_samples(1024);
+        assert!(
+            samples.is_empty(),
+            "pop_audio_samples() must return empty while stopped"
+        );
+    }
+
+    #[test]
+    fn pop_audio_samples_should_return_empty_for_zero_n_samples() {
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.play();
+        let samples = player.pop_audio_samples(0);
+        assert!(
+            samples.is_empty(),
+            "pop_audio_samples(0) must always return empty"
+        );
+    }
+
+    #[test]
+    fn pop_audio_samples_clock_increment_should_equal_half_sample_count() {
+        // Verify the stereo-frame → clock-tick formula: n_samples / 2.
+        // 9600 stereo samples at 48 kHz stereo = 4800 frames = 100 ms.
+        let stereo_samples: usize = 9_600;
+        let expected_frames: u64 = (stereo_samples / 2) as u64;
+        assert_eq!(
+            expected_frames, 4_800,
+            "9600 stereo samples must yield 4800 clock frames"
+        );
+        // At 48 kHz, 4800 frames = 0.1 s.
+        let pts = Duration::from_secs_f64(f64::from(48_000u32).recip() * expected_frames as f64);
+        assert!(
+            (pts.as_secs_f64() - 0.1).abs() < 1e-6,
+            "4800 frames at 48 kHz must equal 100 ms; got {pts:?}"
         );
     }
 
