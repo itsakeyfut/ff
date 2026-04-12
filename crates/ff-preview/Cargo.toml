@@ -1,0 +1,32 @@
+[package]
+name = "ff-preview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Real-time video/audio preview and proxy workflow"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "audio", "ffmpeg", "preview", "playback"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+ff-decode   = { workspace = true }
+ff-format   = { workspace = true }
+ff-sys      = { workspace = true }
+thiserror   = { workspace = true }
+log         = { workspace = true }
+tokio       = { version = "1.50.0", features = ["rt", "sync"], optional = true }
+ff-encode   = { workspace = true, optional = true }
+ff-pipeline = { workspace = true, optional = true }
+
+[features]
+default = []
+tokio   = ["dep:tokio"]
+proxy   = ["dep:ff-encode", "dep:ff-pipeline"]
+
+[lints]
+workspace = true

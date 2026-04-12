@@ -289,6 +289,14 @@ pub use ff_stream::{
 #[cfg(all(feature = "stream", feature = "srt"))]
 pub use ff_stream::SrtOutput;
 
+// ── preview feature ───────────────────────────────────────────────────────────
+//
+// Single-file real-time playback with frame-accurate seek and A/V sync.
+// Enable the `preview` feature to access `PreviewPlayer`, `PlaybackClock`,
+// and (with the `proxy` sub-feature on `ff-preview`) `ProxyGenerator`.
+#[cfg(feature = "preview")]
+pub use ff_preview::{PlaybackClock, PreviewError, PreviewPlayer};
+
 #[cfg(test)]
 mod tests {
     use super::*;

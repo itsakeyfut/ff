@@ -21,6 +21,7 @@ ff-encode   = { path = "crates/ff-encode",   version = "0.12.0" }
 ff-filter   = { path = "crates/ff-filter",   version = "0.12.0" }
 ff-pipeline = { path = "crates/ff-pipeline", version = "0.12.0" }
 ff-stream   = { path = "crates/ff-stream",   version = "0.12.0" }
+ff-preview  = { path = "crates/ff-preview", version = "0.12.0" }
 avio        = { path = "crates/avio",        version = "0.12.0" }
 
 # Error handling
