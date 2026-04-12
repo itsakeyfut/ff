@@ -843,14 +843,15 @@ impl DecodeBuffer {
                         };
                         if pts >= target_pts {
                             let first_pts = pts;
+                            // Send the event BEFORE pushing the frame so that
+                            // when pop_frame() wakes up the event is already in
+                            // the seek_events channel (avoids a try_recv race).
+                            let _ = seek_event_tx.send(SeekEvent::Completed { pts: first_pts });
                             if new_tx.send(frame).is_ok() {
                                 buffered.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 return decoder; // receiver dropped
                             }
-                            // Notify the caller that the seek has completed.
-                            // Ignore SendError if the receiver was dropped.
-                            let _ = seek_event_tx.send(SeekEvent::Completed { pts: first_pts });
                             break;
                         }
                         // Frame before target — discard.
