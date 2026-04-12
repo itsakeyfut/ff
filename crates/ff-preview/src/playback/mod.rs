@@ -247,6 +247,26 @@ impl Default for PlaybackClock {
 /// ```
 pub struct PreviewPlayer;
 
+// ── FrameResult ───────────────────────────────────────────────────────────────
+
+/// The result of a [`DecodeBuffer::pop_frame`] call.
+///
+/// Callers should match on all three variants; discarding `Seeking` is a
+/// common pattern for scrub-bar UIs that want to display the last good frame
+/// while a seek is in progress.
+#[derive(Debug, Clone)]
+pub enum FrameResult {
+    /// A decoded frame ready for presentation.
+    Frame(VideoFrame),
+    /// A seek is in progress; the wrapped value is the last successfully
+    /// decoded frame, or `None` if no frame has been decoded yet.
+    /// Call [`pop_frame`](DecodeBuffer::pop_frame) again after a short delay
+    /// to check whether seeking has completed.
+    Seeking(Option<VideoFrame>),
+    /// End of file — no more frames will be produced.
+    Eof,
+}
+
 // ── DecodeBuffer ──────────────────────────────────────────────────────────────
 
 /// Default ring buffer capacity for [`DecodeBuffer`] (frames).
@@ -308,6 +328,8 @@ impl DecodeBufferBuilder {
             handle: Some(handle),
             cancel,
             capacity: self.capacity,
+            seeking: Arc::new(AtomicBool::new(false)),
+            last_good_frame: None,
         })
     }
 }
@@ -351,6 +373,11 @@ pub struct DecodeBuffer {
     cancel: Arc<AtomicBool>,
     /// Channel capacity; needed by `seek()` to create a replacement channel.
     capacity: usize,
+    /// Set to `true` while an async seek is in progress.
+    seeking: Arc<AtomicBool>,
+    /// The last frame returned by `pop_frame`; replayed as a placeholder
+    /// while `seeking` is true.
+    last_good_frame: Option<VideoFrame>,
 }
 
 impl DecodeBuffer {
@@ -368,14 +395,25 @@ impl DecodeBuffer {
 
     /// Pop the next decoded frame.
     ///
-    /// Blocks until a frame is available in the buffer or the background thread
-    /// reaches end of file (EOF). Returns `None` at EOF.
-    pub fn pop_frame(&mut self) -> Option<VideoFrame> {
-        let frame = self.rx.as_ref()?.recv().ok();
-        if frame.is_some() {
-            self.buffered.fetch_sub(1, Ordering::Relaxed);
+    /// - Returns [`FrameResult::Seeking`] immediately (non-blocking) while a
+    ///   [`seek_async`](Self::seek_async) is in progress.
+    /// - Returns [`FrameResult::Frame`] when a frame is available; blocks until
+    ///   the background thread produces one.
+    /// - Returns [`FrameResult::Eof`] when the background thread reaches end of
+    ///   file or the channel is disconnected.
+    #[must_use]
+    pub fn pop_frame(&mut self) -> FrameResult {
+        if self.seeking.load(Ordering::Acquire) {
+            return FrameResult::Seeking(self.last_good_frame.clone());
         }
-        frame
+        match self.rx.as_ref().and_then(|rx| rx.recv().ok()) {
+            Some(frame) => {
+                self.buffered.fetch_sub(1, Ordering::Relaxed);
+                self.last_good_frame = Some(frame.clone());
+                FrameResult::Frame(frame)
+            }
+            None => FrameResult::Eof,
+        }
     }
 
     /// Returns an approximation of the number of decoded frames currently
@@ -473,6 +511,114 @@ impl DecodeBuffer {
         }));
 
         Ok(())
+    }
+
+    /// Initiate a frame-accurate seek on a background thread and return immediately.
+    ///
+    /// While seeking is in progress, [`pop_frame`](Self::pop_frame) returns
+    /// [`FrameResult::Seeking`] with the last successfully decoded frame as a
+    /// placeholder. Normal [`FrameResult::Frame`] values resume once the seek
+    /// completes.
+    ///
+    /// The seek uses the same frame-accurate strategy as [`seek`](Self::seek):
+    /// `FFmpeg` jumps to the nearest preceding I-frame, then frames before
+    /// `target_pts` are discarded before the first frame is made available.
+    ///
+    /// If called again before the previous seek completes, the new seek
+    /// supersedes the old one; the old worker exits at the next cancel check.
+    ///
+    /// # Panics
+    ///
+    /// Panics (inside the background worker thread) if the previous decode
+    /// thread panicked — an internal bug that should never occur in practice.
+    pub fn seek_async(&mut self, target_pts: Duration) {
+        log::debug!("async seek started target_pts={target_pts:?}");
+
+        self.seeking.store(true, Ordering::Release);
+        self.cancel.store(true, Ordering::Release);
+
+        if let Some(rx) = &self.rx {
+            while rx.try_recv().is_ok() {
+                self.buffered.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+
+        let old_handle = self.handle.take();
+        drop(self.rx.take());
+
+        let (new_tx, new_rx) = sync_channel(self.capacity);
+        self.rx = Some(new_rx);
+
+        let buffered = Arc::clone(&self.buffered);
+        let cancel = Arc::clone(&self.cancel);
+        let seeking = Arc::clone(&self.seeking);
+
+        let worker = thread::spawn(move || -> VideoDecoder {
+            // Recover the decoder from the old thread. In normal operation the
+            // decode thread never panics so this always succeeds.
+            let Some(mut decoder) = old_handle.and_then(|h| h.join().ok()) else {
+                log::warn!(
+                    "seek_async: failed to recover decoder \
+                     target_pts={target_pts:?}"
+                );
+                if !cancel.load(Ordering::Acquire) {
+                    seeking.store(false, Ordering::Release);
+                }
+                // Unreachable: the decode thread never panics in normal operation.
+                unreachable!("seek_async: decode thread panicked; cannot recover decoder");
+            };
+
+            if let Err(e) = decoder.seek(target_pts, SeekMode::Backward) {
+                log::warn!("seek_async seek failed target_pts={target_pts:?} error={e}");
+                if !cancel.load(Ordering::Acquire) {
+                    seeking.store(false, Ordering::Release);
+                }
+                return decoder;
+            }
+
+            buffered.store(0, Ordering::Relaxed);
+            cancel.store(false, Ordering::Release);
+            // Mark seek as complete so pop_frame() transitions to blocking
+            // recv(). Only clear if no newer seek_async has superseded us.
+            if !cancel.load(Ordering::Acquire) {
+                seeking.store(false, Ordering::Release);
+            }
+
+            // Forward-decode discard: skip frames before target_pts.
+            loop {
+                if cancel.load(Ordering::Acquire) {
+                    return decoder;
+                }
+                match decoder.decode_one() {
+                    Ok(Some(frame)) => {
+                        let pts = if frame.timestamp().is_valid() {
+                            frame.timestamp().as_duration()
+                        } else {
+                            Duration::ZERO
+                        };
+                        if pts >= target_pts {
+                            if new_tx.send(frame).is_ok() {
+                                buffered.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                return decoder; // receiver dropped
+                            }
+                            break;
+                        }
+                        // Frame before target — discard.
+                    }
+                    Ok(None) => return decoder, // EOF before target
+                    Err(e) => {
+                        log::warn!("seek_async discard error error={e}");
+                        return decoder;
+                    }
+                }
+            }
+
+            decode_loop(&mut decoder, &new_tx, &buffered, &cancel);
+            decoder
+        });
+
+        self.handle = Some(worker);
     }
 
     /// Shared helper for `seek` and `seek_coarse`.
@@ -888,8 +1034,8 @@ mod tests {
         };
         // Pop at least one frame to confirm the decoder is running.
         assert!(
-            buf.pop_frame().is_some(),
-            "pop_frame() must return Some for a valid video file"
+            matches!(buf.pop_frame(), FrameResult::Frame(_)),
+            "pop_frame() must return Frame for a valid video file"
         );
     }
 
@@ -906,7 +1052,7 @@ mod tests {
 
         // Consume a few frames to advance past the start.
         for _ in 0..5 {
-            if buf.pop_frame().is_none() {
+            if matches!(buf.pop_frame(), FrameResult::Eof) {
                 println!("skipping: EOF before seek target");
                 return;
             }
@@ -923,8 +1069,8 @@ mod tests {
 
         // After seek, the first frame's PTS must be at or near the target.
         let frame = match buf.pop_frame() {
-            Some(f) => f,
-            None => {
+            FrameResult::Frame(f) => f,
+            FrameResult::Eof | FrameResult::Seeking(_) => {
                 println!("skipping: no frame after seek");
                 return;
             }
@@ -949,5 +1095,48 @@ mod tests {
             result.is_err(),
             "build() must fail for non-existent file (precondition for seek error path)"
         );
+    }
+
+    #[test]
+    fn seek_async_should_deliver_frames_after_completion() {
+        let path = test_video_path();
+        let mut buf = match DecodeBuffer::open(&path).capacity(4).build() {
+            Ok(buf) => buf,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        // Pop one frame to establish last_good_frame.
+        match buf.pop_frame() {
+            FrameResult::Frame(_) => {}
+            _ => {
+                println!("skipping: no initial frame available");
+                return;
+            }
+        }
+
+        let seek_target = Duration::from_secs(1);
+        buf.seek_async(seek_target);
+
+        // Poll until a Frame arrives (seek complete) or we time out.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match buf.pop_frame() {
+                FrameResult::Frame(_) => break, // seek completed successfully
+                FrameResult::Seeking(_) => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                FrameResult::Eof => {
+                    println!("skipping: EOF reached during seek_async test");
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "seek_async: timed out waiting for seek to complete"
+            );
+        }
     }
 }

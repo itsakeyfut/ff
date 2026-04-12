@@ -296,7 +296,7 @@ pub use ff_stream::SrtOutput;
 // and (with the `proxy` sub-feature on `ff-preview`) `ProxyGenerator`.
 #[cfg(feature = "preview")]
 pub use ff_preview::{
-    DecodeBuffer, DecodeBufferBuilder, PlaybackClock, PreviewError, PreviewPlayer,
+    DecodeBuffer, DecodeBufferBuilder, FrameResult, PlaybackClock, PreviewError, PreviewPlayer,
 };
 
 #[cfg(test)]

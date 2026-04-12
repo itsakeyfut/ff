@@ -33,7 +33,7 @@ pub mod playback;
 pub mod proxy;
 
 pub use error::PreviewError;
-pub use playback::{DecodeBuffer, DecodeBufferBuilder, PlaybackClock, PreviewPlayer};
+pub use playback::{DecodeBuffer, DecodeBufferBuilder, FrameResult, PlaybackClock, PreviewPlayer};
 
 #[cfg(feature = "proxy")]
 pub use proxy::ProxyGenerator;
