@@ -47,6 +47,10 @@ pub enum PreviewError {
         message: String,
     },
 
+    /// A probe error while analysing the media file.
+    #[error("probe failed: {0}")]
+    Probe(#[from] ff_probe::ProbeError),
+
     /// An I/O error during file operations.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
