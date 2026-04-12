@@ -13,6 +13,14 @@ use super::{Easing, Keyframe, Lerp};
 /// `value_at` panics if the track is empty.  Always push at least one keyframe
 /// before querying.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(
+        serialize = "T: serde::Serialize",
+        deserialize = "T: serde::Deserialize<'de>",
+    ))
+)]
 pub struct AnimationTrack<T: Lerp> {
     keyframes: Vec<Keyframe<T>>,
 }

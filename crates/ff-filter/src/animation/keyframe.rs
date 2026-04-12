@@ -16,6 +16,14 @@ use super::{Easing, Lerp};
 /// — this keeps binary-search by timestamp correct inside
 /// `AnimationTrack` (added in issue #350).
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(
+        serialize = "T: serde::Serialize",
+        deserialize = "T: serde::Deserialize<'de>",
+    ))
+)]
 pub struct Keyframe<T: Lerp> {
     /// Position of this keyframe on the timeline.
     pub timestamp: Duration,
