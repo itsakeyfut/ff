@@ -47,6 +47,7 @@ impl FilterGraphBuilder {
                 node_name,
                 param: "sigma",
                 track: track.clone(),
+                suffix: "",
             });
         }
         self.steps.push(FilterStep::GBlurAnimated { sigma });

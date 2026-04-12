@@ -60,6 +60,7 @@ impl FilterGraphBuilder {
                 node_name: node_name.clone(),
                 param: "x",
                 track: track.clone(),
+                suffix: "",
             });
         }
         if let AnimatedValue::Track(track) = &y {
@@ -67,6 +68,7 @@ impl FilterGraphBuilder {
                 node_name: node_name.clone(),
                 param: "y",
                 track: track.clone(),
+                suffix: "",
             });
         }
         if let AnimatedValue::Track(track) = &width {
@@ -74,6 +76,7 @@ impl FilterGraphBuilder {
                 node_name: node_name.clone(),
                 param: "w",
                 track: track.clone(),
+                suffix: "",
             });
         }
         if let AnimatedValue::Track(track) = &height {
@@ -81,6 +84,7 @@ impl FilterGraphBuilder {
                 node_name: node_name.clone(),
                 param: "h",
                 track: track.clone(),
+                suffix: "",
             });
         }
         self.steps.push(FilterStep::CropAnimated {

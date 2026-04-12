@@ -48,7 +48,7 @@ impl FilterGraphInner {
 
         for entry in animations {
             let value = entry.track.value_at(t);
-            let arg_str = format!("{value:.6}");
+            let arg_str = format!("{value:.6}{}", entry.suffix);
 
             let Ok(target_cstr) = CString::new(entry.node_name.as_str()) else {
                 continue;
