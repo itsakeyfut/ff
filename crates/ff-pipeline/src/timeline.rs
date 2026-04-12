@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
@@ -243,16 +244,40 @@ impl Timeline {
         let mut encoder = enc_builder.build().map_err(PipelineError::Encode)?;
 
         // 6. Drain video graph → encoder.
+        //    tick() must be called before each pull so that animation entries
+        //    registered on the graph update the filter parameters for that frame.
         if let Some(mut vgraph) = video_graph {
-            while let Some(frame) = vgraph.pull_video().map_err(PipelineError::Filter)? {
-                encoder.push_video(&frame).map_err(PipelineError::Encode)?;
+            let mut video_idx: u32 = 0;
+            loop {
+                #[allow(clippy::cast_precision_loss)]
+                // frame index fits comfortably in f64 mantissa
+                let pts = Duration::from_secs_f64(f64::from(video_idx) / frame_rate);
+                vgraph.tick(pts);
+                match vgraph.pull_video().map_err(PipelineError::Filter)? {
+                    Some(frame) => {
+                        encoder.push_video(&frame).map_err(PipelineError::Encode)?;
+                        video_idx = video_idx.saturating_add(1);
+                    }
+                    None => break,
+                }
             }
         }
 
         // 7. Drain audio graph → encoder.
+        //    tick() advances the audio animation clock by the actual duration
+        //    of each chunk so PTS stays sample-accurate.
         if let Some(mut agraph) = audio_graph {
-            while let Some(frame) = agraph.pull_audio().map_err(PipelineError::Filter)? {
-                encoder.push_audio(&frame).map_err(PipelineError::Encode)?;
+            let mut audio_pts = Duration::ZERO;
+            loop {
+                agraph.tick(audio_pts);
+                match agraph.pull_audio().map_err(PipelineError::Filter)? {
+                    Some(frame) => {
+                        let chunk_dur = frame.duration();
+                        encoder.push_audio(&frame).map_err(PipelineError::Encode)?;
+                        audio_pts += chunk_dur;
+                    }
+                    None => break,
+                }
             }
         }
 
