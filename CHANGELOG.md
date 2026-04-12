@@ -11,6 +11,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-04-12
+
+### Added
+
+#### ff-filter — keyframe animation types
+- `Keyframe<T>` — timestamp + value + per-segment easing, ordered by timestamp ([#349](https://github.com/itsakeyfut/avio/issues/349))
+- `AnimationTrack<T>` — sorted keyframe storage with `value_at(Duration)` interpolation ([#350](https://github.com/itsakeyfut/avio/issues/350))
+- `Lerp` trait implementations for `(f64, f64)` and `(f64, f64, f64)` tuple types ([#351](https://github.com/itsakeyfut/avio/issues/351))
+- `AnimationTrack::<f64>::fade()` — two-keyframe convenience constructor for volume fades, opacity ramps, and position sweeps ([#362](https://github.com/itsakeyfut/avio/issues/362))
+- `AnimatedValue<T>` — enum wrapping either a static `f64` or a live `AnimationTrack<f64>` ([#358](https://github.com/itsakeyfut/avio/issues/358))
+
+#### ff-filter — easing modes
+- `Easing::Hold` — step (snap-at-boundary) interpolation ([#352](https://github.com/itsakeyfut/avio/issues/352))
+- `Easing::Linear` — linear interpolation ([#353](https://github.com/itsakeyfut/avio/issues/353))
+- `Easing::EaseIn` — cubic ease-in (t³) ([#354](https://github.com/itsakeyfut/avio/issues/354))
+- `Easing::EaseOut` — cubic ease-out (1−(1−t)³) ([#355](https://github.com/itsakeyfut/avio/issues/355))
+- `Easing::EaseInOut` — cubic ease-in-out (smoothstep 3t²−2t³) ([#356](https://github.com/itsakeyfut/avio/issues/356))
+- `Easing::Bezier { p1, p2 }` — CSS cubic-bezier via Newton-Raphson root finding ([#357](https://github.com/itsakeyfut/avio/issues/357))
+
+#### ff-filter — animated filter parameters
+- `VideoLayer` fields `x`, `y`, `scale_x`, `scale_y`, `rotation`, `opacity` replaced with `AnimatedValue<f64>` ([#358](https://github.com/itsakeyfut/avio/issues/358))
+- `FilterGraphBuilder::crop_animated()` and `gblur_animated()` — animated crop rectangle and blur radius ([#359](https://github.com/itsakeyfut/avio/issues/359))
+- `FilterGraphBuilder::eq_animated()` and `colorbalance_animated()` — animated brightness, contrast, saturation, and lift/gamma/gain ([#360](https://github.com/itsakeyfut/avio/issues/360))
+- `AudioTrack` fields `volume` and `pan` replaced with `AnimatedValue<f64>` ([#361](https://github.com/itsakeyfut/avio/issues/361))
+- `FilterGraph::tick(t: Duration)` — applies all registered `AnimationEntry` values at time `t` via `avfilter_graph_send_command`; call before each `pull_video` / `pull_audio` on source-only graphs ([#363](https://github.com/itsakeyfut/avio/issues/363))
+- `AnimationEntry::suffix` field — appends a unit string (e.g. `"dB"`) to the formatted value sent to FFmpeg, required for filters whose options accept expression strings ([#363](https://github.com/itsakeyfut/avio/issues/363))
+
+#### ff-pipeline — Timeline animation
+- `TimelineBuilder::video_animation()` and `audio_animation()` — attach `AnimationTrack<f64>` keyed by `"video_{idx}_{prop}"` / `"audio_{idx}_{prop}"` ([#364](https://github.com/itsakeyfut/avio/issues/364))
+- `Timeline::render()` now calls `tick(pts)` before every `pull_video` and `pull_audio`, activating all registered animation tracks during render ([#968](https://github.com/itsakeyfut/avio/issues/968))
+
+#### ff-filter — serde
+- Optional `serde` feature flag: `Serialize` / `Deserialize` for `Keyframe<T>`, `AnimationTrack<T>`, `AnimatedValue<T>`, and all six `Easing` variants ([#365](https://github.com/itsakeyfut/avio/issues/365))
+
+### Fixed
+
+- `Timeline::render()` never called `FilterGraph::tick()` — all animation tracks passed via `video_animation` / `audio_animation` were silently ignored; every frame rendered with t=0 parameter values ([#968](https://github.com/itsakeyfut/avio/issues/968))
+- Animated `volume` filter sent plain float values (e.g. `"-60.000000"`) instead of dB-suffixed expressions (e.g. `"-60.000000dB"`), causing incorrect gain interpretation ([#363](https://github.com/itsakeyfut/avio/issues/363))
+- Animated overlay opacity required `format=yuva420p` conversion and `overlay format=auto` to correctly read the alpha plane ([#358](https://github.com/itsakeyfut/avio/issues/358))
+- `avfilter_graph_send_command` declared via local `extern` block for cross-platform compatibility (Windows MSVC linkage) ([#363](https://github.com/itsakeyfut/avio/issues/363))
+
+### Tests
+
+- Frame-accurate unit tests for all six `Easing` modes including Bezier Newton-Raphson convergence ([#366](https://github.com/itsakeyfut/avio/issues/366))
+- Integration test: Bezier-eased x-position animation verified against a standalone reference curve within ±2 px per frame ([#367](https://github.com/itsakeyfut/avio/issues/367))
+- Integration test: animated opacity fade darkens composite output over 30 frames ([#966](https://github.com/itsakeyfut/avio/pull/966))
+- Integration test: volume automation increases audio RMS amplitude from near-silence to full level ([#966](https://github.com/itsakeyfut/avio/pull/966))
+- Integration test: `Timeline` with a volume fade track encodes without error ([#967](https://github.com/itsakeyfut/avio/pull/967))
+
+---
+
 ## [0.11.0] - 2026-04-10
 
 ### Added
