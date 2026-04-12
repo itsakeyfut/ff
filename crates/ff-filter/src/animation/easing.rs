@@ -211,4 +211,241 @@ mod tests {
             "expected 1.0 at t=1.5, got {u2}"
         );
     }
+
+    // ── Full-track easing tests (issue #366) ─────────────────────────────────
+    //
+    // Each test builds a two-keyframe AnimationTrack<f64>:
+    //   keyframe 0: t=0 s  → value 0.0  (with the easing under test)
+    //   keyframe 1: t=1 s  → value 1.0  (easing unused — no subsequent keyframe)
+    // and asserts value_at at 0 %, 25 %, 50 %, 75 %, and 100 % of the interval.
+    // All assertions use ±0.001 tolerance to be frame-accurate without brittleness.
+
+    fn track_with_easing(easing: Easing) -> AnimationTrack<f64> {
+        AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0_f64, easing))
+            .push(Keyframe::new(
+                Duration::from_secs(1),
+                1.0_f64,
+                Easing::Linear,
+            ))
+    }
+
+    #[test]
+    fn hold_easing_should_hold_at_start_value() {
+        let track = track_with_easing(Easing::Hold);
+
+        // At t=0 s the value is 0.0 (before first interval starts being consumed).
+        let v0 = track.value_at(Duration::ZERO);
+        assert!((v0 - 0.0).abs() < 0.001, "t=0: expected 0.0, got {v0}");
+
+        // At 25 %, 50 %, 75 % the Hold easing keeps the value at 0.0.
+        let v25 = track.value_at(Duration::from_millis(250));
+        assert!(
+            (v25 - 0.0).abs() < 0.001,
+            "t=250ms: expected 0.0, got {v25}"
+        );
+
+        let v50 = track.value_at(Duration::from_millis(500));
+        assert!(
+            (v50 - 0.0).abs() < 0.001,
+            "t=500ms: expected 0.0, got {v50}"
+        );
+
+        let v75 = track.value_at(Duration::from_millis(750));
+        assert!(
+            (v75 - 0.0).abs() < 0.001,
+            "t=750ms: expected 0.0, got {v75}"
+        );
+
+        // At t=1 s the AnimationTrack "after last keyframe" branch returns 1.0.
+        let v100 = track.value_at(Duration::from_secs(1));
+        assert!((v100 - 1.0).abs() < 0.001, "t=1s: expected 1.0, got {v100}");
+    }
+
+    #[test]
+    fn linear_easing_should_interpolate_uniformly() {
+        let track = track_with_easing(Easing::Linear);
+
+        let v0 = track.value_at(Duration::ZERO);
+        assert!((v0 - 0.0).abs() < 0.001, "t=0: expected 0.0, got {v0}");
+
+        let v25 = track.value_at(Duration::from_millis(250));
+        assert!(
+            (v25 - 0.25).abs() < 0.001,
+            "t=250ms: expected 0.25, got {v25}"
+        );
+
+        let v50 = track.value_at(Duration::from_millis(500));
+        assert!(
+            (v50 - 0.5).abs() < 0.001,
+            "t=500ms: expected 0.5, got {v50}"
+        );
+
+        let v75 = track.value_at(Duration::from_millis(750));
+        assert!(
+            (v75 - 0.75).abs() < 0.001,
+            "t=750ms: expected 0.75, got {v75}"
+        );
+
+        let v100 = track.value_at(Duration::from_secs(1));
+        assert!((v100 - 1.0).abs() < 0.001, "t=1s: expected 1.0, got {v100}");
+    }
+
+    #[test]
+    fn ease_in_should_be_slow_at_start() {
+        // EaseIn: y = t³ — slow start, accelerates toward the end.
+        let track = track_with_easing(Easing::EaseIn);
+
+        let v0 = track.value_at(Duration::ZERO);
+        assert!((v0 - 0.0).abs() < 0.001, "t=0: expected 0.0, got {v0}");
+
+        // At 25 % (t=0.25): 0.25³ ≈ 0.015625 — well below linear 0.25.
+        let v25 = track.value_at(Duration::from_millis(250));
+        assert!(
+            (v25 - 0.015_625).abs() < 0.001,
+            "t=250ms: expected ~0.016, got {v25}"
+        );
+        assert!(
+            v25 < 0.25,
+            "ease-in at 25% must be below linear ({v25} >= 0.25)"
+        );
+
+        // At 50 % (t=0.5): 0.5³ = 0.125 — below linear 0.5.
+        let v50 = track.value_at(Duration::from_millis(500));
+        assert!(
+            (v50 - 0.125).abs() < 0.001,
+            "t=500ms: expected 0.125, got {v50}"
+        );
+        assert!(
+            v50 < 0.5,
+            "ease-in at 50% must be below linear ({v50} >= 0.5)"
+        );
+
+        // At 75 % (t=0.75): 0.75³ ≈ 0.421875 — below linear 0.75.
+        let v75 = track.value_at(Duration::from_millis(750));
+        assert!(
+            (v75 - 0.421_875).abs() < 0.001,
+            "t=750ms: expected ~0.422, got {v75}"
+        );
+        assert!(
+            v75 < 0.75,
+            "ease-in at 75% must be below linear ({v75} >= 0.75)"
+        );
+
+        let v100 = track.value_at(Duration::from_secs(1));
+        assert!((v100 - 1.0).abs() < 0.001, "t=1s: expected 1.0, got {v100}");
+    }
+
+    #[test]
+    fn ease_out_should_be_fast_at_start() {
+        // EaseOut: y = 1 − (1−t)³ — fast start, decelerates toward the end.
+        let track = track_with_easing(Easing::EaseOut);
+
+        let v0 = track.value_at(Duration::ZERO);
+        assert!((v0 - 0.0).abs() < 0.001, "t=0: expected 0.0, got {v0}");
+
+        // At 25 %: 1−(0.75)³ ≈ 0.578125 — well above linear 0.25.
+        let v25 = track.value_at(Duration::from_millis(250));
+        assert!(
+            (v25 - 0.578_125).abs() < 0.001,
+            "t=250ms: expected ~0.578, got {v25}"
+        );
+        assert!(
+            v25 > 0.25,
+            "ease-out at 25% must be above linear ({v25} <= 0.25)"
+        );
+
+        // At 50 %: 1−(0.5)³ = 0.875 — above linear 0.5.
+        let v50 = track.value_at(Duration::from_millis(500));
+        assert!(
+            (v50 - 0.875).abs() < 0.001,
+            "t=500ms: expected 0.875, got {v50}"
+        );
+        assert!(
+            v50 > 0.5,
+            "ease-out at 50% must be above linear ({v50} <= 0.5)"
+        );
+
+        // At 75 %: 1−(0.25)³ ≈ 0.984375 — above linear 0.75.
+        let v75 = track.value_at(Duration::from_millis(750));
+        assert!(
+            (v75 - 0.984_375).abs() < 0.001,
+            "t=750ms: expected ~0.984, got {v75}"
+        );
+        assert!(
+            v75 > 0.75,
+            "ease-out at 75% must be above linear ({v75} <= 0.75)"
+        );
+
+        let v100 = track.value_at(Duration::from_secs(1));
+        assert!((v100 - 1.0).abs() < 0.001, "t=1s: expected 1.0, got {v100}");
+    }
+
+    #[test]
+    fn ease_in_out_should_be_symmetric_at_midpoint() {
+        // EaseInOut: y = 3t² − 2t³ — slow at both ends, fast in the middle.
+        let track = track_with_easing(Easing::EaseInOut);
+
+        let v0 = track.value_at(Duration::ZERO);
+        assert!((v0 - 0.0).abs() < 0.001, "t=0: expected 0.0, got {v0}");
+
+        // At 25 %: 3(0.25)²−2(0.25)³ = 0.15625 — below linear (slow start).
+        let v25 = track.value_at(Duration::from_millis(250));
+        assert!(
+            (v25 - 0.15625).abs() < 0.001,
+            "t=250ms: expected ~0.156, got {v25}"
+        );
+        assert!(
+            v25 < 0.25,
+            "ease-in-out at 25% must be below linear ({v25} >= 0.25)"
+        );
+
+        // At 50 % the function is symmetric: 3(0.5)²−2(0.5)³ = 0.5.
+        let v50 = track.value_at(Duration::from_millis(500));
+        assert!(
+            (v50 - 0.5).abs() < 0.001,
+            "t=500ms: expected 0.5, got {v50}"
+        );
+
+        // At 75 %: 3(0.75)²−2(0.75)³ = 0.84375 — above linear (slow end).
+        let v75 = track.value_at(Duration::from_millis(750));
+        assert!(
+            (v75 - 0.84375).abs() < 0.001,
+            "t=750ms: expected ~0.844, got {v75}"
+        );
+        assert!(
+            v75 > 0.75,
+            "ease-in-out at 75% must be above linear ({v75} <= 0.75)"
+        );
+
+        let v100 = track.value_at(Duration::from_secs(1));
+        assert!((v100 - 1.0).abs() < 0.001, "t=1s: expected 1.0, got {v100}");
+    }
+
+    #[test]
+    fn bezier_ease_preset_should_match_css_reference() {
+        // CSS `ease` = cubic-bezier(0.25, 0.1, 0.25, 1.0).
+        // Reference value at t=0.5 from the CSS spec: ≈ 0.8029.
+        let track = track_with_easing(Easing::Bezier {
+            p1: (0.25, 0.1),
+            p2: (0.25, 1.0),
+        });
+
+        let v0 = track.value_at(Duration::ZERO);
+        assert!((v0 - 0.0).abs() < 0.001, "t=0: expected 0.0, got {v0}");
+
+        // At 50 % the CSS `ease` curve produces ≈ 0.8029 (fast initially).
+        let v50 = track.value_at(Duration::from_millis(500));
+        assert!(
+            (v50 - 0.8029_f64).abs() < 0.01,
+            "t=500ms: expected ~0.803 (CSS ease midpoint), got {v50}"
+        );
+        assert!(
+            v50 > 0.5,
+            "CSS ease at 50% must be above linear ({v50} <= 0.5)"
+        );
+
+        let v100 = track.value_at(Duration::from_secs(1));
+        assert!((v100 - 1.0).abs() < 0.001, "t=1s: expected 1.0, got {v100}");
+    }
 }
