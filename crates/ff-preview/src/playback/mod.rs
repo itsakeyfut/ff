@@ -1,7 +1,7 @@
 //! Real-time playback types for ff-preview.
 //!
 //! This module exposes the primary public API for single-file video/audio
-//! playback. All `unsafe` `FFmpeg` calls are isolated in [`playback_inner`].
+//! playback. All `unsafe` `FFmpeg` calls are isolated in `playback_inner`.
 
 mod playback_inner;
 
@@ -9,7 +9,7 @@ mod playback_inner;
 ///
 /// `PreviewPlayer` decodes a video/audio file, synchronises video frame
 /// presentation to an audio master clock, and delivers RGBA frames to a
-/// registered [`FrameSink`].
+/// registered `FrameSink` (defined in issue #383).
 ///
 /// # Usage (stub — full implementation in later issues)
 ///
