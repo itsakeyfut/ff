@@ -80,6 +80,7 @@ pub(super) unsafe fn build_video_composition(
 
     let mut prev_ctx = base_ctx;
     let layer_count = layers.len();
+    let mut animations: Vec<AnimationEntry> = Vec::new();
 
     for (idx, layer) in layers.iter().enumerate() {
         // On Windows, paths contain backslashes and a drive-letter colon
@@ -349,7 +350,11 @@ pub(super) unsafe fn build_video_composition(
         };
         let lx = layer.x.value_at(Duration::ZERO).round() as i64;
         let ly = layer.y.value_at(Duration::ZERO).round() as i64;
-        let Ok(ov_args) = CString::new(format!("{lx}:{ly}:eof_action={eof_action}")) else {
+        let needs_eval_frame = matches!(layer.x, AnimatedValue::Track(_))
+            || matches!(layer.y, AnimatedValue::Track(_));
+        let eval_suffix = if needs_eval_frame { ":eval=frame" } else { "" };
+        let Ok(ov_args) = CString::new(format!("{lx}:{ly}:eof_action={eof_action}{eval_suffix}"))
+        else {
             bail!(graph, "CString::new failed for overlay args");
         };
         let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
@@ -377,6 +382,23 @@ pub(super) unsafe fn build_video_composition(
         if ret < 0 {
             bail!(graph, format!("link failed: layer→overlay[1] layer={idx}"));
         }
+
+        // Register animation entries for animated x/y.
+        if let AnimatedValue::Track(ref track) = layer.x {
+            animations.push(AnimationEntry {
+                node_name: format!("overlay{idx}"),
+                param: "x",
+                track: track.clone(),
+            });
+        }
+        if let AnimatedValue::Track(ref track) = layer.y {
+            animations.push(AnimationEntry {
+                node_name: format!("overlay{idx}"),
+                param: "y",
+                track: track.clone(),
+            });
+        }
+
         prev_ctx = overlay_ctx;
     }
 
@@ -416,7 +438,11 @@ pub(super) unsafe fn build_video_composition(
     log::info!(
         "video composition graph built layers={layer_count} canvas={canvas_width}x{canvas_height}"
     );
-    Ok(FilterGraph::from_prebuilt(inner))
+    if animations.is_empty() {
+        Ok(FilterGraph::from_prebuilt(inner))
+    } else {
+        Ok(FilterGraph::from_prebuilt_animated(inner, animations))
+    }
 }
 
 // ── Audio mix graph builder ───────────────────────────────────────────────────

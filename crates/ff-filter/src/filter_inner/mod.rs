@@ -419,7 +419,7 @@ mod tests {
     /// FFmpeg API.
     #[test]
     fn apply_animations_with_no_graph_should_be_a_no_op() {
-        use crate::animation::{AnimatedValue, AnimationEntry, AnimationTrack, Easing, Keyframe};
+        use crate::animation::{AnimationEntry, AnimationTrack, Easing, Keyframe};
         use std::time::Duration;
 
         let inner = FilterGraphInner::new(
