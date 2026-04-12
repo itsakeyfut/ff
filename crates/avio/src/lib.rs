@@ -295,7 +295,9 @@ pub use ff_stream::SrtOutput;
 // Enable the `preview` feature to access `PreviewPlayer`, `PlaybackClock`,
 // and (with the `proxy` sub-feature on `ff-preview`) `ProxyGenerator`.
 #[cfg(feature = "preview")]
-pub use ff_preview::{PlaybackClock, PreviewError, PreviewPlayer};
+pub use ff_preview::{
+    DecodeBuffer, DecodeBufferBuilder, PlaybackClock, PreviewError, PreviewPlayer,
+};
 
 #[cfg(test)]
 mod tests {
