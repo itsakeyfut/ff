@@ -9,7 +9,7 @@ point it at an input file, and receive a standards-compliant package ready for C
 
 ```toml
 [dependencies]
-ff-stream = "0.11"
+ff-stream = "0.12"
 ```
 
 ## HLS Output
