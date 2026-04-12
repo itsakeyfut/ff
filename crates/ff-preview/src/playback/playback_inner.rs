@@ -3,12 +3,13 @@
 //! This module is the only place in `ff-preview` where `unsafe` code is
 //! permitted. All `unsafe` blocks must carry a `// SAFETY:` comment explaining
 //! why the invariants hold.
-//!
-//! Future additions:
-//! - `sws_scale` conversion of `AVFrame` to contiguous RGBA bytes (for `FrameSink`)
-//! - `avformat_seek_file` + `avcodec_flush_buffers` (for `DecodeBuffer::seek`)
 
-use ff_format::AudioFrame;
+#![allow(unsafe_code)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_sign_loss)]
+
+use ff_format::{AudioFrame, PixelFormat, VideoFrame};
 
 /// Extract interleaved `f32` PCM samples from a decoded [`AudioFrame`].
 ///
@@ -21,6 +22,172 @@ use ff_format::AudioFrame;
 /// not occur when the decoder is configured with `SampleFormat::F32`).
 pub(crate) fn audio_frame_to_f32(frame: &AudioFrame) -> Vec<f32> {
     frame.as_f32().map(<[f32]>::to_vec).unwrap_or_default()
+}
+
+// ── SwsRgbaConverter ──────────────────────────────────────────────────────────
+
+/// Lazy `sws_scale` converter that outputs packed RGBA (4 bytes/pixel, alpha = 255).
+///
+/// The `SwsContext` is created on the first call to [`convert`](Self::convert) and
+/// reused for subsequent frames with the same dimensions and source pixel format.
+/// A new context is allocated automatically when the frame geometry changes
+/// (uncommon in practice for a single file).
+pub(crate) struct SwsRgbaConverter {
+    /// Nullable: `null` before the first `convert` call or after a geometry change.
+    ctx: *mut ff_sys::SwsContext,
+    /// Cached (width, height, format) so geometry changes can be detected.
+    cache_key: Option<(u32, u32, PixelFormat)>,
+}
+
+// SAFETY: `SwsContext` is not thread-safe per the FFmpeg docs, but
+// `SwsRgbaConverter` owns its context exclusively and is only ever accessed
+// from the single presentation thread that calls `PreviewPlayer::run()`.
+// No concurrent access to `ctx` can occur.
+unsafe impl Send for SwsRgbaConverter {}
+
+impl SwsRgbaConverter {
+    pub(crate) fn new() -> Self {
+        Self {
+            ctx: std::ptr::null_mut(),
+            cache_key: None,
+        }
+    }
+
+    /// Convert `frame` to packed RGBA and write into `dst`.
+    ///
+    /// Returns `true` on success; `false` when the frame dimensions are zero or
+    /// when `sws_getContext` / `sws_scale` fails (failures are logged as `warn`).
+    ///
+    /// `dst` is resized to `width * height * 4` bytes before writing.
+    pub(crate) fn convert(&mut self, frame: &VideoFrame, dst: &mut Vec<u8>) -> bool {
+        let w = frame.width();
+        let h = frame.height();
+        if w == 0 || h == 0 {
+            return false;
+        }
+        let fmt = frame.format();
+        let key = (w, h, fmt);
+
+        // Re-create the context when geometry or format changes.
+        if self.cache_key.as_ref() != Some(&key) {
+            // SAFETY: ctx is either null or was returned by get_context; freeing
+            // a null pointer is explicitly documented as safe by free_context.
+            unsafe { ff_sys::swscale::free_context(self.ctx) };
+            self.ctx = std::ptr::null_mut();
+
+            let src_fmt = pixel_format_to_av(fmt);
+            let dst_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_RGBA;
+            // SAFETY: dimensions are > 0 (checked above); formats are valid AV constants.
+            match unsafe {
+                ff_sys::swscale::get_context(
+                    w as i32,
+                    h as i32,
+                    src_fmt,
+                    w as i32,
+                    h as i32,
+                    dst_fmt,
+                    ff_sys::swscale::scale_flags::FAST_BILINEAR,
+                )
+            } {
+                Ok(ctx) => self.ctx = ctx,
+                Err(code) => {
+                    log::warn!(
+                        "sws_getContext failed format={fmt:?} width={w} height={h} code={code}"
+                    );
+                    return false;
+                }
+            }
+            self.cache_key = Some(key);
+        }
+
+        let rgba_stride = (w * 4) as usize;
+        let total = rgba_stride * h as usize;
+        dst.resize(total, 0u8);
+
+        // Collect per-plane pointers and strides from the VideoFrame.
+        // VideoFrame stores at most 4 planes.
+        let n = frame.num_planes().min(4);
+        let mut src_ptrs: [*const u8; 4] = [std::ptr::null(); 4];
+        let mut src_strides: [i32; 4] = [0i32; 4];
+        for i in 0..n {
+            if let (Some(plane), Some(stride)) = (frame.plane(i), frame.stride(i)) {
+                src_ptrs[i] = plane.as_ptr();
+                src_strides[i] = stride as i32;
+            }
+        }
+
+        let dst_ptr = dst.as_mut_ptr();
+        let dst_stride_val = rgba_stride as i32;
+        let mut dst_ptrs: [*mut u8; 4] = [
+            dst_ptr,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ];
+        let dst_strides: [i32; 4] = [dst_stride_val, 0, 0, 0];
+
+        // SAFETY: ctx is non-null (created above); src and dst pointers are valid
+        // for the lifetime of this call; buffer sizes match width * height * 4 bytes.
+        let result = unsafe {
+            ff_sys::swscale::scale(
+                self.ctx,
+                src_ptrs.as_ptr(),
+                src_strides.as_ptr(),
+                0,
+                h as i32,
+                dst_ptrs.as_mut_ptr().cast::<*mut u8>(),
+                dst_strides.as_ptr(),
+            )
+        };
+        match result {
+            Ok(_) => true,
+            Err(code) => {
+                log::warn!("sws_scale failed width={w} height={h} code={code}");
+                false
+            }
+        }
+    }
+}
+
+impl Drop for SwsRgbaConverter {
+    fn drop(&mut self) {
+        // SAFETY: ctx is either null (safe no-op per free_context docs) or was
+        // returned by get_context; we have exclusive ownership so no concurrent
+        // access is possible.
+        unsafe { ff_sys::swscale::free_context(self.ctx) };
+    }
+}
+
+/// Map a [`PixelFormat`] to its `AVPixelFormat` counterpart.
+///
+/// Mirrors the mapping in `ff-decode`'s `pixel_format_to_av`; duplicated here
+/// because that function is `pub(super)` and inaccessible from this crate.
+fn pixel_format_to_av(format: PixelFormat) -> ff_sys::AVPixelFormat {
+    match format {
+        PixelFormat::Yuv420p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P,
+        PixelFormat::Yuv422p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P,
+        PixelFormat::Yuv444p => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P,
+        PixelFormat::Rgb24 => ff_sys::AVPixelFormat_AV_PIX_FMT_RGB24,
+        PixelFormat::Bgr24 => ff_sys::AVPixelFormat_AV_PIX_FMT_BGR24,
+        PixelFormat::Rgba => ff_sys::AVPixelFormat_AV_PIX_FMT_RGBA,
+        PixelFormat::Bgra => ff_sys::AVPixelFormat_AV_PIX_FMT_BGRA,
+        PixelFormat::Gray8 => ff_sys::AVPixelFormat_AV_PIX_FMT_GRAY8,
+        PixelFormat::Nv12 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV12,
+        PixelFormat::Nv21 => ff_sys::AVPixelFormat_AV_PIX_FMT_NV21,
+        PixelFormat::Yuv420p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P10LE,
+        PixelFormat::Yuv422p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV422P10LE,
+        PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
+        PixelFormat::Yuva444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE,
+        PixelFormat::P010le => ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE,
+        PixelFormat::Gbrpf32le => ff_sys::AVPixelFormat_AV_PIX_FMT_GBRPF32LE,
+        _ => {
+            log::warn!(
+                "pixel_format has no AV mapping, falling back to Yuv420p \
+                 format={format:?} fallback=AV_PIX_FMT_YUV420P"
+            );
+            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
+        }
+    }
 }
 
 #[cfg(test)]

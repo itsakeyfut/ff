@@ -307,16 +307,28 @@ const AUDIO_MAX_BUF: usize = 96_000;
 
 // ── FrameSink ─────────────────────────────────────────────────────────────────
 
-/// Receives decoded video frames during [`PreviewPlayer`] playback.
+/// A sink that receives decoded video frames as contiguous RGBA bytes.
 ///
-/// Implement this trait and register it via [`PreviewPlayer::set_sink`] to
-/// receive frames as they are decoded and presented.
+/// Implementations must be `Send` — `PreviewPlayer` calls `push_frame` from a
+/// dedicated presentation thread.
 ///
-/// Full `RGBA` conversion is added in issue #383.
+/// # Threading
+///
+/// `push_frame` is called exclusively from [`PreviewPlayer::run`]. Do **not** call
+/// back into [`PreviewPlayer`] from inside `push_frame` — this will deadlock.
 pub trait FrameSink: Send {
-    /// Called once per presented video frame in the pixel format of the
-    /// original stream.
-    fn push_frame(&mut self, frame: VideoFrame);
+    /// Receive a video frame at its presentation time.
+    ///
+    /// `rgba` is a contiguous, row-major RGBA buffer:
+    /// - 4 bytes per pixel (R, G, B, A), alpha always 255
+    /// - Total size: `width * height * 4` bytes
+    /// - Row stride: `width * 4` bytes (no padding)
+    fn push_frame(&mut self, rgba: &[u8], width: u32, height: u32, pts: Duration);
+
+    /// Called when playback ends (EOF or [`stop`](PreviewPlayer::stop)). Default: no-op.
+    ///
+    /// Implementations should flush any pending output here.
+    fn flush(&mut self) {}
 }
 
 /// Drives real-time playback of a single media file.
@@ -363,6 +375,11 @@ pub struct PreviewPlayer {
     audio_cancel: Option<Arc<AtomicBool>>,
     /// Handle for the background audio decode thread.
     audio_handle: Option<JoinHandle<()>>,
+    /// Lazy `sws_scale` converter that converts each frame to packed RGBA.
+    /// Re-creates the `SwsContext` automatically when frame geometry changes.
+    sws: playback_inner::SwsRgbaConverter,
+    /// Scratch buffer reused by `present_frame` for the RGBA output of `sws.convert()`.
+    rgba_buf: Vec<u8>,
 }
 
 impl PreviewPlayer {
@@ -426,6 +443,8 @@ impl PreviewPlayer {
             audio_buf,
             audio_cancel,
             audio_handle,
+            sws: playback_inner::SwsRgbaConverter::new(),
+            rgba_buf: Vec::new(),
         })
     }
 
@@ -569,7 +588,7 @@ impl PreviewPlayer {
             match self.decode_buf.pop_frame() {
                 FrameResult::Eof => break,
                 FrameResult::Seeking(last) => {
-                    if let Some(f) = last {
+                    if let Some(ref f) = last {
                         self.present_frame(f);
                     }
                     // Non-blocking — loop immediately to check stopped/paused.
@@ -623,20 +642,26 @@ impl PreviewPlayer {
                         }
                     }
 
-                    self.present_frame(frame);
+                    self.present_frame(&frame);
                 }
             }
+        }
+        if let Some(sink) = self.sink.as_mut() {
+            sink.flush();
         }
         Ok(())
     }
 
-    /// Pass a frame to the registered sink, if any.
-    ///
-    /// Returns `Result` to match the future signature when RGBA conversion
-    /// (`sws_scale`) is added in issue #383.
-    fn present_frame(&mut self, frame: VideoFrame) {
-        if let Some(sink) = self.sink.as_mut() {
-            sink.push_frame(frame);
+    /// Convert `frame` to RGBA and pass it to the registered sink, if any.
+    fn present_frame(&mut self, frame: &VideoFrame) {
+        let Some(sink) = self.sink.as_mut() else {
+            return;
+        };
+        let width = frame.width();
+        let height = frame.height();
+        let pts = frame.timestamp().as_duration();
+        if self.sws.convert(frame, &mut self.rgba_buf) {
+            sink.push_frame(&self.rgba_buf, width, height, pts);
         }
     }
 
@@ -1662,8 +1687,11 @@ mod tests {
 
         struct CountingSink(Arc<Mutex<usize>>);
         impl FrameSink for CountingSink {
-            fn push_frame(&mut self, _frame: VideoFrame) {
-                *self.0.lock().unwrap() += 1;
+            fn push_frame(&mut self, _rgba: &[u8], _width: u32, _height: u32, _pts: Duration) {
+                *self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
             }
         }
 
@@ -1689,7 +1717,9 @@ mod tests {
             }
         }
 
-        let frames = *count.lock().unwrap();
+        let frames = *count
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             frames > 0,
             "run() must deliver at least one frame to the sink"
@@ -2063,5 +2093,24 @@ mod tests {
                 "seek_async: timed out waiting for seek to complete"
             );
         }
+    }
+
+    // ── FrameSink trait tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn frame_sink_should_be_object_safe() {
+        // Verify the trait is object-safe: this must compile.
+        let _: Option<Box<dyn FrameSink>> = None;
+    }
+
+    #[test]
+    fn frame_sink_flush_default_should_be_a_noop() {
+        struct NoFlushSink;
+        impl FrameSink for NoFlushSink {
+            fn push_frame(&mut self, _rgba: &[u8], _width: u32, _height: u32, _pts: Duration) {}
+            // flush() intentionally NOT overridden — test the default is safe to call.
+        }
+        let mut sink = NoFlushSink;
+        sink.flush(); // must not panic
     }
 }
