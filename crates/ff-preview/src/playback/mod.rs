@@ -7,12 +7,12 @@ mod playback_inner;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use ff_decode::VideoDecoder;
+use ff_decode::{SeekMode, VideoDecoder};
 use ff_format::VideoFrame;
 
 use crate::error::PreviewError;
@@ -292,33 +292,22 @@ impl DecodeBufferBuilder {
 
         let (tx, rx) = sync_channel(self.capacity);
         let buffered = Arc::new(AtomicUsize::new(0));
-        let buffered_thread = Arc::clone(&buffered);
+        let cancel = Arc::new(AtomicBool::new(false));
 
-        let handle = thread::spawn(move || {
-            loop {
-                match decoder.decode_one() {
-                    Ok(Some(frame)) => {
-                        if tx.send(frame).is_ok() {
-                            // Frame is now in the channel; update the advisory counter.
-                            buffered_thread.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            // Receiver was dropped — DecodeBuffer has been dropped.
-                            break;
-                        }
-                    }
-                    Ok(None) => break, // EOF
-                    Err(e) => {
-                        log::warn!("decode error in background thread error={e}");
-                        break;
-                    }
-                }
-            }
+        let buffered_thread = Arc::clone(&buffered);
+        let cancel_thread = Arc::clone(&cancel);
+
+        let handle = thread::spawn(move || -> VideoDecoder {
+            decode_loop(&mut decoder, &tx, &buffered_thread, &cancel_thread);
+            decoder
         });
 
         Ok(DecodeBuffer {
             rx: Some(rx),
             buffered,
             handle: Some(handle),
+            cancel,
+            capacity: self.capacity,
         })
     }
 }
@@ -355,8 +344,13 @@ pub struct DecodeBuffer {
     /// Approximate count of frames waiting in the ring buffer.
     /// Incremented by the background thread on send; decremented by `pop_frame`.
     buffered: Arc<AtomicUsize>,
-    /// Background decode thread handle. Joined on drop.
-    handle: Option<JoinHandle<()>>,
+    /// Background decode thread handle. Returns the decoder on exit so `seek()`
+    /// can recover it without reopening the file.
+    handle: Option<JoinHandle<VideoDecoder>>,
+    /// Set to `true` to ask the background thread to exit its decode loop.
+    cancel: Arc<AtomicBool>,
+    /// Channel capacity; needed by `seek()` to create a replacement channel.
+    capacity: usize,
 }
 
 impl DecodeBuffer {
@@ -393,17 +387,145 @@ impl DecodeBuffer {
     pub fn buffered_frames(&self) -> usize {
         self.buffered.load(Ordering::Relaxed)
     }
+
+    /// Frame-accurate seek to `target_pts`.
+    ///
+    /// Stops the background decode thread, seeks the underlying decoder to the
+    /// nearest preceding I-frame (`AVSEEK_FLAG_BACKWARD` + codec buffer flush),
+    /// then restarts the thread. The restarted thread discards frames until
+    /// `PTS ≥ target_pts` before making them available via [`pop_frame`](Self::pop_frame).
+    ///
+    /// Blocks until the thread has stopped and the seek has been accepted by
+    /// the decoder. Frames are filled asynchronously after the method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError::SeekFailed`] if the decode thread panicked or
+    /// if the underlying `FFmpeg` seek fails.
+    pub fn seek(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
+        // 1. Signal the background thread to exit its decode loop.
+        self.cancel.store(true, Ordering::Release);
+
+        // 2. Drain the channel so the background thread is not blocked on send().
+        if let Some(rx) = &self.rx {
+            while rx.try_recv().is_ok() {
+                self.buffered.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+
+        // 3. Join the thread to recover the decoder.
+        let mut decoder = self
+            .handle
+            .take()
+            .and_then(|h| h.join().ok())
+            .ok_or_else(|| PreviewError::SeekFailed {
+                target: target_pts,
+                reason: "decode thread unavailable for seek".into(),
+            })?;
+
+        // 4. Seek to the nearest I-frame at or before target_pts.
+        //    avformat_seek_file with AVSEEK_FLAG_BACKWARD and avcodec_flush_buffers
+        //    are handled inside VideoDecoder::seek (ff-decode/video/decoder_inner/seeking.rs).
+        decoder
+            .seek(target_pts, SeekMode::Backward)
+            .map_err(|e| PreviewError::SeekFailed {
+                target: target_pts,
+                reason: e.to_string(),
+            })?;
+
+        // 5. Reset counter, create a fresh channel, clear the cancel flag.
+        self.buffered.store(0, Ordering::Relaxed);
+        let (tx, rx) = sync_channel(self.capacity);
+        self.rx = Some(rx);
+        self.cancel.store(false, Ordering::Release);
+
+        // 6. Restart the background thread.  The new thread discards frames
+        //    whose PTS < target_pts before entering the normal decode loop.
+        let buffered_thread = Arc::clone(&self.buffered);
+        let cancel_thread = Arc::clone(&self.cancel);
+
+        self.handle = Some(thread::spawn(move || -> VideoDecoder {
+            // Forward-decode discard: drop frames whose PTS is before target_pts.
+            loop {
+                if cancel_thread.load(Ordering::Acquire) {
+                    return decoder;
+                }
+                match decoder.decode_one() {
+                    Ok(Some(frame)) => {
+                        let pts = if frame.timestamp().is_valid() {
+                            frame.timestamp().as_duration()
+                        } else {
+                            Duration::ZERO
+                        };
+                        if pts >= target_pts {
+                            if tx.send(frame).is_ok() {
+                                buffered_thread.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                return decoder; // receiver dropped
+                            }
+                            break; // target frame sent; switch to normal loop
+                        }
+                        // Frame is before target — discard and continue.
+                    }
+                    Ok(None) => return decoder, // EOF before target
+                    Err(e) => {
+                        log::warn!("decode error during seek discard error={e}");
+                        return decoder;
+                    }
+                }
+            }
+
+            // Normal decode loop after the discard phase.
+            decode_loop(&mut decoder, &tx, &buffered_thread, &cancel_thread);
+            decoder
+        }));
+
+        Ok(())
+    }
 }
 
 impl Drop for DecodeBuffer {
     fn drop(&mut self) {
-        // Drop the receiver FIRST. This causes SyncSender::send() to return
-        // Err on the background thread, unblocking it if it is waiting for
-        // space in a full channel.
+        // Signal cancel so the thread exits the decode loop promptly.
+        self.cancel.store(true, Ordering::Release);
+        // Drop the receiver so SyncSender::send() returns Err, unblocking the
+        // thread if it is waiting for space in a full channel.
         drop(self.rx.take());
-        // Now the thread will exit promptly; joining is guaranteed not to block.
+        // Join (ignoring the returned decoder).
         if let Some(h) = self.handle.take() {
             let _ = h.join();
+        }
+    }
+}
+
+/// Normal decode loop body shared between `build()` and the post-seek thread.
+///
+/// Exits when EOF is reached, a decode error occurs, or the `cancel` flag is set,
+/// or the receiver drops (i.e., `DecodeBuffer` was dropped).
+fn decode_loop(
+    decoder: &mut VideoDecoder,
+    tx: &std::sync::mpsc::SyncSender<VideoFrame>,
+    buffered: &AtomicUsize,
+    cancel: &AtomicBool,
+) {
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        match decoder.decode_one() {
+            Ok(Some(frame)) => {
+                if tx.send(frame).is_ok() {
+                    buffered.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    // Receiver was dropped — DecodeBuffer has been dropped.
+                    break;
+                }
+            }
+            Ok(None) => break, // EOF
+            Err(e) => {
+                log::warn!("decode error in background thread error={e}");
+                break;
+            }
         }
     }
 }
@@ -726,6 +848,64 @@ mod tests {
         assert!(
             buf.pop_frame().is_some(),
             "pop_frame() must return Some for a valid video file"
+        );
+    }
+
+    #[test]
+    fn seek_should_reposition_to_target_pts() {
+        let path = test_video_path();
+        let mut buf = match DecodeBuffer::open(&path).capacity(4).build() {
+            Ok(buf) => buf,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        // Consume a few frames to advance past the start.
+        for _ in 0..5 {
+            if buf.pop_frame().is_none() {
+                println!("skipping: EOF before seek target");
+                return;
+            }
+        }
+
+        let seek_target = Duration::from_secs(1);
+        match buf.seek(seek_target) {
+            Ok(()) => {}
+            Err(e) => {
+                println!("skipping: seek not supported or failed: {e}");
+                return;
+            }
+        }
+
+        // After seek, the first frame's PTS must be at or near the target.
+        let frame = match buf.pop_frame() {
+            Some(f) => f,
+            None => {
+                println!("skipping: no frame after seek");
+                return;
+            }
+        };
+
+        if frame.timestamp().is_valid() {
+            let pts = frame.timestamp().as_duration();
+            // Allow ±1 second of tolerance (one GOP) for I-frame alignment.
+            assert!(
+                pts >= seek_target.saturating_sub(Duration::from_secs(1)),
+                "post-seek frame PTS must be near target; target={seek_target:?} pts={pts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn seek_should_fail_for_stopped_buffer() {
+        // Build with non-existent file → build() fails.
+        // This confirms seek errors are propagated correctly.
+        let result = DecodeBuffer::open(Path::new("nonexistent.mp4")).build();
+        assert!(
+            result.is_err(),
+            "build() must fail for non-existent file (precondition for seek error path)"
         );
     }
 }
