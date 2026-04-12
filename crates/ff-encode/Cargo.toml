@@ -39,7 +39,6 @@ tokio = ["dep:tokio"]
 
 [dev-dependencies]
 criterion = { workspace = true }
-ff-decode = { workspace = true }
 ff-probe  = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt", "rt-multi-thread", "time"] }
 

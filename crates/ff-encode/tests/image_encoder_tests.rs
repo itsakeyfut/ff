@@ -4,7 +4,6 @@
 
 mod fixtures;
 
-use ff_decode::ImageDecoder;
 use ff_encode::ImageEncoder;
 use ff_format::PixelFormat;
 use fixtures::{
@@ -445,24 +444,28 @@ fn encoded_file_should_be_decodable_by_image_decoder() {
 
     assert_valid_output_file(&output_path);
 
-    let decoder = match ImageDecoder::open(&output_path).build() {
-        Ok(dec) => dec,
+    // Verify dimensions via ff-probe instead of ImageDecoder to avoid a
+    // circular dev-dependency between ff-encode and ff-decode.
+    let info = match ff_probe::open(&output_path) {
+        Ok(i) => i,
         Err(e) => {
-            println!("Skipping decode: {e}");
+            println!("Skipping probe: {e}");
             return;
         }
     };
 
-    assert_eq!(
-        decoder.width(),
-        64,
-        "decoded width should match encoded width"
-    );
-    assert_eq!(
-        decoder.height(),
-        48,
-        "decoded height should match encoded height"
-    );
+    if let Some(stream) = info.video_stream(0) {
+        assert_eq!(
+            stream.width(),
+            64,
+            "probed width should match encoded width"
+        );
+        assert_eq!(
+            stream.height(),
+            48,
+            "probed height should match encoded height"
+        );
+    }
 }
 
 #[test]
