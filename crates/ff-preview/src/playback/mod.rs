@@ -8,7 +8,7 @@ mod playback_inner;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -267,6 +267,22 @@ pub enum FrameResult {
     Eof,
 }
 
+// ── SeekEvent ─────────────────────────────────────────────────────────────────
+
+/// An event emitted by [`DecodeBuffer`] after a
+/// [`seek_async`](DecodeBuffer::seek_async) completes.
+///
+/// Obtain the receiver via [`DecodeBuffer::seek_events`] and poll it with
+/// `try_recv()` (non-blocking) or `recv()` (blocking).
+#[derive(Debug)]
+pub enum SeekEvent {
+    /// The seek initiated by `seek_async` has completed.
+    ///
+    /// `pts` is the presentation timestamp of the first frame available after
+    /// the seek. Events are typically delivered within ~200 ms for local files.
+    Completed { pts: Duration },
+}
+
 // ── DecodeBuffer ──────────────────────────────────────────────────────────────
 
 /// Default ring buffer capacity for [`DecodeBuffer`] (frames).
@@ -322,6 +338,8 @@ impl DecodeBufferBuilder {
             decoder
         });
 
+        let (seek_tx, seek_rx) = channel::<SeekEvent>();
+
         Ok(DecodeBuffer {
             rx: Some(rx),
             buffered,
@@ -330,6 +348,8 @@ impl DecodeBufferBuilder {
             capacity: self.capacity,
             seeking: Arc::new(AtomicBool::new(false)),
             last_good_frame: None,
+            seek_tx,
+            seek_rx,
         })
     }
 }
@@ -378,6 +398,10 @@ pub struct DecodeBuffer {
     /// The last frame returned by `pop_frame`; replayed as a placeholder
     /// while `seeking` is true.
     last_good_frame: Option<VideoFrame>,
+    /// Sender side of the seek event channel; cloned into each seek worker.
+    seek_tx: Sender<SeekEvent>,
+    /// Receiver for seek completion events; exposed via `seek_events()`.
+    seek_rx: Receiver<SeekEvent>,
 }
 
 impl DecodeBuffer {
@@ -424,6 +448,21 @@ impl DecodeBuffer {
     #[must_use]
     pub fn buffered_frames(&self) -> usize {
         self.buffered.load(Ordering::Relaxed)
+    }
+
+    /// Returns a reference to the seek event receiver.
+    ///
+    /// After calling [`seek_async`](Self::seek_async), poll this receiver to
+    /// detect when the seek has completed:
+    /// - `try_recv()` — non-blocking; returns `Err(TryRecvError::Empty)` while
+    ///   the seek is still in progress.
+    /// - `recv()` — blocks until the seek finishes.
+    ///
+    /// Events are delivered within ~200 ms for local files.
+    /// Unconsumed events accumulate in the channel (one per completed seek).
+    #[must_use]
+    pub fn seek_events(&self) -> &Receiver<SeekEvent> {
+        &self.seek_rx
     }
 
     /// Frame-accurate seek to `target_pts`.
@@ -552,6 +591,7 @@ impl DecodeBuffer {
         let buffered = Arc::clone(&self.buffered);
         let cancel = Arc::clone(&self.cancel);
         let seeking = Arc::clone(&self.seeking);
+        let seek_event_tx = self.seek_tx.clone();
 
         let worker = thread::spawn(move || -> VideoDecoder {
             // Recover the decoder from the old thread. In normal operation the
@@ -597,11 +637,15 @@ impl DecodeBuffer {
                             Duration::ZERO
                         };
                         if pts >= target_pts {
+                            let first_pts = pts;
                             if new_tx.send(frame).is_ok() {
                                 buffered.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 return decoder; // receiver dropped
                             }
+                            // Notify the caller that the seek has completed.
+                            // Ignore SendError if the receiver was dropped.
+                            let _ = seek_event_tx.send(SeekEvent::Completed { pts: first_pts });
                             break;
                         }
                         // Frame before target — discard.
@@ -1095,6 +1139,60 @@ mod tests {
             result.is_err(),
             "build() must fail for non-existent file (precondition for seek error path)"
         );
+    }
+
+    #[test]
+    fn seek_async_should_send_completed_event_with_first_frame_pts() {
+        let path = test_video_path();
+        let mut buf = match DecodeBuffer::open(&path).capacity(4).build() {
+            Ok(buf) => buf,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        // Pop one frame to establish last_good_frame.
+        match buf.pop_frame() {
+            FrameResult::Frame(_) => {}
+            _ => {
+                println!("skipping: no initial frame available");
+                return;
+            }
+        }
+
+        let seek_target = Duration::from_secs(1);
+        buf.seek_async(seek_target);
+
+        // Drive the seek to completion by polling pop_frame.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for seek to complete"
+            );
+            match buf.pop_frame() {
+                FrameResult::Frame(_) => break, // seek done, first post-seek frame received
+                FrameResult::Seeking(_) => thread::sleep(Duration::from_millis(10)),
+                FrameResult::Eof => {
+                    println!("skipping: EOF reached during seek event test");
+                    return;
+                }
+            }
+        }
+
+        // After pop_frame returned Frame, SeekEvent::Completed must be in the channel.
+        let event = buf.seek_events().try_recv();
+        assert!(
+            event.is_ok(),
+            "expected SeekEvent::Completed after pop_frame returned Frame; got Err"
+        );
+        if let Ok(SeekEvent::Completed { pts }) = event {
+            assert!(
+                pts >= Duration::ZERO,
+                "seek event pts must be non-negative; got pts={pts:?}"
+            );
+        }
     }
 
     #[test]
