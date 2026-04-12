@@ -297,6 +297,7 @@ pub use ff_stream::SrtOutput;
 #[cfg(feature = "preview")]
 pub use ff_preview::{
     DecodeBuffer, DecodeBufferBuilder, FrameResult, PlaybackClock, PreviewError, PreviewPlayer,
+    SeekEvent,
 };
 
 #[cfg(test)]
