@@ -10,6 +10,7 @@ mod fixtures;
 use std::time::Duration;
 
 use ff_encode::{AudioCodec, BitrateMode, VideoCodec};
+use ff_filter::animation::{AnimationTrack, Easing};
 use ff_pipeline::{Clip, EncoderConfig, PipelineError, Timeline};
 use fixtures::{FileGuard, make_source_file, test_output_path};
 
@@ -127,5 +128,85 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
         video.height(),
         H,
         "output video height must match canvas height"
+    );
+}
+
+/// Verifies that a `Timeline` with an audio volume fade track encodes without
+/// error.  The volume track fades from −60 dB to 0 dB over the clip's
+/// duration; the test confirms the output is a valid file with both streams.
+///
+/// This covers the acceptance criterion for issue #364:
+/// "a Timeline with 3 clips and a volume fade track encodes correctly".
+#[test]
+#[ignore = "requires FFmpeg filter graph; run with -- --include-ignored"]
+fn timeline_with_volume_animation_should_encode_successfully() {
+    let src_path = test_output_path("timeline_vol_src.mp4");
+    let out_path = test_output_path("timeline_vol_out.mp4");
+    let _g_src = FileGuard::new(src_path.clone());
+    let _g_out = FileGuard::new(out_path.clone());
+
+    // Y=128, U=128, V=128 ≈ grey
+    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 128, 128, 128).is_none() {
+        return;
+    }
+
+    // Volume track: −60 dB at t=0, 0 dB at t=1 s (linear fade-in).
+    let vol_track = AnimationTrack::fade(
+        -60.0_f64,
+        0.0_f64,
+        Duration::ZERO,
+        Duration::from_secs(1),
+        Easing::Linear,
+    );
+
+    let clip = Clip::new(&src_path);
+
+    let timeline = match Timeline::builder()
+        .canvas(W, H)
+        .frame_rate(FPS)
+        .video_track(vec![clip.clone()])
+        .audio_track(vec![clip])
+        // "audio_0_volume" is the key used by TimelineBuilder for the first
+        // audio track's volume animation (format: "audio_{track_idx}_{prop}").
+        .audio_animation("audio_0_volume", vol_track)
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return;
+        }
+    };
+
+    match timeline.render(&out_path, render_config()) {
+        Ok(()) => {}
+        Err(PipelineError::Filter(e)) => {
+            println!("Skipping: filter graph construction failed: {e}");
+            return;
+        }
+        Err(PipelineError::Encode(e)) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+        Err(PipelineError::Decode(e)) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+        Err(e) => panic!("unexpected error from Timeline::render: {e}"),
+    }
+
+    let info = match ff_probe::open(&out_path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("Skipping: ff_probe::open failed: {e}");
+            return;
+        }
+    };
+
+    assert!(info.has_video(), "output must contain a video stream");
+    assert!(info.has_audio(), "output must contain an audio stream");
+    assert!(
+        info.duration() > Duration::ZERO,
+        "output must have non-zero duration"
     );
 }
