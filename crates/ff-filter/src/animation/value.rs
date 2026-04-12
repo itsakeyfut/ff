@@ -12,6 +12,14 @@ use super::{AnimationTrack, Lerp};
 /// set initial filter parameters.  Per-frame updates are wired up in issue
 /// #363.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(
+        serialize = "T: serde::Serialize",
+        deserialize = "T: serde::Deserialize<'de>",
+    ))
+)]
 pub enum AnimatedValue<T: Lerp> {
     /// A constant value, independent of time.
     Static(T),

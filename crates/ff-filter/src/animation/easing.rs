@@ -6,6 +6,7 @@
 ///
 /// Individual easing functions are implemented across issues #352–#357.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Easing {
     /// Hold: the value snaps to the next keyframe without interpolation.
     Hold,

@@ -10,20 +10,25 @@ repository.workspace = true
 keywords = ["video", "audio", "ffmpeg", "filter", "effect"]
 categories = ["multimedia::video", "multimedia::audio"]
 
+[features]
+serde = ["dep:serde"]
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-ff-common = { workspace = true }
-ff-format = { workspace = true }
-ff-sys = { workspace = true }
-log = { workspace = true }
-thiserror = { workspace = true }
+ff-common  = { workspace = true }
+ff-format  = { workspace = true }
+ff-sys     = { workspace = true }
+log        = { workspace = true }
+thiserror  = { workspace = true }
+serde      = { version = "1.0.228", features = ["derive"], optional = true }
 
 [dev-dependencies]
-ff-encode = { workspace = true }
-ff-probe  = { workspace = true }
-image     = { workspace = true, features = ["png"] }
+ff-encode  = { workspace = true }
+ff-probe   = { workspace = true }
+image      = { workspace = true, features = ["png"] }
+serde_json = "1.0.149"
 
 [lints]
 workspace = true
