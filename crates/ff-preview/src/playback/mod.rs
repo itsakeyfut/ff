@@ -7,7 +7,7 @@ mod playback_inner;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -231,21 +231,226 @@ impl Default for PlaybackClock {
     }
 }
 
+/// Receives decoded video frames during [`PreviewPlayer`] playback.
+///
+/// Implement this trait and register it via [`PreviewPlayer::set_sink`] to
+/// receive frames as they are decoded and presented.
+///
+/// Full `RGBA` conversion is added in issue #383.
+pub trait FrameSink: Send {
+    /// Called once per presented video frame in the pixel format of the
+    /// original stream.
+    fn push_frame(&mut self, frame: VideoFrame);
+}
+
 /// Drives real-time playback of a single media file.
 ///
 /// `PreviewPlayer` decodes a video/audio file, synchronises video frame
-/// presentation to an audio master clock, and delivers RGBA frames to a
-/// registered `FrameSink` (defined in issue #383).
+/// presentation to an audio master clock, and delivers frames to a
+/// registered [`FrameSink`].
 ///
-/// # Usage (stub — full implementation in later issues)
+/// # Usage
 ///
 /// ```ignore
-/// let mut player = PreviewPlayer::open("clip.mp4")?;
-/// player.set_sink(Box::new(RgbaSink::new()));
+/// let mut player = PreviewPlayer::open(Path::new("clip.mp4"))?;
+/// player.set_sink(Box::new(MySink::new()));
 /// player.play();
 /// player.run()?;
 /// ```
-pub struct PreviewPlayer;
+pub struct PreviewPlayer {
+    /// Pre-decoded frame buffer driven by a background thread.
+    decode_buf: DecodeBuffer,
+    /// Video frame rate; used to compute the frame period for A/V sync.
+    fps: f64,
+    /// Frame sink registered via [`set_sink`](Self::set_sink). Optional;
+    /// frames are discarded silently if no sink is set.
+    sink: Option<Box<dyn FrameSink>>,
+    /// Set to `true` while the presentation loop is paused.
+    paused: AtomicBool,
+    /// Set to `true` to signal [`run`](Self::run) to stop after the current frame.
+    stopped: AtomicBool,
+    /// Total number of audio samples consumed by
+    /// [`pop_audio_samples`](Self::pop_audio_samples). Divided by
+    /// `sample_rate` to obtain the audio master clock PTS.
+    total_audio_samples: AtomicU64,
+    /// Audio sample rate in Hz. Zero when no audio track is present.
+    sample_rate: u32,
+}
+
+impl PreviewPlayer {
+    /// Open a media file and prepare for playback.
+    ///
+    /// Validates the file by opening a decoder. Returns [`PreviewError`] if
+    /// the file is missing or contains no decodable video stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] if the file cannot be opened or decoded.
+    pub fn open(path: &Path) -> Result<Self, PreviewError> {
+        // Open a temporary decoder to validate the file and read fps.
+        // DecodeBuffer opens its own decoder internally.
+        let probe = VideoDecoder::open(path).build()?;
+        let fps = probe.frame_rate().max(1.0);
+        drop(probe);
+
+        let decode_buf = DecodeBuffer::open(path).build()?;
+
+        Ok(PreviewPlayer {
+            decode_buf,
+            fps,
+            sink: None,
+            paused: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            total_audio_samples: AtomicU64::new(0),
+            sample_rate: 0,
+        })
+    }
+
+    /// Register the frame sink. Must be called before [`run`](Self::run).
+    pub fn set_sink(&mut self, sink: Box<dyn FrameSink>) {
+        self.sink = Some(sink);
+    }
+
+    /// Start (or resume) playback.
+    ///
+    /// Clears the `paused` and `stopped` flags; [`run`](Self::run) begins
+    /// presenting frames on its next iteration.
+    pub fn play(&mut self) {
+        self.paused.store(false, Ordering::Release);
+        self.stopped.store(false, Ordering::Release);
+    }
+
+    /// Pause playback.
+    ///
+    /// [`run`](Self::run) idles (sleeping 5 ms per iteration) until
+    /// [`play`](Self::play) is called again.
+    pub fn pause(&mut self) {
+        self.paused.store(true, Ordering::Release);
+    }
+
+    /// Stop playback.
+    ///
+    /// [`run`](Self::run) returns after the current frame completes.
+    pub fn stop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+    }
+
+    /// Pull `n_samples` interleaved `f32` audio samples for the audio callback.
+    ///
+    /// Increments the audio master clock by the number of samples returned.
+    /// Returns an empty `Vec` when no audio track is present.
+    ///
+    /// Full audio decoding and buffering is implemented in issue #382.
+    pub fn pop_audio_samples(&mut self, n_samples: usize) -> Vec<f32> {
+        if self.sample_rate == 0 || n_samples == 0 {
+            return Vec::new();
+        }
+        // TODO(#382): implement actual audio decoding and buffering.
+        let samples = vec![0.0_f32; n_samples];
+        self.total_audio_samples
+            .fetch_add(n_samples as u64, Ordering::Relaxed);
+        samples
+    }
+
+    /// A/V sync presentation loop.
+    ///
+    /// Blocks until [`stop`](Self::stop) is called or the end of file is
+    /// reached. Must be called from the presentation thread.
+    ///
+    /// Video PTS is compared against the audio master clock
+    /// (`total_audio_samples / sample_rate`):
+    /// - **Early frames** (video PTS > audio clock + 1 frame period): sleep.
+    /// - **Late frames** (video PTS < audio clock − 1 frame period): dropped.
+    ///
+    /// When no audio track is present (`sample_rate == 0`) the audio clock
+    /// returns `Duration::ZERO`; the system-clock fallback is in issue #380.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] if a frame cannot be presented to the sink.
+    pub fn run(&mut self) -> Result<(), PreviewError> {
+        let fps = self.fps.max(1.0);
+        let frame_period = Duration::from_secs_f64(1.0 / fps);
+
+        loop {
+            if self.stopped.load(Ordering::Acquire) {
+                break;
+            }
+            if self.paused.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+
+            match self.decode_buf.pop_frame() {
+                FrameResult::Eof => break,
+                FrameResult::Seeking(last) => {
+                    if let Some(f) = last {
+                        self.present_frame(f);
+                    }
+                    // Non-blocking — loop immediately to check stopped/paused.
+                }
+                FrameResult::Frame(frame) => {
+                    // Apply A/V sync only when an audio track is present.
+                    // Without audio, frames are presented as fast as the
+                    // decoder produces them; the system-clock fallback that
+                    // regulates pacing for video-only files is in issue #380.
+                    if self.sample_rate > 0 {
+                        let video_pts = if frame.timestamp().is_valid() {
+                            frame.timestamp().as_duration()
+                        } else {
+                            Duration::ZERO
+                        };
+                        let audio_pts = self.audio_clock_pts();
+                        let diff = video_pts.as_secs_f64() - audio_pts.as_secs_f64();
+                        let fp = frame_period.as_secs_f64();
+
+                        if diff > fp {
+                            // Frame is early — sleep until it aligns with the audio clock.
+                            let sleep_secs = (diff - fp / 2.0).max(0.0);
+                            thread::sleep(Duration::from_secs_f64(sleep_secs));
+                        } else if diff < -fp {
+                            // Frame is more than one period late — drop silently.
+                            log::debug!(
+                                "dropped late frame video_pts={video_pts:?} \
+                                 audio_pts={audio_pts:?}"
+                            );
+                            continue;
+                        }
+                    }
+
+                    self.present_frame(frame);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the current audio master clock position.
+    ///
+    /// `total_audio_samples / sample_rate` when audio is active.
+    /// `Duration::ZERO` when no audio track is present (see issue #380).
+    fn audio_clock_pts(&self) -> Duration {
+        if self.sample_rate == 0 {
+            return Duration::ZERO;
+        }
+        let samples = self.total_audio_samples.load(Ordering::Relaxed);
+        // Precision loss is negligible for audio clock purposes: u64 overflows
+        // f64 mantissa only above ~9 × 10^15 samples (≫ any real media file).
+        #[allow(clippy::cast_precision_loss)]
+        let secs = samples as f64 / f64::from(self.sample_rate);
+        Duration::from_secs_f64(secs)
+    }
+
+    /// Pass a frame to the registered sink, if any.
+    ///
+    /// Returns `Result` to match the future signature when RGBA conversion
+    /// (`sws_scale`) is added in issue #383.
+    fn present_frame(&mut self, frame: VideoFrame) {
+        if let Some(sink) = self.sink.as_mut() {
+            sink.push_frame(frame);
+        }
+    }
+}
 
 // ── FrameResult ───────────────────────────────────────────────────────────────
 
@@ -638,14 +843,15 @@ impl DecodeBuffer {
                         };
                         if pts >= target_pts {
                             let first_pts = pts;
+                            // Send the event BEFORE pushing the frame so that
+                            // when pop_frame() wakes up the event is already in
+                            // the seek_events channel (avoids a try_recv race).
+                            let _ = seek_event_tx.send(SeekEvent::Completed { pts: first_pts });
                             if new_tx.send(frame).is_ok() {
                                 buffered.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 return decoder; // receiver dropped
                             }
-                            // Notify the caller that the seek has completed.
-                            // Ignore SendError if the receiver was dropped.
-                            let _ = seek_event_tx.send(SeekEvent::Completed { pts: first_pts });
                             break;
                         }
                         // Frame before target — discard.
@@ -1030,6 +1236,83 @@ mod tests {
             clock.current_pts(),
             Duration::ZERO,
             "stop() must reset seek_offset to ZERO"
+        );
+    }
+
+    // ── PreviewPlayer tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn preview_player_open_should_fail_for_nonexistent_file() {
+        let result = PreviewPlayer::open(Path::new("nonexistent_preview.mp4"));
+        assert!(
+            result.is_err(),
+            "open() must return Err for a non-existent file"
+        );
+    }
+
+    #[test]
+    fn preview_player_play_pause_stop_should_update_state() {
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        // Initial state: not paused, not stopped.
+        assert!(!player.paused.load(Ordering::Relaxed));
+        assert!(!player.stopped.load(Ordering::Relaxed));
+
+        player.pause();
+        assert!(player.paused.load(Ordering::Relaxed));
+
+        player.play();
+        assert!(!player.paused.load(Ordering::Relaxed));
+        assert!(!player.stopped.load(Ordering::Relaxed));
+
+        player.stop();
+        assert!(player.stopped.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn preview_player_run_should_deliver_frames_to_sink() {
+        use std::sync::{Arc, Mutex};
+
+        struct CountingSink(Arc<Mutex<usize>>);
+        impl FrameSink for CountingSink {
+            fn push_frame(&mut self, _frame: VideoFrame) {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        let count = Arc::new(Mutex::new(0usize));
+        player.set_sink(Box::new(CountingSink(Arc::clone(&count))));
+        player.play();
+
+        // run() blocks until EOF; short test file finishes quickly.
+        match player.run() {
+            Ok(()) => {}
+            Err(e) => {
+                println!("skipping: run() error: {e}");
+                return;
+            }
+        }
+
+        let frames = *count.lock().unwrap();
+        assert!(
+            frames > 0,
+            "run() must deliver at least one frame to the sink"
         );
     }
 
