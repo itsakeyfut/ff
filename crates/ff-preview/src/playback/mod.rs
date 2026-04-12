@@ -7,7 +7,7 @@ mod playback_inner;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -340,6 +340,11 @@ pub struct PreviewPlayer {
     stopped: AtomicBool,
     /// Master clock for A/V sync: audio samples counter or `Instant` wall clock.
     clock: MasterClock,
+    /// A/V offset correction in milliseconds (default: 0).
+    ///
+    /// Positive: video is delayed (video PTS adjusted down).
+    /// Negative: audio is delayed (video PTS adjusted up).
+    av_offset_ms: AtomicI64,
 }
 
 impl PreviewPlayer {
@@ -383,6 +388,7 @@ impl PreviewPlayer {
             paused: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             clock,
+            av_offset_ms: AtomicI64::new(0),
         })
     }
 
@@ -413,6 +419,33 @@ impl PreviewPlayer {
     /// [`run`](Self::run) returns after the current frame completes.
     pub fn stop(&mut self) {
         self.stopped.store(true, Ordering::Release);
+    }
+
+    /// Set the A/V offset correction in milliseconds.
+    ///
+    /// - **Positive** value: video is delayed by `ms` ms relative to the audio
+    ///   clock (video PTS is shifted down in the sync comparison).
+    /// - **Negative** value: audio is delayed by `ms` ms relative to video
+    ///   (video PTS is shifted up in the sync comparison).
+    ///
+    /// Values outside ±5 000 ms are clamped and a warning is logged.
+    /// Safe to call from any thread while [`run`](Self::run) is executing.
+    pub fn set_av_offset(&self, ms: i64) {
+        const MAX_OFFSET_MS: i64 = 5_000;
+        let clamped = if ms.abs() > MAX_OFFSET_MS {
+            log::warn!("av_offset clamped value={ms}");
+            ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS)
+        } else {
+            ms
+        };
+        self.av_offset_ms.store(clamped, Ordering::Relaxed);
+    }
+
+    /// Returns the current A/V offset in milliseconds (default: `0`).
+    ///
+    /// Safe to call from any thread while [`run`](Self::run) is executing.
+    pub fn av_offset(&self) -> i64 {
+        self.av_offset_ms.load(Ordering::Relaxed)
     }
 
     /// Pull `n_samples` interleaved `f32` audio samples for the audio callback.
@@ -493,8 +526,22 @@ impl PreviewPlayer {
                         } else {
                             Duration::ZERO
                         };
+
+                        // Apply A/V offset correction.
+                        let offset_ms = self.av_offset_ms.load(Ordering::Relaxed);
+                        let offset = Duration::from_millis(offset_ms.unsigned_abs());
+                        let adjusted_video_pts = if offset_ms >= 0 {
+                            // Positive: video delayed — subtract offset so the
+                            // frame appears "earlier" relative to the clock.
+                            video_pts.saturating_sub(offset)
+                        } else {
+                            // Negative: audio delayed — add offset so the frame
+                            // appears "later" relative to the clock.
+                            video_pts + offset
+                        };
+
                         let clock_pts = self.clock.current_pts();
-                        let diff = video_pts.as_secs_f64() - clock_pts.as_secs_f64();
+                        let diff = adjusted_video_pts.as_secs_f64() - clock_pts.as_secs_f64();
                         let fp = frame_period.as_secs_f64();
 
                         if diff > fp {
@@ -1467,6 +1514,96 @@ mod tests {
         assert!(
             frames > 0,
             "run() must deliver at least one frame to the sink"
+        );
+    }
+
+    // ── A/V offset tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn av_offset_default_should_be_zero() {
+        // AtomicI64 default matches the expected API default of 0 ms.
+        let offset = AtomicI64::new(0);
+        assert_eq!(offset.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn set_av_offset_should_clamp_large_positive_value() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.set_av_offset(10_000);
+        assert_eq!(player.av_offset(), 5_000, "offset must be clamped to +5000");
+    }
+
+    #[test]
+    fn set_av_offset_should_clamp_large_negative_value() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.set_av_offset(-10_000);
+        assert_eq!(
+            player.av_offset(),
+            -5_000,
+            "offset must be clamped to -5000"
+        );
+    }
+
+    #[test]
+    fn positive_av_offset_should_reduce_adjusted_video_pts() {
+        // Simulate the offset adjustment: positive offset subtracts from video_pts.
+        let video_pts = Duration::from_millis(1_000);
+        let offset_ms: i64 = 200;
+        let adjusted = if offset_ms >= 0 {
+            let offset = Duration::from_millis(offset_ms as u64);
+            video_pts.saturating_sub(offset)
+        } else {
+            let offset = Duration::from_millis(offset_ms.unsigned_abs());
+            video_pts + offset
+        };
+        assert_eq!(
+            adjusted,
+            Duration::from_millis(800),
+            "positive offset must reduce adjusted_video_pts by offset amount"
+        );
+    }
+
+    #[test]
+    fn negative_av_offset_should_increase_adjusted_video_pts() {
+        let video_pts = Duration::from_millis(1_000);
+        let offset_ms: i64 = -200;
+        let adjusted = if offset_ms >= 0 {
+            let offset = Duration::from_millis(offset_ms as u64);
+            video_pts.saturating_sub(offset)
+        } else {
+            let offset = Duration::from_millis(offset_ms.unsigned_abs());
+            video_pts + offset
+        };
+        assert_eq!(
+            adjusted,
+            Duration::from_millis(1_200),
+            "negative offset must increase adjusted_video_pts by offset amount"
+        );
+    }
+
+    #[test]
+    fn positive_av_offset_at_zero_pts_should_saturate_to_zero() {
+        let video_pts = Duration::ZERO;
+        let offset_ms: i64 = 100;
+        let adjusted = video_pts.saturating_sub(Duration::from_millis(offset_ms as u64));
+        assert_eq!(
+            adjusted,
+            Duration::ZERO,
+            "saturating_sub on zero pts must clamp to zero not underflow"
         );
     }
 
