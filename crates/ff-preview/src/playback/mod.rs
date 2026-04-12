@@ -403,44 +403,7 @@ impl DecodeBuffer {
     /// Returns [`PreviewError::SeekFailed`] if the decode thread panicked or
     /// if the underlying `FFmpeg` seek fails.
     pub fn seek(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
-        // 1. Signal the background thread to exit its decode loop.
-        self.cancel.store(true, Ordering::Release);
-
-        // 2. Drain the channel so the background thread is not blocked on send().
-        if let Some(rx) = &self.rx {
-            while rx.try_recv().is_ok() {
-                self.buffered.fetch_sub(1, Ordering::Relaxed);
-            }
-        }
-
-        // 3. Join the thread to recover the decoder.
-        let mut decoder = self
-            .handle
-            .take()
-            .and_then(|h| h.join().ok())
-            .ok_or_else(|| PreviewError::SeekFailed {
-                target: target_pts,
-                reason: "decode thread unavailable for seek".into(),
-            })?;
-
-        // 4. Seek to the nearest I-frame at or before target_pts.
-        //    avformat_seek_file with AVSEEK_FLAG_BACKWARD and avcodec_flush_buffers
-        //    are handled inside VideoDecoder::seek (ff-decode/video/decoder_inner/seeking.rs).
-        decoder
-            .seek(target_pts, SeekMode::Backward)
-            .map_err(|e| PreviewError::SeekFailed {
-                target: target_pts,
-                reason: e.to_string(),
-            })?;
-
-        // 5. Reset counter, create a fresh channel, clear the cancel flag.
-        self.buffered.store(0, Ordering::Relaxed);
-        let (tx, rx) = sync_channel(self.capacity);
-        self.rx = Some(rx);
-        self.cancel.store(false, Ordering::Release);
-
-        // 6. Restart the background thread.  The new thread discards frames
-        //    whose PTS < target_pts before entering the normal decode loop.
+        let (mut decoder, tx) = self.stop_and_seek(target_pts)?;
         let buffered_thread = Arc::clone(&self.buffered);
         let cancel_thread = Arc::clone(&self.cancel);
 
@@ -481,6 +444,85 @@ impl DecodeBuffer {
         }));
 
         Ok(())
+    }
+
+    /// Coarse seek to the nearest I-frame at or before `target_pts`.
+    ///
+    /// Faster than [`seek`](Self::seek) because it skips the forward-decode
+    /// discard step. The next [`pop_frame`](Self::pop_frame) returns the frame
+    /// at the I-frame position, which may be up to ±½ GOP before `target_pts`
+    /// (typically ±1–2 s for H.264 at default settings).
+    ///
+    /// **Typical use:** call repeatedly while a scrub-bar is being dragged;
+    /// call [`seek`](Self::seek) on mouse-up for frame accuracy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError::SeekFailed`] if the decode thread panicked or
+    /// if the underlying `FFmpeg` seek fails.
+    pub fn seek_coarse(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
+        log::debug!("coarse seek target_pts={target_pts:?}");
+        let (mut decoder, tx) = self.stop_and_seek(target_pts)?;
+        let buffered_thread = Arc::clone(&self.buffered);
+        let cancel_thread = Arc::clone(&self.cancel);
+
+        // No discard loop — start the normal decode loop directly from the I-frame.
+        self.handle = Some(thread::spawn(move || -> VideoDecoder {
+            decode_loop(&mut decoder, &tx, &buffered_thread, &cancel_thread);
+            decoder
+        }));
+
+        Ok(())
+    }
+
+    /// Shared helper for `seek` and `seek_coarse`.
+    ///
+    /// 1. Signals cancel, drains the channel, joins the thread to recover the decoder.
+    /// 2. Seeks the decoder to the nearest I-frame at or before `target_pts`.
+    /// 3. Resets the buffered counter, creates a fresh channel, clears the cancel flag.
+    ///
+    /// Returns `(decoder, SyncSender)` ready for the caller to spawn a new thread.
+    fn stop_and_seek(
+        &mut self,
+        target_pts: Duration,
+    ) -> Result<(VideoDecoder, std::sync::mpsc::SyncSender<VideoFrame>), PreviewError> {
+        // 1. Signal the background thread to exit its decode loop.
+        self.cancel.store(true, Ordering::Release);
+
+        // 2. Drain the channel so the background thread is not blocked on send().
+        if let Some(rx) = &self.rx {
+            while rx.try_recv().is_ok() {
+                self.buffered.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+
+        // 3. Join the thread to recover the decoder.
+        let mut decoder = self
+            .handle
+            .take()
+            .and_then(|h| h.join().ok())
+            .ok_or_else(|| PreviewError::SeekFailed {
+                target: target_pts,
+                reason: "decode thread unavailable for seek".into(),
+            })?;
+
+        // 4. Seek to the nearest I-frame at or before target_pts.
+        //    avformat_seek_file with AVSEEK_FLAG_BACKWARD and avcodec_flush_buffers
+        //    are handled inside VideoDecoder::seek (ff-decode/video/decoder_inner/seeking.rs).
+        decoder
+            .seek(target_pts, SeekMode::Backward)
+            .map_err(|e| PreviewError::SeekFailed {
+                target: target_pts,
+                reason: e.to_string(),
+            })?;
+
+        // 5. Reset counter, create a fresh channel, clear the cancel flag.
+        self.buffered.store(0, Ordering::Relaxed);
+        let (tx, rx) = sync_channel(self.capacity);
+        self.rx = Some(rx);
+        self.cancel.store(false, Ordering::Release);
+
+        Ok((decoder, tx))
     }
 }
 
