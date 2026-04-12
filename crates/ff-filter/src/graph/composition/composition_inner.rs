@@ -299,8 +299,49 @@ pub(super) unsafe fn build_video_composition(
         }
 
         // ── Optional opacity ──────────────────────────────────────────────────
-        let opacity = layer.opacity.value_at(Duration::ZERO).clamp(0.0, 1.0);
-        if opacity < 1.0 {
+        //
+        // Animated opacity: add `format=yuva420p` → `colorchannelmixer aa=<v>`
+        // so that `tick()` can update the alpha plane per-frame via send_command.
+        // The overlay filter must use `format=auto` to blend the alpha channel.
+        //
+        // Static opacity < 1.0: legacy path (colorchannelmixer only, no alpha
+        // conversion).  The overlay still receives a yuv420p frame which FFmpeg
+        // handles by treating the fully-opaque layer as semi-transparent via the
+        // colorchannelmixer alpha reduction.
+        let is_animated_opacity = matches!(layer.opacity, AnimatedValue::Track(_));
+        let opacity_initial = layer.opacity.value_at(Duration::ZERO).clamp(0.0, 1.0);
+
+        if is_animated_opacity {
+            // ── format=yuva420p: ensure the alpha plane exists ─────────────────
+            let fmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+            if fmt_filter.is_null() {
+                bail!(graph, "filter not found: format");
+            }
+            let Ok(fmt_name) = CString::new(format!("opacity_fmt{idx}")) else {
+                bail!(graph, "CString::new failed for format name");
+            };
+            let mut fmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut fmt_ctx,
+                fmt_filter,
+                fmt_name.as_ptr(),
+                c"yuva420p".as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create format filter layer={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, fmt_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: →format layer={idx}"));
+            }
+            chain_end = fmt_ctx;
+
+            // ── colorchannelmixer: scale alpha plane by opacity ────────────────
             let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
             if ccm_filter.is_null() {
                 bail!(graph, "filter not found: colorchannelmixer");
@@ -308,7 +349,52 @@ pub(super) unsafe fn build_video_composition(
             let Ok(ccm_name) = CString::new(format!("ccm{idx}")) else {
                 bail!(graph, "CString::new failed for colorchannelmixer name");
             };
-            let Ok(ccm_args) = CString::new(format!("aa={opacity}")) else {
+            let Ok(ccm_args) = CString::new(format!("aa={opacity_initial:.6}")) else {
+                bail!(graph, "CString::new failed for colorchannelmixer args");
+            };
+            let mut ccm_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut ccm_ctx,
+                ccm_filter,
+                ccm_name.as_ptr(),
+                ccm_args.as_ptr(),
+                std::ptr::null_mut(),
+                graph,
+            );
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create colorchannelmixer filter layer={idx} code={ret}")
+                );
+            }
+            let ret = ff_sys::avfilter_link(chain_end, 0, ccm_ctx, 0);
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("link failed: →colorchannelmixer layer={idx}")
+                );
+            }
+            chain_end = ccm_ctx;
+
+            // Register animation entry so tick() can update alpha per-frame.
+            if let AnimatedValue::Track(ref track) = layer.opacity {
+                animations.push(AnimationEntry {
+                    node_name: format!("ccm{idx}"),
+                    param: "aa",
+                    track: track.clone(),
+                    suffix: "",
+                });
+            }
+        } else if opacity_initial < 1.0 {
+            // Static opacity < 1.0: legacy path.
+            let ccm_filter = ff_sys::avfilter_get_by_name(c"colorchannelmixer".as_ptr());
+            if ccm_filter.is_null() {
+                bail!(graph, "filter not found: colorchannelmixer");
+            }
+            let Ok(ccm_name) = CString::new(format!("ccm{idx}")) else {
+                bail!(graph, "CString::new failed for colorchannelmixer name");
+            };
+            let Ok(ccm_args) = CString::new(format!("aa={opacity_initial}")) else {
                 bail!(graph, "CString::new failed for colorchannelmixer args");
             };
             let mut ccm_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
@@ -340,6 +426,9 @@ pub(super) unsafe fn build_video_composition(
         // Last layer uses eof_action=endall so the graph terminates when that
         // layer's source ends.  Intermediate layers use pass so the canvas
         // continues while other layers are still producing.
+        //
+        // When the overlay input has an alpha channel (animated opacity path),
+        // `format=auto` tells FFmpeg to blend using that alpha.
         let eof_action = if is_last { "endall" } else { "pass" };
         let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
         if overlay_filter.is_null() {
@@ -353,8 +442,14 @@ pub(super) unsafe fn build_video_composition(
         let needs_eval_frame = matches!(layer.x, AnimatedValue::Track(_))
             || matches!(layer.y, AnimatedValue::Track(_));
         let eval_suffix = if needs_eval_frame { ":eval=frame" } else { "" };
-        let Ok(ov_args) = CString::new(format!("{lx}:{ly}:eof_action={eof_action}{eval_suffix}"))
-        else {
+        let format_suffix = if is_animated_opacity {
+            ":format=auto"
+        } else {
+            ""
+        };
+        let Ok(ov_args) = CString::new(format!(
+            "{lx}:{ly}:eof_action={eof_action}{eval_suffix}{format_suffix}"
+        )) else {
             bail!(graph, "CString::new failed for overlay args");
         };
         let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
@@ -389,6 +484,7 @@ pub(super) unsafe fn build_video_composition(
                 node_name: format!("overlay{idx}"),
                 param: "x",
                 track: track.clone(),
+                suffix: "",
             });
         }
         if let AnimatedValue::Track(ref track) = layer.y {
@@ -396,6 +492,7 @@ pub(super) unsafe fn build_video_composition(
                 node_name: format!("overlay{idx}"),
                 param: "y",
                 track: track.clone(),
+                suffix: "",
             });
         }
 
@@ -671,11 +768,14 @@ pub(super) unsafe fn build_audio_mix(
             chain_end = vol_ctx;
 
             // Register animation entry if the volume is time-varying.
+            // The `volume` filter option is a string expression: append "dB" so
+            // that `apply_animations` sends e.g. "-60.000000dB" not "-60.000000".
             if let AnimatedValue::Track(ref vol_track) = track.volume {
                 animations.push(AnimationEntry {
                     node_name: node_name.clone(),
                     param: "volume",
                     track: vol_track.clone(),
+                    suffix: "dB",
                 });
             }
         }

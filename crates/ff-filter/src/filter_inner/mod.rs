@@ -448,6 +448,7 @@ mod tests {
             node_name: "gblur_0".to_owned(),
             param: "sigma",
             track,
+            suffix: "",
         }];
 
         // Must not panic even though graph == None.

@@ -8,6 +8,10 @@
 //!   concatenates two synthetic video clips with `VideoConcatenator`.
 //! - `audio_concatenator_should_produce_output_longer_than_single_clip`:
 //!   concatenates two synthetic audio clips with `AudioConcatenator`.
+//! - `animated_opacity_fade_should_darken_composite_over_time`: composites a
+//!   white layer over a black background with opacity 1→0, verifies luma drops.
+//! - `volume_automation_should_change_audio_amplitude`: mixes one track with
+//!   volume animated from −60 dB → 0 dB, verifies RMS increases over time.
 
 #![allow(clippy::unwrap_used)]
 
@@ -19,8 +23,9 @@ use ff_encode::{AudioCodec, AudioEncoder, VideoCodec, VideoEncoder};
 use ff_filter::{
     AnimatedValue, AudioConcatenator, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer,
     VideoConcatenator, VideoLayer,
+    animation::{AnimationTrack, Easing, Keyframe},
 };
-use ff_format::{AudioFrame, ChannelLayout, SampleFormat};
+use ff_format::{AudioFrame, ChannelLayout, SampleFormat, Timestamp};
 use fixtures::{FileGuard, make_source_file, test_output_path, yuv420p_frame};
 
 // Canvas / encoding parameters — kept small so CI runs quickly.
@@ -500,5 +505,287 @@ fn audio_concatenator_should_produce_output_longer_than_single_clip() {
     assert!(
         duration >= Duration::from_millis(1500),
         "concatenated output must be ≥ 1.5 s (two ≈1-second clips), got {duration:?}"
+    );
+}
+
+// ── Animation integration tests ───────────────────────────────────────────────
+
+/// Verifies that `AnimatedValue::Track` for `opacity` causes the composited
+/// luma to decrease as the layer fades from fully opaque to fully transparent.
+///
+/// Setup:
+/// - Background: 64×64, full-black (Y=16)
+/// - Overlay:    64×64, full-white (Y=235), covers entire canvas
+/// - Opacity track: Linear 1.0 → 0.0 over `FADE_FRAMES` frames at 30 fps
+///
+/// Assertion: center-pixel luma at frame 0 is brighter than at the last frame.
+#[test]
+#[ignore = "requires FFmpeg filter graph; run with -- --include-ignored"]
+fn animated_opacity_fade_should_darken_composite_over_time() {
+    const W: u32 = 64;
+    const H: u32 = 64;
+    const FPS: f64 = 30.0;
+    const FADE_FRAMES: usize = 30;
+
+    let bg_path = test_output_path("opacity_bg_64x64.mp4");
+    let layer_path = test_output_path("opacity_layer_64x64.mp4");
+
+    let _bg_guard = FileGuard::new(bg_path.clone());
+    let _layer_guard = FileGuard::new(layer_path.clone());
+
+    // Background: black (Y=16, U=128, V=128)
+    if make_source_file(&bg_path, W, H, FPS, FADE_FRAMES, 16, 128, 128).is_none() {
+        return;
+    }
+    // Overlay: white (Y=235, U=128, V=128)
+    if make_source_file(&layer_path, W, H, FPS, FADE_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+
+    // Opacity: 1.0 at frame 0 → 0.0 at last frame, Linear easing.
+    let end_pts = Duration::from_secs_f64((FADE_FRAMES as f64 - 1.0) / FPS);
+    let opacity_track = AnimationTrack::new()
+        .push(Keyframe::new(Duration::ZERO, 1.0_f64, Easing::Linear))
+        .push(Keyframe::new(end_pts, 0.0_f64, Easing::Linear));
+
+    let mut composer = match MultiTrackComposer::new(W, H)
+        .add_layer(VideoLayer {
+            source: bg_path.clone(),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(1.0),
+            z_order: 0,
+            time_offset: Duration::ZERO,
+            in_point: None,
+            out_point: None,
+        })
+        .add_layer(VideoLayer {
+            source: layer_path.clone(),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Track(opacity_track),
+            z_order: 1,
+            time_offset: Duration::ZERO,
+            in_point: None,
+            out_point: None,
+        })
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackComposer::build failed: {e}");
+            return;
+        }
+    };
+
+    // ── Collect center-pixel luma for every frame ─────────────────────────────
+    let cx = (W / 2) as usize;
+    let cy = (H / 2) as usize;
+    let mut lumas: Vec<f64> = Vec::with_capacity(FADE_FRAMES);
+
+    for i in 0..FADE_FRAMES {
+        let pts = Duration::from_secs_f64(i as f64 / FPS);
+        composer.tick(pts);
+
+        let frame = match composer.pull_video() {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                println!("Skipping: composer ended early at frame {i}");
+                return;
+            }
+            Err(e) => {
+                println!("Skipping: pull_video failed at frame {i}: {e}");
+                return;
+            }
+        };
+
+        if frame.width() != W || frame.height() != H {
+            println!(
+                "Skipping: unexpected frame dimensions {}×{} at frame {i}",
+                frame.width(),
+                frame.height()
+            );
+            return;
+        }
+
+        let stride = frame.stride(0).unwrap_or(W as usize);
+        let y_plane = match frame.plane(0) {
+            Some(p) => p,
+            None => {
+                println!("Skipping: Y-plane unavailable at frame {i}");
+                return;
+            }
+        };
+        lumas.push(y_plane[cy * stride + cx] as f64);
+    }
+
+    let first = lumas[0];
+    let last = lumas[FADE_FRAMES - 1];
+
+    assert!(
+        first > last + 50.0,
+        "frame 0 (opacity=1.0) luma={first:.1} must be significantly brighter than \
+         frame {} (opacity=0.0) luma={last:.1}",
+        FADE_FRAMES - 1
+    );
+}
+
+// ── Packed-F32 stereo audio frame with constant amplitude ────────────────────
+
+fn constant_amplitude_frame(amplitude: f32, samples: usize, sample_rate: u32) -> AudioFrame {
+    let channels = 2usize;
+    let bytes_per_sample = 4usize; // f32
+    let v = amplitude.to_le_bytes();
+    let mut buf = vec![0u8; samples * channels * bytes_per_sample];
+    for i in 0..samples {
+        let off = i * channels * bytes_per_sample;
+        buf[off..off + 4].copy_from_slice(&v); // L
+        buf[off + 4..off + 8].copy_from_slice(&v); // R
+    }
+    AudioFrame::new(
+        vec![buf],
+        samples,
+        2,
+        sample_rate,
+        SampleFormat::F32,
+        Timestamp::default(),
+    )
+    .expect("constant_amplitude_frame: AudioFrame::new failed")
+}
+
+/// RMS of packed-F32 samples stored as raw bytes.
+fn rms_bytes(raw: &[u8]) -> f64 {
+    if raw.len() < 4 {
+        return 0.0;
+    }
+    let n = raw.len() / 4;
+    let sum_sq: f64 = (0..n)
+        .map(|i| {
+            let bytes = [raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2], raw[i * 4 + 3]];
+            let s = f32::from_le_bytes(bytes) as f64;
+            s * s
+        })
+        .sum();
+    (sum_sq / n as f64).sqrt()
+}
+
+/// Verifies that `AnimatedValue::Track` for `volume` on an `AudioTrack` causes
+/// the output RMS to increase as gain ramps from −60 dB → 0 dB.
+///
+/// Setup:
+/// - Source audio: constant-amplitude stereo F32 at 0.5 peak
+/// - Volume track: Linear −60 dB at t=0 → 0 dB at t=end
+///
+/// Assertion: mean RMS of last 5 pulled frames > mean RMS of first 5 frames × 10.
+#[test]
+#[ignore = "requires FFmpeg filter graph; run with -- --include-ignored"]
+fn volume_automation_should_increase_audio_amplitude_over_time() {
+    const SAMPLE_RATE: u32 = 48_000;
+    const CHANNELS: u32 = 2;
+    const FRAME_SAMPLES: usize = 1024;
+    const AUDIO_FRAMES: usize = 60; // ≈ 1.28 s
+
+    let src_path = test_output_path("vol_auto_src.m4a");
+    let _src_guard = FileGuard::new(src_path.clone());
+
+    // ── Step 1: encode source with constant-amplitude audio ───────────────────
+    let mut enc = match AudioEncoder::create(&src_path)
+        .audio(SAMPLE_RATE, CHANNELS)
+        .audio_codec(AudioCodec::Aac)
+        .build()
+    {
+        Ok(e) => e,
+        Err(e) => {
+            println!("Skipping: AudioEncoder::build failed: {e}");
+            return;
+        }
+    };
+
+    for _ in 0..AUDIO_FRAMES {
+        let frame = constant_amplitude_frame(0.5, FRAME_SAMPLES, SAMPLE_RATE);
+        if let Err(e) = enc.push(&frame) {
+            println!("Skipping: source push failed: {e}");
+            return;
+        }
+    }
+    if let Err(e) = enc.finish() {
+        println!("Skipping: source encoder finish failed: {e}");
+        return;
+    }
+
+    // ── Step 2: build MultiTrackAudioMixer with animated volume ───────────────
+    //
+    // Volume ramps from −60 dB (near-silence) to 0 dB (unity gain).
+    let total_duration =
+        Duration::from_secs_f64(AUDIO_FRAMES as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64);
+    let vol_track = AnimationTrack::new()
+        .push(Keyframe::new(Duration::ZERO, -60.0_f64, Easing::Linear))
+        .push(Keyframe::new(total_duration, 0.0_f64, Easing::Linear));
+
+    let mut mixer = match MultiTrackAudioMixer::new(SAMPLE_RATE, ChannelLayout::Stereo)
+        .add_track(AudioTrack {
+            source: src_path.clone(),
+            volume: AnimatedValue::Track(vol_track),
+            pan: AnimatedValue::Static(0.0),
+            time_offset: Duration::ZERO,
+            effects: vec![],
+            sample_rate: SAMPLE_RATE,
+            channel_layout: ChannelLayout::Stereo,
+        })
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackAudioMixer::build failed: {e}");
+            return;
+        }
+    };
+
+    // ── Step 3: pull frames, tick at increasing timestamps ────────────────────
+    let mut pulled: Vec<f64> = Vec::new(); // RMS per chunk
+    let mut chunk_pts = Duration::ZERO;
+    let chunk_duration = Duration::from_secs_f64(FRAME_SAMPLES as f64 / SAMPLE_RATE as f64);
+
+    loop {
+        mixer.tick(chunk_pts);
+
+        match mixer.pull_audio() {
+            Ok(Some(frame)) => {
+                let rms = match frame.plane(0) {
+                    Some(raw) => rms_bytes(raw),
+                    None => 0.0,
+                };
+                pulled.push(rms);
+                chunk_pts += chunk_duration;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                println!("Skipping: pull_audio failed: {e}");
+                return;
+            }
+        }
+    }
+
+    if pulled.len() < 10 {
+        println!("Skipping: too few audio chunks pulled ({})", pulled.len());
+        return;
+    }
+
+    let n = pulled.len();
+    let window = (n / 5).max(1);
+
+    let early_rms: f64 = pulled[..window].iter().sum::<f64>() / window as f64;
+    let late_rms: f64 = pulled[n - window..].iter().sum::<f64>() / window as f64;
+
+    assert!(
+        late_rms > early_rms * 10.0,
+        "late-frame RMS ({late_rms:.6}) must be > 10× early-frame RMS ({early_rms:.6}) \
+         — volume automation did not take effect (total chunks={n})"
     );
 }

@@ -37,4 +37,7 @@ pub struct AnimationEntry {
     pub param: &'static str,
     /// The animation track providing the value over time.
     pub track: AnimationTrack<f64>,
+    /// Optional suffix appended to the formatted value before sending, e.g.
+    /// `"dB"` for the `volume` filter.  Use `""` for dimensionless parameters.
+    pub suffix: &'static str,
 }

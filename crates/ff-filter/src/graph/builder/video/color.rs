@@ -42,6 +42,7 @@ fn push_tuple_track_entries(
             node_name: node_name.to_owned(),
             param,
             track: f64_track,
+            suffix: "",
         });
     }
 }
@@ -140,6 +141,7 @@ impl FilterGraphBuilder {
                     node_name: node_name.clone(),
                     param,
                     track: track.clone(),
+                    suffix: "",
                 });
             }
         }
