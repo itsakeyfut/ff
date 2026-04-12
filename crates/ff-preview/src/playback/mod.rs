@@ -17,6 +17,8 @@ use ff_format::VideoFrame;
 
 use crate::error::PreviewError;
 
+// ── MasterClock ───────────────────────────────────────────────────────────────
+
 /// Internal state machine for `PlaybackClock`.
 ///
 /// Transitions:
@@ -231,6 +233,73 @@ impl Default for PlaybackClock {
     }
 }
 
+/// Reference clock for the A/V sync loop in [`PreviewPlayer::run`].
+///
+/// - `Audio`: driven by consumed audio samples ÷ `sample_rate`.
+/// - `System`: driven by [`std::time::Instant`] (video-only files).
+enum MasterClock {
+    Audio {
+        samples_consumed: Arc<AtomicU64>,
+        sample_rate: u32,
+    },
+    System {
+        started_at: Instant,
+        base_pts: Duration,
+    },
+}
+
+impl MasterClock {
+    /// Current master clock position.
+    #[allow(clippy::cast_precision_loss)]
+    fn current_pts(&self) -> Duration {
+        match self {
+            Self::Audio {
+                samples_consumed,
+                sample_rate,
+            } => {
+                let s = samples_consumed.load(Ordering::Relaxed);
+                Duration::from_secs_f64(s as f64 / f64::from(*sample_rate))
+            }
+            Self::System {
+                started_at,
+                base_pts,
+            } => *base_pts + started_at.elapsed(),
+        }
+    }
+
+    /// Whether A/V sync should be applied for the current frame.
+    ///
+    /// - `System`: always `true` — wall clock drives FPS pacing.
+    /// - `Audio`: `true` only after the first [`PreviewPlayer::pop_audio_samples`]
+    ///   call so that the sync loop does not sleep indefinitely before audio
+    ///   starts (preserves existing behaviour until issue #382 implements real
+    ///   audio buffering).
+    fn should_sync(&self) -> bool {
+        match self {
+            Self::System { .. } => true,
+            Self::Audio {
+                samples_consumed, ..
+            } => samples_consumed.load(Ordering::Relaxed) > 0,
+        }
+    }
+
+    /// Reset the system clock to start ticking from `base` right now.
+    ///
+    /// No-op for the `Audio` variant.
+    fn reset(&mut self, base: Duration) {
+        if let Self::System {
+            started_at,
+            base_pts,
+        } = self
+        {
+            *started_at = Instant::now();
+            *base_pts = base;
+        }
+    }
+}
+
+// ── FrameSink ─────────────────────────────────────────────────────────────────
+
 /// Receives decoded video frames during [`PreviewPlayer`] playback.
 ///
 /// Implement this trait and register it via [`PreviewPlayer::set_sink`] to
@@ -269,29 +338,41 @@ pub struct PreviewPlayer {
     paused: AtomicBool,
     /// Set to `true` to signal [`run`](Self::run) to stop after the current frame.
     stopped: AtomicBool,
-    /// Total number of audio samples consumed by
-    /// [`pop_audio_samples`](Self::pop_audio_samples). Divided by
-    /// `sample_rate` to obtain the audio master clock PTS.
-    total_audio_samples: AtomicU64,
-    /// Audio sample rate in Hz. Zero when no audio track is present.
-    sample_rate: u32,
+    /// Master clock for A/V sync: audio samples counter or `Instant` wall clock.
+    clock: MasterClock,
 }
 
 impl PreviewPlayer {
     /// Open a media file and prepare for playback.
     ///
-    /// Validates the file by opening a decoder. Returns [`PreviewError`] if
-    /// the file is missing or contains no decodable video stream.
+    /// Probes the file to detect audio presence and frame rate, then opens a
+    /// [`DecodeBuffer`] for the video stream. Returns [`PreviewError`] if the
+    /// file is missing or contains no decodable stream.
     ///
     /// # Errors
     ///
-    /// Returns [`PreviewError`] if the file cannot be opened or decoded.
+    /// Returns [`PreviewError`] if the file cannot be probed or decoded.
     pub fn open(path: &Path) -> Result<Self, PreviewError> {
-        // Open a temporary decoder to validate the file and read fps.
-        // DecodeBuffer opens its own decoder internally.
-        let probe = VideoDecoder::open(path).build()?;
-        let fps = probe.frame_rate().max(1.0);
-        drop(probe);
+        let info = ff_probe::open(path)?;
+
+        let fps = info.frame_rate().unwrap_or(30.0).max(1.0);
+
+        let clock = if info.has_audio() {
+            let sample_rate = info.sample_rate().unwrap_or(48_000);
+            MasterClock::Audio {
+                samples_consumed: Arc::new(AtomicU64::new(0)),
+                sample_rate,
+            }
+        } else {
+            log::debug!(
+                "using system clock fallback path={} no_audio=true",
+                path.display()
+            );
+            MasterClock::System {
+                started_at: Instant::now(),
+                base_pts: Duration::ZERO,
+            }
+        };
 
         let decode_buf = DecodeBuffer::open(path).build()?;
 
@@ -301,8 +382,7 @@ impl PreviewPlayer {
             sink: None,
             paused: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
-            total_audio_samples: AtomicU64::new(0),
-            sample_rate: 0,
+            clock,
         })
     }
 
@@ -342,13 +422,18 @@ impl PreviewPlayer {
     ///
     /// Full audio decoding and buffering is implemented in issue #382.
     pub fn pop_audio_samples(&mut self, n_samples: usize) -> Vec<f32> {
-        if self.sample_rate == 0 || n_samples == 0 {
+        let MasterClock::Audio {
+            samples_consumed, ..
+        } = &self.clock
+        else {
+            return Vec::new();
+        };
+        if n_samples == 0 {
             return Vec::new();
         }
         // TODO(#382): implement actual audio decoding and buffering.
         let samples = vec![0.0_f32; n_samples];
-        self.total_audio_samples
-            .fetch_add(n_samples as u64, Ordering::Relaxed);
+        samples_consumed.fetch_add(n_samples as u64, Ordering::Relaxed);
         samples
     }
 
@@ -357,13 +442,14 @@ impl PreviewPlayer {
     /// Blocks until [`stop`](Self::stop) is called or the end of file is
     /// reached. Must be called from the presentation thread.
     ///
-    /// Video PTS is compared against the audio master clock
-    /// (`total_audio_samples / sample_rate`):
-    /// - **Early frames** (video PTS > audio clock + 1 frame period): sleep.
-    /// - **Late frames** (video PTS < audio clock − 1 frame period): dropped.
+    /// Video PTS is compared against the master clock:
+    /// - **Early frames** (video PTS > clock + 1 frame period): sleep.
+    /// - **Late frames** (video PTS < clock − 1 frame period): dropped.
     ///
-    /// When no audio track is present (`sample_rate == 0`) the audio clock
-    /// returns `Duration::ZERO`; the system-clock fallback is in issue #380.
+    /// For video-only files the `System` clock (`Instant`) drives real-time
+    /// pacing. For files with audio the `Audio` clock drives sync once
+    /// [`pop_audio_samples`](Self::pop_audio_samples) has been called at least
+    /// once; before that, frames are presented immediately.
     ///
     /// # Errors
     ///
@@ -371,6 +457,10 @@ impl PreviewPlayer {
     pub fn run(&mut self) -> Result<(), PreviewError> {
         let fps = self.fps.max(1.0);
         let frame_period = Duration::from_secs_f64(1.0 / fps);
+
+        // Start the system clock from position 0.
+        // Seek events update base_pts during playback.
+        self.clock.reset(Duration::ZERO);
 
         loop {
             if self.stopped.load(Ordering::Acquire) {
@@ -390,29 +480,32 @@ impl PreviewPlayer {
                     // Non-blocking — loop immediately to check stopped/paused.
                 }
                 FrameResult::Frame(frame) => {
-                    // Apply A/V sync only when an audio track is present.
-                    // Without audio, frames are presented as fast as the
-                    // decoder produces them; the system-clock fallback that
-                    // regulates pacing for video-only files is in issue #380.
-                    if self.sample_rate > 0 {
+                    // Update system clock base when a seek just completed.
+                    while let Ok(SeekEvent::Completed { pts }) =
+                        self.decode_buf.seek_events().try_recv()
+                    {
+                        self.clock.reset(pts);
+                    }
+
+                    if self.clock.should_sync() {
                         let video_pts = if frame.timestamp().is_valid() {
                             frame.timestamp().as_duration()
                         } else {
                             Duration::ZERO
                         };
-                        let audio_pts = self.audio_clock_pts();
-                        let diff = video_pts.as_secs_f64() - audio_pts.as_secs_f64();
+                        let clock_pts = self.clock.current_pts();
+                        let diff = video_pts.as_secs_f64() - clock_pts.as_secs_f64();
                         let fp = frame_period.as_secs_f64();
 
                         if diff > fp {
-                            // Frame is early — sleep until it aligns with the audio clock.
+                            // Frame is early — sleep until it aligns with the clock.
                             let sleep_secs = (diff - fp / 2.0).max(0.0);
                             thread::sleep(Duration::from_secs_f64(sleep_secs));
                         } else if diff < -fp {
                             // Frame is more than one period late — drop silently.
                             log::debug!(
                                 "dropped late frame video_pts={video_pts:?} \
-                                 audio_pts={audio_pts:?}"
+                                 clock_pts={clock_pts:?}"
                             );
                             continue;
                         }
@@ -423,22 +516,6 @@ impl PreviewPlayer {
             }
         }
         Ok(())
-    }
-
-    /// Returns the current audio master clock position.
-    ///
-    /// `total_audio_samples / sample_rate` when audio is active.
-    /// `Duration::ZERO` when no audio track is present (see issue #380).
-    fn audio_clock_pts(&self) -> Duration {
-        if self.sample_rate == 0 {
-            return Duration::ZERO;
-        }
-        let samples = self.total_audio_samples.load(Ordering::Relaxed);
-        // Precision loss is negligible for audio clock purposes: u64 overflows
-        // f64 mantissa only above ~9 × 10^15 samples (≫ any real media file).
-        #[allow(clippy::cast_precision_loss)]
-        let secs = samples as f64 / f64::from(self.sample_rate);
-        Duration::from_secs_f64(secs)
     }
 
     /// Pass a frame to the registered sink, if any.
@@ -1236,6 +1313,83 @@ mod tests {
             clock.current_pts(),
             Duration::ZERO,
             "stop() must reset seek_offset to ZERO"
+        );
+    }
+
+    // ── MasterClock tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn master_clock_system_should_advance_from_base_pts() {
+        let clock = MasterClock::System {
+            started_at: Instant::now(),
+            base_pts: Duration::from_secs(5),
+        };
+        let pts = clock.current_pts();
+        assert!(
+            pts >= Duration::from_secs(5),
+            "pts must be >= base_pts; got {pts:?}"
+        );
+        assert!(
+            pts < Duration::from_secs(6),
+            "pts must not advance 1 s in a unit test; got {pts:?}"
+        );
+        assert!(clock.should_sync(), "System clock must always sync");
+    }
+
+    #[test]
+    fn master_clock_system_reset_should_update_base_and_time_reference() {
+        let mut clock = MasterClock::System {
+            started_at: Instant::now() - Duration::from_secs(10),
+            base_pts: Duration::ZERO,
+        };
+        assert!(
+            clock.current_pts() >= Duration::from_secs(9),
+            "clock should show ~10 s before reset"
+        );
+        clock.reset(Duration::from_secs(5));
+        let pts = clock.current_pts();
+        assert!(
+            pts >= Duration::from_secs(5),
+            "pts must be >= new base after reset; got {pts:?}"
+        );
+        assert!(
+            pts < Duration::from_secs(6),
+            "pts must not advance 1 s in a unit test after reset; got {pts:?}"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_should_not_sync_before_first_sample() {
+        let clock = MasterClock::Audio {
+            samples_consumed: Arc::new(AtomicU64::new(0)),
+            sample_rate: 48_000,
+        };
+        assert!(
+            !clock.should_sync(),
+            "audio clock must not sync before any samples are consumed"
+        );
+        assert_eq!(
+            clock.current_pts(),
+            Duration::ZERO,
+            "audio clock PTS must be zero before any samples"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_should_sync_and_report_pts_after_samples_consumed() {
+        let consumed = Arc::new(AtomicU64::new(48_000));
+        let clock = MasterClock::Audio {
+            samples_consumed: Arc::clone(&consumed),
+            sample_rate: 48_000,
+        };
+        assert!(
+            clock.should_sync(),
+            "audio clock must sync when samples > 0"
+        );
+        assert_eq!(
+            clock.current_pts(),
+            Duration::from_secs(1),
+            "48000 samples at 48000 Hz must equal 1 second"
         );
     }
 

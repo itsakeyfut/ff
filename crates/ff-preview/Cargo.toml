@@ -16,6 +16,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 ff-decode   = { workspace = true }
 ff-format   = { workspace = true }
+ff-probe    = { workspace = true }
 ff-sys      = { workspace = true }
 thiserror   = { workspace = true }
 log         = { workspace = true }
