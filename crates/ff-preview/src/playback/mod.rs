@@ -462,6 +462,12 @@ pub struct PreviewPlayer {
     sws: playback_inner::SwsRgbaConverter,
     /// Scratch buffer reused by `present_frame` for the RGBA output of `sws.convert()`.
     rgba_buf: Vec<u8>,
+    /// The path currently being decoded — either the original or an activated proxy.
+    /// Starts as a clone of `path`; updated by `use_proxy_if_available`.
+    active_path: PathBuf,
+    /// Set to `true` by `play()` to prevent `use_proxy_if_available` from being
+    /// called after playback has started.
+    started: AtomicBool,
 }
 
 impl PreviewPlayer {
@@ -527,6 +533,8 @@ impl PreviewPlayer {
             audio_handle,
             sws: playback_inner::SwsRgbaConverter::new(),
             rgba_buf: Vec::new(),
+            active_path: path.to_path_buf(),
+            started: AtomicBool::new(false),
         })
     }
 
@@ -540,6 +548,7 @@ impl PreviewPlayer {
     /// Clears the `paused` and `stopped` flags; [`run`](Self::run) begins
     /// presenting frames on its next iteration.
     pub fn play(&mut self) {
+        self.started.store(true, Ordering::Release);
         self.paused.store(false, Ordering::Release);
         self.stopped.store(false, Ordering::Release);
     }
@@ -557,6 +566,112 @@ impl PreviewPlayer {
     /// [`run`](Self::run) returns after the current frame completes.
     pub fn stop(&mut self) {
         self.stopped.store(true, Ordering::Release);
+    }
+
+    /// If a proxy file for this media exists in `proxy_dir`, use it transparently.
+    ///
+    /// Must be called before [`play`](Self::play). Returns `true` if a proxy was
+    /// found and activated; returns `false` if no proxy exists (original file
+    /// continues to be used).
+    ///
+    /// Proxy lookup order: `half` → `quarter` → `eighth`; first match wins.
+    ///
+    /// When a proxy is active, [`FrameSink::push_frame`] delivers frames at the
+    /// proxy's native resolution. Callers should not assume a fixed resolution.
+    ///
+    /// If called after [`play`](Self::play), logs a warning and returns `false`.
+    pub fn use_proxy_if_available(&mut self, proxy_dir: &Path) -> bool {
+        if self.started.load(Ordering::Acquire) {
+            log::warn!("use_proxy_if_available called after play; ignored");
+            return false;
+        }
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output")
+            .to_owned();
+
+        for suffix in ["half", "quarter", "eighth"] {
+            let candidate = proxy_dir.join(format!("{stem}_proxy_{suffix}.mp4"));
+            if candidate.exists() {
+                match self.activate_proxy(&candidate) {
+                    Ok(()) => {
+                        log::debug!("proxy activated path={}", candidate.display());
+                        return true;
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "proxy activation failed path={} error={e}",
+                            candidate.display()
+                        );
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Returns the path currently being decoded — either the original file or
+    /// the activated proxy.
+    pub fn active_source(&self) -> &Path {
+        &self.active_path
+    }
+
+    /// Replace the internal decode buffer and audio thread with those backed by
+    /// `proxy_path`. Called exclusively from `use_proxy_if_available`.
+    fn activate_proxy(&mut self, proxy_path: &Path) -> Result<(), PreviewError> {
+        let info = ff_probe::open(proxy_path)?;
+        let fps = info.frame_rate().unwrap_or(30.0).max(1.0);
+        let decode_buf = DecodeBuffer::open(proxy_path).build()?;
+
+        // Cancel existing audio thread; clear stale samples.
+        if let Some(cancel) = &self.audio_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(buf) = &self.audio_buf {
+            buf.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        // Detach — the old thread exits on its own when cancel fires.
+        drop(self.audio_handle.take());
+
+        let (clock, audio_buf, audio_cancel, audio_handle) = if info.has_audio() {
+            let sample_rate = info.sample_rate().unwrap_or(48_000);
+            let buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let handle = spawn_audio_thread(
+                proxy_path.to_path_buf(),
+                Duration::ZERO,
+                Arc::clone(&buf),
+                Arc::clone(&cancel),
+            );
+            let clock = MasterClock::Audio {
+                samples_consumed: Arc::new(AtomicU64::new(0)),
+                sample_rate,
+            };
+            (clock, Some(buf), Some(cancel), Some(handle))
+        } else {
+            log::debug!(
+                "proxy has no audio, using system clock path={}",
+                proxy_path.display()
+            );
+            let clock = MasterClock::System {
+                started_at: Instant::now(),
+                base_pts: Duration::ZERO,
+            };
+            (clock, None, None, None)
+        };
+
+        self.active_path = proxy_path.to_path_buf();
+        self.fps = fps;
+        self.decode_buf = decode_buf;
+        self.clock = clock;
+        self.audio_buf = audio_buf;
+        self.audio_cancel = audio_cancel;
+        self.audio_handle = audio_handle;
+        Ok(())
     }
 
     /// Set the A/V offset correction in milliseconds.
@@ -770,7 +885,7 @@ impl PreviewPlayer {
         if let Some(buf) = &self.audio_buf {
             let new_cancel = Arc::new(AtomicBool::new(false));
             let handle = spawn_audio_thread(
-                self.path.clone(),
+                self.active_path.clone(),
                 pts,
                 Arc::clone(buf),
                 Arc::clone(&new_cancel),
@@ -2267,6 +2382,59 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_none()
+        );
+    }
+
+    // ── use_proxy_if_available / active_source tests ──────────────────────────
+
+    #[test]
+    fn use_proxy_if_available_should_return_false_when_no_proxy_in_dir() {
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        let tmp = std::env::temp_dir().join("ff_preview_no_proxy_dir_test");
+        let _ = std::fs::create_dir_all(&tmp);
+        let found = player.use_proxy_if_available(&tmp);
+        assert!(
+            !found,
+            "must return false when no proxy files exist in the directory"
+        );
+    }
+
+    #[test]
+    fn use_proxy_if_available_should_return_false_after_play() {
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.play();
+        let found = player.use_proxy_if_available(Path::new("."));
+        assert!(!found, "must return false when called after play()");
+    }
+
+    #[test]
+    fn active_source_should_return_original_path_before_proxy_activation() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        assert_eq!(
+            player.active_source(),
+            path.as_path(),
+            "active_source() must equal the original path before any proxy activation"
         );
     }
 }
