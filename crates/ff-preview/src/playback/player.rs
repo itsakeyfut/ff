@@ -55,7 +55,7 @@ pub struct PreviewPlayer {
     /// Set to `true` while the presentation loop is paused.
     paused: AtomicBool,
     /// Set to `true` to signal [`run`](Self::run) to stop after the current frame.
-    stopped: AtomicBool,
+    stopped: Arc<AtomicBool>,
     /// Master clock for A/V sync: audio samples counter or `Instant` wall clock.
     clock: MasterClock,
     /// A/V offset correction in milliseconds (default: 0).
@@ -139,7 +139,7 @@ impl PreviewPlayer {
             fps,
             sink: None,
             paused: AtomicBool::new(false),
-            stopped: AtomicBool::new(false),
+            stopped: Arc::new(AtomicBool::new(false)),
             clock,
             av_offset_ms: AtomicI64::new(0),
             audio_buf,
@@ -178,6 +178,24 @@ impl PreviewPlayer {
     /// [`run`](Self::run) returns after the current frame completes.
     pub fn stop(&mut self) {
         self.stopped.store(true, Ordering::Release);
+    }
+
+    /// Returns a cloneable handle to the stop signal.
+    ///
+    /// Storing `true` into the returned [`Arc<AtomicBool>`] has the same effect
+    /// as calling [`stop`](Self::stop) and is safe to call from any context,
+    /// including from within a [`FrameSink::push_frame`] callback.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let stop = player.stop_handle();
+    /// player.set_sink(Box::new(MySink { stop, max_frames: 10 }));
+    /// player.play();
+    /// player.run()?;
+    /// ```
+    pub fn stop_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stopped)
     }
 
     /// Pop the next decoded video frame.
