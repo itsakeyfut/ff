@@ -38,5 +38,8 @@ pub use playback::{
     RgbaFrame, RgbaSink, SeekEvent,
 };
 
+#[cfg(feature = "tokio")]
+pub use playback::AsyncPreviewPlayer;
+
 #[cfg(feature = "proxy")]
 pub use proxy::{ProxyGenerator, ProxyJob, ProxyResolution};
