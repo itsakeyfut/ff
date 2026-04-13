@@ -30,5 +30,12 @@ default = []
 tokio   = ["dep:tokio"]
 proxy   = ["dep:ff-encode", "dep:ff-filter", "dep:ff-pipeline"]
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name    = "preview_bench"
+harness = false
+
 [lints]
 workspace = true
