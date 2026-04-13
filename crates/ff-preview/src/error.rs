@@ -51,6 +51,11 @@ pub enum PreviewError {
     #[error("probe failed: {0}")]
     Probe(#[from] ff_probe::ProbeError),
 
+    /// A proxy generation pipeline error.
+    #[cfg(feature = "proxy")]
+    #[error("pipeline failed: {0}")]
+    Pipeline(#[from] ff_pipeline::PipelineError),
+
     /// An I/O error during file operations.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

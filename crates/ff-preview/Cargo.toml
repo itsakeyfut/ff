@@ -22,12 +22,13 @@ thiserror   = { workspace = true }
 log         = { workspace = true }
 tokio       = { version = "1.50.0", features = ["rt", "sync"], optional = true }
 ff-encode   = { workspace = true, optional = true }
+ff-filter   = { workspace = true, optional = true }
 ff-pipeline = { workspace = true, optional = true }
 
 [features]
 default = []
 tokio   = ["dep:tokio"]
-proxy   = ["dep:ff-encode", "dep:ff-pipeline"]
+proxy   = ["dep:ff-encode", "dep:ff-filter", "dep:ff-pipeline"]
 
 [lints]
 workspace = true
