@@ -14,7 +14,9 @@ use std::f32::consts::TAU;
 use std::path::PathBuf;
 
 use ff_encode::{AudioCodec, BitrateMode, Preset, VideoCodec, VideoEncoder};
-use ff_format::{AudioFrame, PixelFormat, PooledBuffer, Rational, SampleFormat, Timestamp, VideoFrame};
+use ff_format::{
+    AudioFrame, PixelFormat, PooledBuffer, Rational, SampleFormat, Timestamp, VideoFrame,
+};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -34,8 +36,8 @@ const TOTAL_AUDIO_SAMPLES: usize = DURATION_SECS as usize * SAMPLE_RATE as usize
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let out_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/test/preview_bench_1080p.mp4");
+    let out_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/test/preview_bench_1080p.mp4");
 
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent).expect("failed to create assets/test/");
@@ -145,6 +147,77 @@ fn main() {
 
     encoder.finish().expect("encoder finish failed");
     println!("Done → {}", out_path.display());
+
+    // ── Also generate video-only av_sync_test_60s.mp4 ────────────────────────
+    //
+    // This file has NO audio so `PreviewPlayer` uses `MasterClock::System`
+    // (wall-clock pacing), which is required for the A/V sync integration test
+    // to measure absolute wall-time-to-PTS drift correctly.
+
+    let sync_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/test/av_sync_test_60s.mp4");
+
+    println!(
+        "Generating {DURATION_SECS}s 1920×1080 {FPS}fps (video-only) → {}",
+        sync_path.display()
+    );
+
+    let mut sync_encoder = VideoEncoder::create(&sync_path)
+        .video(WIDTH, HEIGHT, FPS)
+        .video_codec(VideoCodec::H264)
+        .bitrate_mode(BitrateMode::Crf(18))
+        .preset(Preset::Fast)
+        .on_progress(|p| {
+            if p.frames_encoded % 300 == 0 {
+                println!(
+                    "  video: {} / {} frames ({:.0}%)",
+                    p.frames_encoded,
+                    TOTAL_FRAMES,
+                    p.percent()
+                );
+            }
+        })
+        .build()
+        .expect("failed to build sync encoder");
+
+    for frame_idx in 0..TOTAL_FRAMES {
+        let t = frame_idx as f32 / TOTAL_FRAMES as f32;
+        let (r, g, b) = hue_to_rgb(t * 360.0);
+        let scanline_y =
+            (frame_idx as usize * HEIGHT as usize / TOTAL_FRAMES as usize).min(HEIGHT as usize - 1);
+        let mut pixels = vec![0u8; stride * HEIGHT as usize];
+        for y in 0..HEIGHT as usize {
+            for x in 0..WIDTH as usize {
+                let base = y * stride + x * 4;
+                if y == scanline_y {
+                    pixels[base] = 255;
+                    pixels[base + 1] = 255;
+                    pixels[base + 2] = 255;
+                    pixels[base + 3] = 255;
+                } else {
+                    pixels[base] = r;
+                    pixels[base + 1] = g;
+                    pixels[base + 2] = b;
+                    pixels[base + 3] = 255;
+                }
+            }
+        }
+        let video_ts = Timestamp::new(frame_idx as i64, video_time_base);
+        let vframe = VideoFrame::new(
+            vec![PooledBuffer::standalone(pixels)],
+            vec![stride],
+            WIDTH,
+            HEIGHT,
+            PixelFormat::Rgba,
+            video_ts,
+            frame_idx % 30 == 0,
+        )
+        .expect("failed to create VideoFrame");
+        sync_encoder.push_video(&vframe).expect("push_video failed");
+    }
+
+    sync_encoder.finish().expect("sync encoder finish failed");
+    println!("Done → {}", sync_path.display());
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
