@@ -11,6 +11,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.0] - 2026-04-13
+
+### Added
+
+#### ff-preview — new crate
+- New `ff-preview` crate: real-time video preview and proxy workflow ([#369](https://github.com/itsakeyfut/avio/issues/369))
+- `PlaybackClock`: start / stop / pause / resume with nanosecond resolution ([#370](https://github.com/itsakeyfut/avio/issues/370))
+- Playback rate control (0.25×, 0.5×, 1×, 2×, arbitrary fractional) via `set_rate` ([#371](https://github.com/itsakeyfut/avio/issues/371))
+- `current_pts` and `set_position` for real-time position query and seek support ([#372](https://github.com/itsakeyfut/avio/issues/372))
+- `DecodeBuffer`: configurable frame decode-ahead ring buffer (default 8 frames) ([#373](https://github.com/itsakeyfut/avio/issues/373))
+- Background decode thread with bounded channel and back-pressure ([#374](https://github.com/itsakeyfut/avio/issues/374))
+- Frame-accurate seek: I-frame seek + forward decode to target PTS ([#375](https://github.com/itsakeyfut/avio/issues/375))
+- Coarse seek: nearest I-frame only (fast path for scrub-bar drag) ([#376](https://github.com/itsakeyfut/avio/issues/376))
+- `FrameResult` enum and non-blocking `seek_async`: returns `Seeking` placeholder while decoder catches up ([#377](https://github.com/itsakeyfut/avio/issues/377))
+- `SeekEvent` channel: seek completion notification for UI synchronization ([#378](https://github.com/itsakeyfut/avio/issues/378))
+- `PreviewPlayer` with A/V sync using audio master clock ([#379](https://github.com/itsakeyfut/avio/issues/379))
+- `MasterClock::System` fallback for video-only files ([#380](https://github.com/itsakeyfut/avio/issues/380))
+- `set_av_offset`: configurable ±ms A/V offset correction ([#381](https://github.com/itsakeyfut/avio/issues/381))
+- Audio PCM delivery aligned to presentation clock via background decode thread and ring buffer ([#382](https://github.com/itsakeyfut/avio/issues/382))
+- `FrameSink` trait (`Send`, called on dedicated thread) for custom frame consumers ([#383](https://github.com/itsakeyfut/avio/issues/383))
+- `RgbaFrame` and `RgbaSink`: reference `FrameSink` implementation using `sws_scale` to deliver contiguous RGBA `Vec<u8>` ([#384](https://github.com/itsakeyfut/avio/issues/384))
+- `ProxyGenerator`: generates down-scaled proxy files at 1/2, 1/4, or 1/8 resolution with configurable codec ([#385](https://github.com/itsakeyfut/avio/issues/385))
+- `use_proxy_if_available` and `active_source` for transparent proxy substitution during playback ([#386](https://github.com/itsakeyfut/avio/issues/386))
+- `ProxyJob` and `generate_async` for non-blocking background proxy generation ([#387](https://github.com/itsakeyfut/avio/issues/387))
+- `AsyncPreviewPlayer` behind `tokio` feature flag ([#388](https://github.com/itsakeyfut/avio/issues/388))
+- `stop_handle() -> Arc<AtomicBool>`: cloneable stop signal for use inside `FrameSink::push_frame`
+
+#### avio — facade additions
+- `RgbaSink` and `RgbaFrame` re-exported under the `preview` feature ([#999](https://github.com/itsakeyfut/avio/issues/999))
+- `AsyncPreviewPlayer` re-exported under `preview + tokio`; `ff-preview/tokio` wired into the `tokio` feature ([#1000](https://github.com/itsakeyfut/avio/issues/1000))
+- `preview-proxy` feature: re-exports `ProxyGenerator`, `ProxyJob`, and `ProxyResolution` ([#1001](https://github.com/itsakeyfut/avio/issues/1001))
+
+### Fixed
+
+- `SeekEvent` race condition: event sent before the frame is pushed to avoid `try_recv` miss on the receiver side ([#379](https://github.com/itsakeyfut/avio/issues/379))
+- Circular dev-dependency between `ff-decode` and `ff-encode`: replaced cross-crate asset generation with pre-committed test assets ([#970](https://github.com/itsakeyfut/avio/issues/970))
+- Broken intra-doc links in `sink.rs` after module split ([#992](https://github.com/itsakeyfut/avio/issues/992))
+
+### Tests
+
+- Integration test: frame-accurate seek to t=30s returns frame within ±1 frame period (±34 ms at 30 fps) ([#996](https://github.com/itsakeyfut/avio/issues/996))
+- Integration test: `RgbaSink` decodes ≥10 real frames to correctly-sized, non-blank RGBA buffers ([#997](https://github.com/itsakeyfut/avio/issues/997))
+- Integration test: proxy generation at 1/4 resolution produces 480×270 output; half-resolution substitution delivers 960×540 frames ([#998](https://github.com/itsakeyfut/avio/issues/998))
+- Integration test: A/V sync consecutive-frame jitter ≤67 ms over 60-second playback ([#390](https://github.com/itsakeyfut/avio/issues/390))
+- Criterion benchmark: 1080p/30 fps playback loop frames delivered on time ([#389](https://github.com/itsakeyfut/avio/issues/389))
+
+---
+
 ## [0.12.0] - 2026-04-12
 
 ### Added
