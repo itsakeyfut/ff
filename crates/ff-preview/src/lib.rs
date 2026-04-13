@@ -39,4 +39,4 @@ pub use playback::{
 };
 
 #[cfg(feature = "proxy")]
-pub use proxy::{ProxyGenerator, ProxyResolution};
+pub use proxy::{ProxyGenerator, ProxyJob, ProxyResolution};

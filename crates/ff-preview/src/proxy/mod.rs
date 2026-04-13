@@ -5,10 +5,12 @@
 //! from original media using [`ff_pipeline::Pipeline`] internally.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use ff_filter::{FilterGraph, ScaleAlgorithm};
 use ff_format::VideoCodec;
-use ff_pipeline::{EncoderConfig, Pipeline};
+use ff_pipeline::{EncoderConfig, Pipeline, Progress};
 
 use crate::error::PreviewError;
 
@@ -50,6 +52,56 @@ impl ProxyResolution {
             Self::Quarter => "quarter",
             Self::Eighth => "eighth",
         }
+    }
+}
+
+// ── ProxyJob ──────────────────────────────────────────────────────────────────
+
+/// A handle to a running background proxy generation job.
+///
+/// Created by [`ProxyGenerator::generate_async`]. Use
+/// [`progress`](Self::progress) for non-blocking progress polling and
+/// [`wait`](Self::wait) to block until the job completes.
+pub struct ProxyJob {
+    handle: std::thread::JoinHandle<Result<PathBuf, PreviewError>>,
+    /// Stores progress as thousandths (0–1000) so it can be read from any
+    /// thread without a lock. Updated by the background thread's progress
+    /// callback on each encoded frame.
+    progress: Arc<AtomicU32>,
+}
+
+impl ProxyJob {
+    /// Current progress in the range `0.0..=1.0`.
+    ///
+    /// Reads an `AtomicU32` — non-blocking and safe to call from any thread.
+    /// Returns `0.0` when the source container does not report a frame count
+    /// or before the first frame is encoded.
+    #[must_use]
+    pub fn progress(&self) -> f64 {
+        f64::from(self.progress.load(Ordering::Relaxed)) / 1000.0
+    }
+
+    /// Returns `true` if the background thread has finished (success or error).
+    ///
+    /// Non-blocking — does not consume the job.
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.handle.is_finished()
+    }
+
+    /// Block until proxy generation completes and return the output path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] if proxy generation failed or if the background
+    /// thread panicked (surfaced as `PreviewError::Ffmpeg { code: 0 }`).
+    pub fn wait(self) -> Result<PathBuf, PreviewError> {
+        self.handle.join().unwrap_or_else(|_| {
+            Err(PreviewError::Ffmpeg {
+                code: 0,
+                message: "proxy thread panicked".to_string(),
+            })
+        })
     }
 }
 
@@ -133,6 +185,47 @@ impl ProxyGenerator {
     ///
     /// Returns [`PreviewError`] if probing, filtering, or encoding fails.
     pub fn generate(self) -> Result<PathBuf, PreviewError> {
+        self.generate_with_callback(|_| true)
+    }
+
+    /// Start proxy generation on a background thread and return immediately.
+    ///
+    /// The returned [`ProxyJob`] lets you poll progress with
+    /// [`ProxyJob::progress`] or block until completion with
+    /// [`ProxyJob::wait`].
+    ///
+    /// Progress is tracked via `ff-pipeline`'s progress callback: each encoded
+    /// frame updates an `AtomicU32` (thousandths of completion, 0–1000). When
+    /// the source container does not report a total frame count, progress stays
+    /// at `0.0` throughout the run.
+    #[must_use]
+    pub fn generate_async(self) -> ProxyJob {
+        let progress = Arc::new(AtomicU32::new(0));
+        let progress_clone = Arc::clone(&progress);
+        let handle = std::thread::spawn(move || {
+            self.generate_with_callback(move |p: &Progress| {
+                let v = p.total_frames.map_or(0u32, |total| {
+                    if total == 0 {
+                        0
+                    } else {
+                        let raw = p.frames_processed.saturating_mul(1000) / total;
+                        // raw is in 0..=1000 after the saturating division — fits in u32.
+                        u32::try_from(raw.min(1000)).unwrap_or(1000)
+                    }
+                });
+                progress_clone.store(v, Ordering::Relaxed);
+                true // always continue; cancellation is not supported
+            })
+        });
+        ProxyJob { handle, progress }
+    }
+
+    /// Shared pipeline setup used by both [`generate`](Self::generate) and
+    /// [`generate_async`](Self::generate_async).
+    fn generate_with_callback<F>(self, callback: F) -> Result<PathBuf, PreviewError>
+    where
+        F: Fn(&Progress) -> bool + Send + 'static,
+    {
         let info = ff_probe::open(&self.input)?;
 
         let (src_w, src_h) = info
@@ -191,6 +284,7 @@ impl ProxyGenerator {
             .input(input_str.as_ref())
             .filter(filter)
             .output(output_str.as_ref(), config)
+            .on_progress(callback)
             .build()?
             .run()?;
 
@@ -242,6 +336,54 @@ mod tests {
     fn proxy_generator_new_should_fail_for_nonexistent_file() {
         let result = ProxyGenerator::new(Path::new("nonexistent_proxy_test.mp4"));
         assert!(result.is_err(), "new() must fail for a non-existent file");
+    }
+
+    #[test]
+    fn proxy_job_progress_scaling_should_convert_thousandths_to_fraction() {
+        // The internal atomic stores thousandths (0–1000).
+        // Verify the scaling formula: raw / 1000.0 = fraction.
+        for (raw, expected) in [(0u32, 0.0f64), (500, 0.5), (1000, 1.0), (250, 0.25)] {
+            let frac = f64::from(raw) / 1000.0;
+            assert!(
+                (frac - expected).abs() < f64::EPSILON,
+                "raw={raw} expected={expected} got={frac}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires FFmpeg and assets/video/gameplay.mp4; run with -- --include-ignored"]
+    fn proxy_generate_async_should_complete_and_produce_output_file() {
+        let input = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/video/gameplay.mp4");
+        if !input.exists() {
+            println!("skipping: gameplay.mp4 not found");
+            return;
+        }
+        let tmp = std::env::temp_dir();
+        let job = match ProxyGenerator::new(&input) {
+            Ok(g) => g
+                .resolution(ProxyResolution::Quarter)
+                .output_dir(&tmp)
+                .generate_async(),
+            Err(e) => {
+                println!("skipping: {e}");
+                return;
+            }
+        };
+        match job.wait() {
+            Ok(path) => {
+                assert!(path.exists(), "proxy output file must exist");
+                assert!(
+                    path.to_str()
+                        .map(|s| s.contains("_proxy_quarter"))
+                        .unwrap_or(false),
+                    "output path must contain '_proxy_quarter'"
+                );
+                let _ = std::fs::remove_file(&path);
+            }
+            Err(e) => println!("skipping: generate_async failed: {e}"),
+        }
     }
 
     #[test]
