@@ -293,12 +293,19 @@ pub use ff_stream::SrtOutput;
 //
 // Single-file real-time playback with frame-accurate seek and A/V sync.
 // Enable the `preview` feature to access `PreviewPlayer`, `PlaybackClock`,
-// and (with the `proxy` sub-feature on `ff-preview`) `ProxyGenerator`.
+// and the `RgbaSink` / `RgbaFrame` helpers.
+// Enable `preview-proxy` to additionally access `ProxyGenerator`.
 #[cfg(feature = "preview")]
 pub use ff_preview::{
     DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink, PlaybackClock, PreviewError,
-    PreviewPlayer, SeekEvent,
+    PreviewPlayer, RgbaFrame, RgbaSink, SeekEvent,
 };
+
+#[cfg(all(feature = "preview", feature = "tokio"))]
+pub use ff_preview::AsyncPreviewPlayer;
+
+#[cfg(feature = "preview-proxy")]
+pub use ff_preview::{ProxyGenerator, ProxyJob, ProxyResolution};
 
 #[cfg(test)]
 mod tests {
@@ -578,5 +585,31 @@ mod tests {
         let _err: StreamError = StreamError::InvalidConfig {
             reason: "test".into(),
         };
+    }
+
+    // ── preview feature ───────────────────────────────────────────────────────
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn preview_rgba_types_should_be_accessible() {
+        // RgbaSink and RgbaFrame are the concrete sink/frame types added in v0.13.0.
+        let _: Option<RgbaSink> = None;
+        let _: Option<RgbaFrame> = None;
+    }
+
+    #[cfg(all(feature = "preview", feature = "tokio"))]
+    #[test]
+    fn preview_async_player_should_be_accessible() {
+        // Confirm AsyncPreviewPlayer is in scope under the combined feature gate.
+        let _ = std::mem::size_of::<AsyncPreviewPlayer>();
+    }
+
+    #[cfg(feature = "preview-proxy")]
+    #[test]
+    fn preview_proxy_types_should_be_accessible() {
+        // ProxyResolution variants cover Quarter / Half / Eighth.
+        let _: ProxyResolution = ProxyResolution::Half;
+        let _: ProxyResolution = ProxyResolution::Quarter;
+        let _: ProxyResolution = ProxyResolution::Eighth;
     }
 }
