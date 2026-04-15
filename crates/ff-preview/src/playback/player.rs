@@ -53,7 +53,7 @@ pub struct PreviewPlayer {
     /// frames are discarded silently if no sink is set.
     sink: Option<Box<dyn FrameSink>>,
     /// Set to `true` while the presentation loop is paused.
-    paused: AtomicBool,
+    paused: Arc<AtomicBool>,
     /// Set to `true` to signal [`run`](Self::run) to stop after the current frame.
     stopped: Arc<AtomicBool>,
     /// Master clock for A/V sync: audio samples counter or `Instant` wall clock.
@@ -138,7 +138,7 @@ impl PreviewPlayer {
             decode_buf,
             fps,
             sink: None,
-            paused: AtomicBool::new(false),
+            paused: Arc::new(AtomicBool::new(false)),
             stopped: Arc::new(AtomicBool::new(false)),
             clock,
             av_offset_ms: AtomicI64::new(0),
@@ -161,7 +161,7 @@ impl PreviewPlayer {
     ///
     /// Clears the `paused` and `stopped` flags. Must be called before
     /// [`run`](Self::run).
-    pub fn play(&mut self) {
+    pub fn play(&self) {
         self.started.store(true, Ordering::Release);
         self.paused.store(false, Ordering::Release);
         self.stopped.store(false, Ordering::Release);
@@ -169,7 +169,7 @@ impl PreviewPlayer {
 
     /// Pause playback. [`run`](Self::run) will spin-sleep until
     /// [`play`](Self::play) is called again.
-    pub fn pause(&mut self) {
+    pub fn pause(&self) {
         self.paused.store(true, Ordering::Release);
     }
 
@@ -196,6 +196,28 @@ impl PreviewPlayer {
     /// ```
     pub fn stop_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.stopped)
+    }
+
+    /// Returns a cloneable handle to the pause flag.
+    ///
+    /// Storing `true` pauses [`run`](Self::run); storing `false` resumes it.
+    /// Safe to call from any context, including from a UI thread running
+    /// concurrently with [`run`](Self::run).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pause = player.pause_handle();
+    /// let stop  = player.stop_handle();
+    ///
+    /// std::thread::spawn(move || { player.play(); let _ = player.run(); });
+    ///
+    /// pause.store(true, Ordering::Release);   // pause from UI thread
+    /// pause.store(false, Ordering::Release);  // resume
+    /// stop.store(true, Ordering::Release);    // stop
+    /// ```
+    pub fn pause_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.paused)
     }
 
     /// Pop the next decoded video frame.
@@ -726,7 +748,7 @@ mod tests {
     #[test]
     fn pop_audio_samples_should_return_empty_when_paused() {
         let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
+        let player = match PreviewPlayer::open(&path) {
             Ok(p) => p,
             Err(e) => {
                 println!("skipping: video file not available: {e}");
@@ -762,7 +784,7 @@ mod tests {
     #[test]
     fn pop_audio_samples_should_return_empty_for_zero_n_samples() {
         let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
+        let player = match PreviewPlayer::open(&path) {
             Ok(p) => p,
             Err(e) => {
                 println!("skipping: video file not available: {e}");
@@ -774,6 +796,62 @@ mod tests {
         assert!(
             samples.is_empty(),
             "pop_audio_samples(0) must always return empty"
+        );
+    }
+
+    #[test]
+    fn pause_handle_should_control_paused_flag_from_shared_reference() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        let handle = player.pause_handle();
+
+        handle.store(true, Ordering::Release);
+        assert!(
+            player.paused.load(Ordering::Acquire),
+            "handle must set paused flag"
+        );
+
+        handle.store(false, Ordering::Release);
+        assert!(
+            !player.paused.load(Ordering::Acquire),
+            "handle must clear paused flag"
+        );
+
+        // Arc clone proves the thread-sharing pattern compiles.
+        let cloned = Arc::clone(&handle);
+        cloned.store(true, Ordering::Release);
+        assert!(
+            player.paused.load(Ordering::Acquire),
+            "cloned handle must set paused flag"
+        );
+    }
+
+    #[test]
+    fn play_and_pause_should_be_callable_via_shared_reference() {
+        // No `mut` binding — only possible with &self receivers.
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.pause();
+        assert!(
+            player.paused.load(Ordering::Relaxed),
+            "pause() via &self must set paused flag"
+        );
+        player.play();
+        assert!(
+            !player.paused.load(Ordering::Relaxed),
+            "play() via &self must clear paused flag"
         );
     }
 
