@@ -367,7 +367,7 @@ impl PreviewPlayer {
     /// - `n_samples` is `0`,
     /// - playback is paused or stopped, or
     /// - the ring buffer is empty (underrun — caller should output silence).
-    pub fn pop_audio_samples(&mut self, n_samples: usize) -> Vec<f32> {
+    pub fn pop_audio_samples(&self, n_samples: usize) -> Vec<f32> {
         if self.paused.load(Ordering::Relaxed) || self.stopped.load(Ordering::Relaxed) {
             return Vec::new();
         }
@@ -775,6 +775,27 @@ mod tests {
             samples.is_empty(),
             "pop_audio_samples(0) must always return empty"
         );
+    }
+
+    #[test]
+    fn pop_audio_samples_should_be_callable_via_shared_reference() {
+        // With &self receiver: works through an immutable binding and Arc<T>.
+        // This is the compile-time proof that enables cpal-callback usage.
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        // No `mut` binding — only possible with a &self receiver.
+        let samples = player.pop_audio_samples(0);
+        assert!(samples.is_empty(), "pop_audio_samples(0) must return empty");
+
+        // Via Arc — the canonical pattern for sharing with an audio callback.
+        let shared = std::sync::Arc::new(player);
+        let _samples = shared.pop_audio_samples(0);
     }
 
     #[test]
