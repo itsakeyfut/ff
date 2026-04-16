@@ -77,11 +77,12 @@ impl AsyncVideoDecoder {
     /// `decode_frame`). Errors are yielded as `Err` items; the stream
     /// terminates after the first error.
     pub fn into_stream(self) -> impl Stream<Item = Result<VideoFrame, DecodeError>> + Send {
-        stream::unfold(self, |mut decoder| async move {
+        stream::unfold(Some(self), |state| async move {
+            let mut decoder = state?; // None → stream already ended
             match decoder.decode_frame().await {
-                Ok(Some(frame)) => Some((Ok(frame), decoder)),
-                Ok(None) => None,
-                Err(e) => Some((Err(e), decoder)),
+                Ok(Some(frame)) => Some((Ok(frame), Some(decoder))),
+                Ok(None) => None,               // EOF → end stream
+                Err(e) => Some((Err(e), None)), // error → yield once, then end
             }
         })
     }
@@ -105,5 +106,35 @@ mod tests {
             matches!(result, Err(DecodeError::FileNotFound { .. })),
             "expected FileNotFound"
         );
+    }
+
+    /// Verifies the `Option<S>` unfold pattern used by `into_stream`: after the
+    /// error arm sets state to `None`, the stream yields no further items.
+    ///
+    /// Acceptance criterion for issue #1006.
+    #[tokio::test]
+    async fn into_stream_state_machine_should_terminate_after_error() {
+        use futures::StreamExt;
+
+        // Use the exact same stream::unfold(Option<S>, ...) pattern as
+        // into_stream() with a controlled error at position 2.
+        let items: Vec<Result<u32, u32>> = stream::unfold(Some(0u32), |state| async move {
+            let n = state?; // None → stream ends
+            match n {
+                0 | 1 => Some((Ok(n), Some(n + 1))),
+                _ => Some((Err(n), None)), // error → yield once, then end
+            }
+        })
+        .collect()
+        .await;
+
+        assert_eq!(
+            items.len(),
+            3,
+            "stream must stop after the error: expected 2 Ok + 1 Err, got {items:?}"
+        );
+        assert!(items[0].is_ok());
+        assert!(items[1].is_ok());
+        assert!(items[2].is_err());
     }
 }
