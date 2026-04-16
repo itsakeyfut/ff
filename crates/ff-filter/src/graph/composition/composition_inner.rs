@@ -578,6 +578,29 @@ pub(super) unsafe fn build_video_composition(
         }
     }
 
+    // ── format=yuv420p: constrain output pixel format before sink ────────────
+    let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if vfmt_filter.is_null() {
+        bail!(graph, "filter not found: format");
+    }
+    let mut vfmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut vfmt_ctx,
+        vfmt_filter,
+        c"vformat".as_ptr(),
+        c"pix_fmts=yuv420p".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create format filter code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, vfmt_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: last→format");
+    }
+    log::debug!("video composition format filter inserted output=yuv420p");
+
     // ── Video buffersink ──────────────────────────────────────────────────────
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
@@ -595,9 +618,9 @@ pub(super) unsafe fn build_video_composition(
     if ret < 0 {
         bail!(graph, format!("failed to create buffersink code={ret}"));
     }
-    let ret = ff_sys::avfilter_link(prev_ctx, 0, sink_ctx, 0);
+    let ret = ff_sys::avfilter_link(vfmt_ctx, 0, sink_ctx, 0);
     if ret < 0 {
-        bail!(graph, "link failed: last→buffersink");
+        bail!(graph, "link failed: format→buffersink");
     }
 
     // ── Configure graph ───────────────────────────────────────────────────────
@@ -1109,6 +1132,29 @@ pub(super) unsafe fn build_video_concat(
         concat_ctx
     };
 
+    // ── format=yuv420p: constrain output pixel format before sink ────────────
+    let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if vfmt_filter.is_null() {
+        bail!(graph, "filter not found: format");
+    }
+    let mut vfmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut vfmt_ctx,
+        vfmt_filter,
+        c"vformat".as_ptr(),
+        c"pix_fmts=yuv420p".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create format filter code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(pre_sink_ctx, 0, vfmt_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: last→format");
+    }
+    log::debug!("video concat format filter inserted output=yuv420p");
+
     // ── buffersink ────────────────────────────────────────────────────────────
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
@@ -1126,9 +1172,9 @@ pub(super) unsafe fn build_video_concat(
     if ret < 0 {
         bail!(graph, format!("failed to create buffersink code={ret}"));
     }
-    let ret = ff_sys::avfilter_link(pre_sink_ctx, 0, sink_ctx, 0);
+    let ret = ff_sys::avfilter_link(vfmt_ctx, 0, sink_ctx, 0);
     if ret < 0 {
-        bail!(graph, "link failed: last→buffersink");
+        bail!(graph, "link failed: format→buffersink");
     }
 
     // ── Configure graph ───────────────────────────────────────────────────────
@@ -1534,6 +1580,29 @@ pub(super) unsafe fn build_dissolve_join(
         bail!(graph, "link failed: movie_b→xfade[1]");
     }
 
+    // ── format=yuv420p: constrain output pixel format before sink ────────────
+    let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if vfmt_filter.is_null() {
+        bail!(graph, "filter not found: format");
+    }
+    let mut vfmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut vfmt_ctx,
+        vfmt_filter,
+        c"jd_vformat".as_ptr(),
+        c"pix_fmts=yuv420p".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, format!("failed to create format filter code={ret}"));
+    }
+    let ret = ff_sys::avfilter_link(xfade_ctx, 0, vfmt_ctx, 0);
+    if ret < 0 {
+        bail!(graph, "link failed: xfade→format");
+    }
+    log::debug!("dissolve join format filter inserted output=yuv420p");
+
     // ── buffersink ────────────────────────────────────────────────────────────
     let sink_filter = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
     if sink_filter.is_null() {
@@ -1551,9 +1620,9 @@ pub(super) unsafe fn build_dissolve_join(
     if ret < 0 {
         bail!(graph, format!("failed to create buffersink code={ret}"));
     }
-    let ret = ff_sys::avfilter_link(xfade_ctx, 0, sink_ctx, 0);
+    let ret = ff_sys::avfilter_link(vfmt_ctx, 0, sink_ctx, 0);
     if ret < 0 {
-        bail!(graph, "link failed: xfade→buffersink");
+        bail!(graph, "link failed: format→buffersink");
     }
 
     // ── Configure graph ───────────────────────────────────────────────────────
