@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ff_filter::XfadeTransition;
+
 /// A single media clip on a timeline.
 ///
 /// `Clip` is a plain Rust value type — it holds no `FFmpeg` context. All fields
@@ -38,6 +40,11 @@ pub struct Clip {
     pub timeline_offset: Duration,
     /// Arbitrary key/value metadata attached to this clip.
     pub metadata: HashMap<String, String>,
+    /// Transition applied at the start of this clip (from the previous clip on the same track).
+    /// `None` = hard cut. Ignored for the first clip on a track.
+    pub transition: Option<XfadeTransition>,
+    /// Duration of the transition overlap. Ignored when `transition` is `None`.
+    pub transition_duration: Duration,
 }
 
 impl Clip {
@@ -49,6 +56,8 @@ impl Clip {
             out_point: None,
             timeline_offset: Duration::ZERO,
             metadata: HashMap::new(),
+            transition: None,
+            transition_duration: Duration::ZERO,
         }
     }
 
@@ -67,6 +76,34 @@ impl Clip {
     pub fn offset(self, timeline_offset: Duration) -> Self {
         Self {
             timeline_offset,
+            ..self
+        }
+    }
+
+    /// Sets the visual transition from the previous clip into this one and returns
+    /// the updated clip.
+    ///
+    /// The transition is applied at the boundary where the preceding clip ends and
+    /// this clip begins. For the first clip on a track `transition` is ignored.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use ff_filter::XfadeTransition;
+    /// use std::time::Duration;
+    ///
+    /// let clip = Clip::new("b.mp4")
+    ///     .with_transition(XfadeTransition::Fade, Duration::from_millis(500));
+    ///
+    /// assert_eq!(clip.transition, Some(XfadeTransition::Fade));
+    /// assert_eq!(clip.transition_duration, Duration::from_millis(500));
+    /// ```
+    #[must_use]
+    pub fn with_transition(self, kind: XfadeTransition, duration: Duration) -> Self {
+        Self {
+            transition: Some(kind),
+            transition_duration: duration,
             ..self
         }
     }
@@ -93,6 +130,22 @@ mod tests {
         assert!(clip.in_point.is_none());
         assert!(clip.out_point.is_none());
         assert!(clip.metadata.is_empty());
+    }
+
+    #[test]
+    fn clip_new_should_default_transition_to_none() {
+        let clip = Clip::new("video.mp4");
+        assert!(clip.transition.is_none());
+        assert_eq!(clip.transition_duration, Duration::ZERO);
+    }
+
+    #[test]
+    fn clip_with_transition_should_set_fields() {
+        use ff_filter::XfadeTransition;
+        let clip = Clip::new("video.mp4")
+            .with_transition(XfadeTransition::Fade, Duration::from_millis(500));
+        assert_eq!(clip.transition, Some(XfadeTransition::Fade));
+        assert_eq!(clip.transition_duration, Duration::from_millis(500));
     }
 
     #[test]

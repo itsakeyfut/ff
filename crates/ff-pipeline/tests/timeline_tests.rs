@@ -183,6 +183,33 @@ fn render_with_progress_should_cancel_when_callback_returns_false() {
     }
 }
 
+/// Verifies that a `Timeline` with two clips joined by a transition can be
+/// built without error.
+///
+/// This is the acceptance-criteria test for issue #1015:
+/// "Clip has no transition field; TimelineBuilder cannot express inter-clip
+/// cross-fade transitions."
+#[test]
+fn timeline_with_transition_should_build_without_error() {
+    use ff_pipeline::XfadeTransition;
+
+    let clip_a = Clip::new("a.mp4").trim(Duration::ZERO, Duration::from_secs(4));
+    let clip_b = Clip::new("b.mp4")
+        .trim(Duration::ZERO, Duration::from_secs(4))
+        .with_transition(XfadeTransition::Fade, Duration::from_millis(500));
+
+    let result = Timeline::builder()
+        .canvas(1920, 1080)
+        .frame_rate(30.0)
+        .video_track(vec![clip_a, clip_b])
+        .build();
+
+    assert!(
+        result.is_ok(),
+        "Timeline with transition must build without error: {result:?}"
+    );
+}
+
 /// Verifies that `render_with_progress` invokes the callback at least once
 /// and reports monotonically increasing `frames_processed`.
 #[test]

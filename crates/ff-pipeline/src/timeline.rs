@@ -247,9 +247,20 @@ impl Timeline {
         // 3. Build video composition graph.
         let mut video_graph = None;
         if !video_tracks.is_empty() {
+            // Per-track end-offset (seconds) of the last clip, used to compute
+            // the xfade `offset` arg when the next clip has a transition.
+            let mut prev_end_by_track: HashMap<usize, f64> = HashMap::new();
+
             let mut composer = MultiTrackComposer::new(canvas_width, canvas_height);
             for (track_idx, track) in video_tracks.iter().enumerate() {
                 for clip in track {
+                    // Wire xfade from the preceding clip on this track.
+                    if let Some(kind) = clip.transition {
+                        let dur_secs = clip.transition_duration.as_secs_f64();
+                        let prev_end = *prev_end_by_track.get(&track_idx).unwrap_or(&0.0);
+                        composer = composer.join_with_dissolve(prev_end, dur_secs, kind);
+                    }
+
                     composer = composer.add_layer(VideoLayer {
                         source: clip.source.clone(),
                         x: va(track_idx, "x", 0.0),
@@ -262,7 +273,25 @@ impl Timeline {
                         time_offset: clip.timeline_offset,
                         in_point: clip.in_point,
                         out_point: clip.out_point,
+                        in_transition: None, // set by join_with_dissolve via add_layer
                     });
+
+                    // Track how many seconds this clip contributes, so the next
+                    // transition on the same track can compute the correct offset.
+                    let end_secs = match clip.duration() {
+                        Some(d) => d.as_secs_f64(),
+                        None => VideoDecoder::open(&clip.source)
+                            .build()
+                            .ok()
+                            .map_or(0.0, |d| {
+                                let total = d.duration().as_secs_f64();
+                                match clip.in_point {
+                                    Some(ip) => (total - ip.as_secs_f64()).max(0.0),
+                                    None => total,
+                                }
+                            }),
+                    };
+                    prev_end_by_track.insert(track_idx, end_secs);
                 }
             }
             video_graph = Some(composer.build().map_err(PipelineError::Filter)?);

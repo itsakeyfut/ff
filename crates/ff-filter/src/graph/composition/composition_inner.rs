@@ -82,6 +82,19 @@ pub(super) unsafe fn build_video_composition(
     let layer_count = layers.len();
     let mut animations: Vec<AnimationEntry> = Vec::new();
 
+    // Pre-compute which layers should skip their overlay because the next
+    // layer will cross-fade from them.  skip_overlay[i] is true when
+    // layers[i+1] has an in_transition on the same z_order as layers[i].
+    let skip_overlay: Vec<bool> = (0..layer_count)
+        .map(|i| {
+            layers.get(i + 1).is_some_and(|next| {
+                next.in_transition.is_some() && next.z_order == layers[i].z_order
+            })
+        })
+        .collect();
+    // Saved chain_end from the preceding layer when skip_overlay was true.
+    let mut saved_chain: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+
     for (idx, layer) in layers.iter().enumerate() {
         // On Windows, paths contain backslashes and a drive-letter colon
         // (e.g. "D:\…").  FFmpeg's filter-option parser uses ":" as a
@@ -422,81 +435,147 @@ pub(super) unsafe fn build_video_composition(
             chain_end = ccm_ctx;
         }
 
-        // ── overlay ───────────────────────────────────────────────────────────
-        // Last layer uses eof_action=endall so the graph terminates when that
-        // layer's source ends.  Intermediate layers use pass so the canvas
-        // continues while other layers are still producing.
-        //
-        // When the overlay input has an alpha channel (animated opacity path),
-        // `format=auto` tells FFmpeg to blend using that alpha.
-        let eof_action = if is_last { "endall" } else { "pass" };
-        let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
-        if overlay_filter.is_null() {
-            bail!(graph, "filter not found: overlay");
+        // ── xfade (when this layer has an in_transition) ──────────────────────
+        if let Some(ref t) = layer.in_transition {
+            if !saved_chain.is_null() {
+                // Wire: clip A (saved_chain) × clip B (chain_end) → xfade
+                let xfade_filter = ff_sys::avfilter_get_by_name(c"xfade".as_ptr());
+                if xfade_filter.is_null() {
+                    bail!(graph, "filter not found: xfade");
+                }
+                let xfade_args_str = format!(
+                    "transition={}:duration={}:offset={}",
+                    t.kind.as_str(),
+                    t.duration_secs,
+                    t.offset_secs,
+                );
+                let Ok(xfade_args) = CString::new(xfade_args_str.as_str()) else {
+                    bail!(graph, "CString::new failed for xfade args");
+                };
+                let Ok(xfade_name) = CString::new(format!("xfade{idx}")) else {
+                    bail!(graph, "CString::new failed for xfade name");
+                };
+                let mut xfade_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                let ret = ff_sys::avfilter_graph_create_filter(
+                    &raw mut xfade_ctx,
+                    xfade_filter,
+                    xfade_name.as_ptr(),
+                    xfade_args.as_ptr(),
+                    std::ptr::null_mut(),
+                    graph,
+                );
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!("failed to create xfade filter layer={idx} code={ret}")
+                    );
+                }
+                // clip A → xfade input 0; clip B → xfade input 1
+                let ret = ff_sys::avfilter_link(saved_chain, 0, xfade_ctx, 0);
+                if ret < 0 {
+                    bail!(graph, format!("link failed: A→xfade[0] layer={idx}"));
+                }
+                let ret = ff_sys::avfilter_link(chain_end, 0, xfade_ctx, 1);
+                if ret < 0 {
+                    bail!(graph, format!("link failed: B→xfade[1] layer={idx}"));
+                }
+                saved_chain = std::ptr::null_mut();
+                chain_end = xfade_ctx;
+                log::debug!(
+                    "video composition xfade layer={idx} kind={} dur={} offset={}",
+                    t.kind.as_str(),
+                    t.duration_secs,
+                    t.offset_secs,
+                );
+            } else {
+                log::warn!(
+                    "video composition layer={idx} has in_transition but no preceding \
+                     layer on same z_order; hard cut applied"
+                );
+            }
         }
-        let Ok(ov_name) = CString::new(format!("overlay{idx}")) else {
-            bail!(graph, "CString::new failed for overlay name");
-        };
-        let lx = layer.x.value_at(Duration::ZERO).round() as i64;
-        let ly = layer.y.value_at(Duration::ZERO).round() as i64;
-        let needs_eval_frame = matches!(layer.x, AnimatedValue::Track(_))
-            || matches!(layer.y, AnimatedValue::Track(_));
-        let eval_suffix = if needs_eval_frame { ":eval=frame" } else { "" };
-        let format_suffix = if is_animated_opacity {
-            ":format=auto"
+
+        // ── Skip overlay (save chain_end for upcoming xfade) or overlay ────────
+        if skip_overlay[idx] {
+            // The next layer will xfade from this one; defer the overlay.
+            saved_chain = chain_end;
         } else {
-            ""
-        };
-        let Ok(ov_args) = CString::new(format!(
-            "{lx}:{ly}:eof_action={eof_action}{eval_suffix}{format_suffix}"
-        )) else {
-            bail!(graph, "CString::new failed for overlay args");
-        };
-        let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-        let ret = ff_sys::avfilter_graph_create_filter(
-            &raw mut overlay_ctx,
-            overlay_filter,
-            ov_name.as_ptr(),
-            ov_args.as_ptr(),
-            std::ptr::null_mut(),
-            graph,
-        );
-        if ret < 0 {
-            bail!(
+            // ── overlay ───────────────────────────────────────────────────────────
+            // Last layer uses eof_action=endall so the graph terminates when that
+            // layer's source ends.  Intermediate layers use pass so the canvas
+            // continues while other layers are still producing.
+            //
+            // When the overlay input has an alpha channel (animated opacity path),
+            // `format=auto` tells FFmpeg to blend using that alpha.
+            let eof_action = if is_last { "endall" } else { "pass" };
+            let overlay_filter = ff_sys::avfilter_get_by_name(c"overlay".as_ptr());
+            if overlay_filter.is_null() {
+                bail!(graph, "filter not found: overlay");
+            }
+            let Ok(ov_name) = CString::new(format!("overlay{idx}")) else {
+                bail!(graph, "CString::new failed for overlay name");
+            };
+            let lx = layer.x.value_at(Duration::ZERO).round() as i64;
+            let ly = layer.y.value_at(Duration::ZERO).round() as i64;
+            let needs_eval_frame = matches!(layer.x, AnimatedValue::Track(_))
+                || matches!(layer.y, AnimatedValue::Track(_));
+            let eval_suffix = if needs_eval_frame { ":eval=frame" } else { "" };
+            let format_suffix = if is_animated_opacity {
+                ":format=auto"
+            } else {
+                ""
+            };
+            let Ok(ov_args) = CString::new(format!(
+                "{lx}:{ly}:eof_action={eof_action}{eval_suffix}{format_suffix}"
+            )) else {
+                bail!(graph, "CString::new failed for overlay args");
+            };
+            let mut overlay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+            let ret = ff_sys::avfilter_graph_create_filter(
+                &raw mut overlay_ctx,
+                overlay_filter,
+                ov_name.as_ptr(),
+                ov_args.as_ptr(),
+                std::ptr::null_mut(),
                 graph,
-                format!("failed to create overlay filter layer={idx} code={ret}")
             );
-        }
-        // Link: base canvas → overlay pad 0
-        let ret = ff_sys::avfilter_link(prev_ctx, 0, overlay_ctx, 0);
-        if ret < 0 {
-            bail!(graph, format!("link failed: base→overlay[0] layer={idx}"));
-        }
-        // Link: layer content → overlay pad 1
-        let ret = ff_sys::avfilter_link(chain_end, 0, overlay_ctx, 1);
-        if ret < 0 {
-            bail!(graph, format!("link failed: layer→overlay[1] layer={idx}"));
-        }
+            if ret < 0 {
+                bail!(
+                    graph,
+                    format!("failed to create overlay filter layer={idx} code={ret}")
+                );
+            }
+            // Link: base canvas → overlay pad 0
+            let ret = ff_sys::avfilter_link(prev_ctx, 0, overlay_ctx, 0);
+            if ret < 0 {
+                bail!(graph, format!("link failed: base→overlay[0] layer={idx}"));
+            }
+            // Link: layer content → overlay pad 1
+            let ret = ff_sys::avfilter_link(chain_end, 0, overlay_ctx, 1);
+            if ret < 0 {
+                bail!(graph, format!("link failed: layer→overlay[1] layer={idx}"));
+            }
 
-        // Register animation entries for animated x/y.
-        if let AnimatedValue::Track(ref track) = layer.x {
-            animations.push(AnimationEntry {
-                node_name: format!("overlay{idx}"),
-                param: "x",
-                track: track.clone(),
-                suffix: "",
-            });
-        }
-        if let AnimatedValue::Track(ref track) = layer.y {
-            animations.push(AnimationEntry {
-                node_name: format!("overlay{idx}"),
-                param: "y",
-                track: track.clone(),
-                suffix: "",
-            });
-        }
+            // Register animation entries for animated x/y.
+            if let AnimatedValue::Track(ref track) = layer.x {
+                animations.push(AnimationEntry {
+                    node_name: format!("overlay{idx}"),
+                    param: "x",
+                    track: track.clone(),
+                    suffix: "",
+                });
+            }
+            if let AnimatedValue::Track(ref track) = layer.y {
+                animations.push(AnimationEntry {
+                    node_name: format!("overlay{idx}"),
+                    param: "y",
+                    track: track.clone(),
+                    suffix: "",
+                });
+            }
 
-        prev_ctx = overlay_ctx;
+            prev_ctx = overlay_ctx;
+        }
     }
 
     // ── Video buffersink ──────────────────────────────────────────────────────

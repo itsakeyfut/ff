@@ -100,6 +100,7 @@ fn main() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .add_layer(VideoLayer {
             source: args.overlay.clone(),
@@ -113,6 +114,7 @@ fn main() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .build()
     {
