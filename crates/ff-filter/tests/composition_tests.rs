@@ -794,3 +794,69 @@ fn volume_automation_should_increase_audio_amplitude_over_time() {
          — volume automation did not take effect (total chunks={n})"
     );
 }
+
+/// Verifies that frames pulled from `MultiTrackComposer` always have `yuv420p` format,
+/// regardless of FFmpeg's internal format negotiation.
+///
+/// Acceptance criterion for issue #1017: newer FFmpeg builds may negotiate `gbrp` when
+/// no explicit format constraint is set on the buffersink, causing green-tinted output.
+/// The fix inserts a `format=yuv420p` filter before each video buffersink.
+#[test]
+fn multi_track_composition_should_produce_yuv420p_frames() {
+    use ff_format::PixelFormat;
+
+    const W: u32 = 64;
+    const H: u32 = 64;
+    const FPS_LOCAL: f64 = 30.0;
+    const FRAMES: usize = 5;
+
+    let src_path = test_output_path("yuv420p_check_src.mp4");
+    let _g = FileGuard::new(src_path.clone());
+
+    if make_source_file(&src_path, W, H, FPS_LOCAL, FRAMES, 128, 128, 128).is_none() {
+        return;
+    }
+
+    let mut composer = match MultiTrackComposer::new(W, H)
+        .add_layer(VideoLayer {
+            source: src_path.clone(),
+            x: AnimatedValue::Static(0.0),
+            y: AnimatedValue::Static(0.0),
+            scale_x: AnimatedValue::Static(1.0),
+            scale_y: AnimatedValue::Static(1.0),
+            rotation: AnimatedValue::Static(0.0),
+            opacity: AnimatedValue::Static(1.0),
+            z_order: 0,
+            time_offset: Duration::ZERO,
+            in_point: None,
+            out_point: None,
+            in_transition: None,
+        })
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: MultiTrackComposer::build failed: {e}");
+            return;
+        }
+    };
+
+    let frame = match composer.pull_video() {
+        Ok(Some(f)) => f,
+        Ok(None) => {
+            println!("Skipping: composer produced no frames");
+            return;
+        }
+        Err(e) => {
+            println!("Skipping: pull_video failed: {e}");
+            return;
+        }
+    };
+
+    assert_eq!(
+        frame.format(),
+        PixelFormat::Yuv420p,
+        "composition graph must deliver yuv420p frames; got {:?}",
+        frame.format()
+    );
+}
