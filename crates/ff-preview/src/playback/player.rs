@@ -62,7 +62,7 @@ pub struct PreviewPlayer {
     ///
     /// Positive: video is delayed (video PTS adjusted down).
     /// Negative: audio is delayed (video PTS adjusted up).
-    av_offset_ms: AtomicI64,
+    av_offset_ms: Arc<AtomicI64>,
     /// Decoded audio samples (interleaved f32 stereo at 48 kHz).
     /// `None` when the media file has no audio track.
     audio_buf: Option<Arc<Mutex<VecDeque<f32>>>>,
@@ -155,7 +155,7 @@ impl PreviewPlayer {
             paused: Arc::new(AtomicBool::new(false)),
             stopped: Arc::new(AtomicBool::new(false)),
             clock,
-            av_offset_ms: AtomicI64::new(0),
+            av_offset_ms: Arc::new(AtomicI64::new(0)),
             audio_buf,
             audio_cancel,
             audio_handle,
@@ -412,6 +412,33 @@ impl PreviewPlayer {
     /// Safe to call from any thread while [`run`](Self::run) is executing.
     pub fn av_offset(&self) -> i64 {
         self.av_offset_ms.load(Ordering::Relaxed)
+    }
+
+    /// Returns a cloneable handle to the A/V offset atomic.
+    ///
+    /// Writing a value into the returned [`Arc<AtomicI64>`] has the same effect
+    /// as calling [`set_av_offset`](Self::set_av_offset) and is safe to do from
+    /// any thread while [`run`](Self::run) is executing.
+    ///
+    /// Note: the handle stores the raw millisecond value without clamping.
+    /// Values outside ±5 000 ms written directly to the handle will be applied
+    /// as-is by `run()`; prefer [`set_av_offset`](Self::set_av_offset) when
+    /// clamping is desired.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let av_handle   = player.av_offset_handle();
+    /// let stop_handle = player.stop_handle();
+    ///
+    /// std::thread::spawn(move || { player.play(); let _ = player.run(); });
+    ///
+    /// // Adjust A/V sync from the UI thread without stopping playback.
+    /// av_handle.store(200, std::sync::atomic::Ordering::Relaxed);
+    /// stop_handle.store(true, std::sync::atomic::Ordering::Release);
+    /// ```
+    pub fn av_offset_handle(&self) -> Arc<AtomicI64> {
+        Arc::clone(&self.av_offset_ms)
     }
 
     /// Returns the PTS of the most recently presented frame.
@@ -1163,6 +1190,56 @@ mod tests {
             exact_ok, coarse_ok,
             "seek() and seek_coarse() must both succeed or both fail for the same file"
         );
+    }
+
+    // ── av_offset_handle tests ────────────────────────────────────────────────
+
+    #[test]
+    fn av_offset_handle_should_control_offset_from_shared_reference() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        let handle = player.av_offset_handle();
+
+        handle.store(300, Ordering::Relaxed);
+        assert_eq!(
+            player.av_offset(),
+            300,
+            "handle must update av_offset visible through av_offset()"
+        );
+
+        handle.store(-150, Ordering::Relaxed);
+        assert_eq!(player.av_offset(), -150);
+
+        // Arc clone proves the thread-sharing pattern compiles.
+        let cloned = Arc::clone(&handle);
+        cloned.store(500, Ordering::Relaxed);
+        assert_eq!(
+            player.av_offset(),
+            500,
+            "cloned handle must update av_offset"
+        );
+    }
+
+    #[test]
+    fn av_offset_handle_should_have_same_signature_as_stop_handle() {
+        // Structural test: both methods must be callable on an immutable binding.
+        // No `mut` — proves both return &self handles.
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        let _av: Arc<AtomicI64> = player.av_offset_handle();
+        let _stop: Arc<AtomicBool> = player.stop_handle();
     }
 
     // ── A/V offset tests ──────────────────────────────────────────────────────
