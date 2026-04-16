@@ -157,6 +157,7 @@ fn bezier_position_animation_should_match_reference_curve() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .add_layer(VideoLayer {
             source: marker_path.clone(),
@@ -170,6 +171,7 @@ fn bezier_position_animation_should_match_reference_curve() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .build()
     {

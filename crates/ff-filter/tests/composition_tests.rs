@@ -92,6 +92,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .add_layer(VideoLayer {
             source: src2_path.clone(),
@@ -105,6 +106,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .add_layer(VideoLayer {
             source: src3_path.clone(),
@@ -118,6 +120,7 @@ fn multi_track_composition_should_produce_valid_mp4_output() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .build()
     {
@@ -561,6 +564,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .add_layer(VideoLayer {
             source: layer_path.clone(),
@@ -574,6 +578,7 @@ fn animated_opacity_fade_should_darken_composite_over_time() {
             time_offset: Duration::ZERO,
             in_point: None,
             out_point: None,
+            in_transition: None,
         })
         .build()
     {
