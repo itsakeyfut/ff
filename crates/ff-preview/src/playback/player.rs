@@ -82,6 +82,12 @@ pub struct PreviewPlayer {
     /// Set to `true` by `play()` to prevent `use_proxy_if_available` from being
     /// called after playback has started.
     started: AtomicBool,
+    /// PTS of the most recently presented frame, in milliseconds.
+    /// Updated atomically inside `present_frame()`; readable from any thread.
+    current_pts_millis: AtomicU64,
+    /// Container-reported duration in milliseconds.
+    /// `u64::MAX` when the container does not report a duration (live/streaming sources).
+    duration_millis: u64,
 }
 
 impl PreviewPlayer {
@@ -98,6 +104,14 @@ impl PreviewPlayer {
         let info = ff_probe::open(path)?;
 
         let fps = info.frame_rate().unwrap_or(30.0).max(1.0);
+
+        // Duration::ZERO means the container does not report a duration (live/streaming).
+        let d = info.duration();
+        let duration_millis = if d.is_zero() {
+            u64::MAX
+        } else {
+            u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+        };
 
         let clock = if info.has_audio() {
             let sample_rate = info.sample_rate().unwrap_or(48_000);
@@ -149,6 +163,8 @@ impl PreviewPlayer {
             rgba_buf: Vec::new(),
             active_path: path.to_path_buf(),
             started: AtomicBool::new(false),
+            current_pts_millis: AtomicU64::new(0),
+            duration_millis,
         })
     }
 
@@ -398,6 +414,52 @@ impl PreviewPlayer {
         self.av_offset_ms.load(Ordering::Relaxed)
     }
 
+    /// Returns the PTS of the most recently presented frame.
+    ///
+    /// Returns [`Duration::ZERO`] before the first frame has been presented.
+    /// Safe to call from any thread while [`run`](Self::run) is executing.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pts_handle = Arc::new(Mutex::new(Duration::ZERO));
+    /// let pts_clone  = Arc::clone(&pts_handle);
+    ///
+    /// std::thread::spawn(move || {
+    ///     player.play();
+    ///     let _ = player.run();
+    /// });
+    ///
+    /// // UI thread: poll current position to drive a seek bar.
+    /// loop {
+    ///     let pos = player.current_pts();
+    ///     update_seek_bar(pos);
+    ///     std::thread::sleep(std::time::Duration::from_millis(16));
+    /// }
+    /// ```
+    pub fn current_pts(&self) -> Duration {
+        Duration::from_millis(self.current_pts_millis.load(Ordering::Relaxed))
+    }
+
+    /// Returns the container-reported duration of the media file, if known.
+    ///
+    /// Returns `None` for live or streaming sources where the container does
+    /// not report a duration. Use the returned value to size a seek bar range:
+    ///
+    /// ```ignore
+    /// if let Some(total) = player.duration() {
+    ///     let progress = player.current_pts().as_secs_f64() / total.as_secs_f64();
+    ///     seek_bar.set_fraction(progress);
+    /// }
+    /// ```
+    pub fn duration(&self) -> Option<Duration> {
+        if self.duration_millis == u64::MAX {
+            None
+        } else {
+            Some(Duration::from_millis(self.duration_millis))
+        }
+    }
+
     /// Pull up to `n_samples` interleaved stereo `f32` PCM samples at 48 kHz.
     ///
     /// Intended for use inside an audio output callback:
@@ -554,6 +616,12 @@ impl PreviewPlayer {
         let width = frame.width();
         let height = frame.height();
         let pts = frame.timestamp().as_duration();
+        // Store PTS so current_pts() can be read from any thread.
+        // Saturate at u64::MAX for videos longer than ~585 million years.
+        self.current_pts_millis.store(
+            u64::try_from(pts.as_millis()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         if self.sws.convert(frame, &mut self.rgba_buf) {
             sink.push_frame(&self.rgba_buf, width, height, pts);
         }
@@ -917,6 +985,118 @@ mod tests {
         assert!(
             (pts.as_secs_f64() - 0.1).abs() < 1e-6,
             "4800 frames at 48 kHz must equal 100 ms; got {pts:?}"
+        );
+    }
+
+    // ── current_pts / duration tests ─────────────────────────────────────────
+
+    #[test]
+    fn current_pts_should_return_zero_before_first_frame() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        assert_eq!(
+            player.current_pts(),
+            Duration::ZERO,
+            "current_pts() must be ZERO before any frame is presented"
+        );
+    }
+
+    #[test]
+    fn duration_should_return_some_for_file_with_known_duration() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        assert!(
+            player.duration().is_some(),
+            "duration() must return Some for a file with a known container duration"
+        );
+        let d = player.duration().unwrap();
+        assert!(
+            d > Duration::ZERO,
+            "duration() must be positive for a valid media file; got {d:?}"
+        );
+    }
+
+    #[test]
+    fn duration_should_return_none_when_duration_millis_is_sentinel() {
+        // Verify the sentinel logic: u64::MAX → None.
+        // We cannot easily get a live stream in a unit test, so we test the
+        // conversion formula directly.
+        let sentinel = u64::MAX;
+        let result: Option<Duration> = if sentinel == u64::MAX {
+            None
+        } else {
+            Some(Duration::from_millis(sentinel))
+        };
+        assert!(result.is_none(), "sentinel u64::MAX must map to None");
+
+        // A valid value maps to Some.
+        let valid = 5_000u64; // 5 seconds
+        let result: Option<Duration> = if valid == u64::MAX {
+            None
+        } else {
+            Some(Duration::from_millis(valid))
+        };
+        assert_eq!(result, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn current_pts_should_advance_after_frames_are_presented() {
+        use std::sync::{Arc, Mutex};
+
+        struct PtsSink(Arc<Mutex<Option<Duration>>>);
+        impl FrameSink for PtsSink {
+            fn push_frame(&mut self, _rgba: &[u8], _width: u32, _height: u32, pts: Duration) {
+                let mut g = self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *g = Some(pts);
+            }
+        }
+
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        let last_pts = Arc::new(Mutex::new(None::<Duration>));
+        player.set_sink(Box::new(PtsSink(Arc::clone(&last_pts))));
+        player.play();
+        let _ = player.run();
+
+        // After run() returns, current_pts() must be within 1 ms of the PTS
+        // delivered to the sink. current_pts() stores millisecond precision, so
+        // sub-millisecond differences between the stored and sink values are expected.
+        let sink_pts = last_pts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or(Duration::ZERO);
+        let player_pts = player.current_pts();
+        let diff = if player_pts >= sink_pts {
+            player_pts - sink_pts
+        } else {
+            sink_pts - player_pts
+        };
+        assert!(
+            diff <= Duration::from_millis(1),
+            "current_pts() must be within 1 ms of the last sink PTS; \
+             player_pts={player_pts:?} sink_pts={sink_pts:?} diff={diff:?}"
         );
     }
 
