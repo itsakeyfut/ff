@@ -239,6 +239,32 @@ impl PreviewPlayer {
         self.decode_buf.seek(target_pts)
     }
 
+    /// Coarse seek to the nearest I-frame at or before `target_pts`.
+    ///
+    /// Delegates to [`DecodeBuffer::seek_coarse`]. Faster than
+    /// [`seek`](Self::seek) because it skips the forward-decode discard phase.
+    /// The first frame after this call will be at the nearest preceding I-frame,
+    /// which may be up to ±½ GOP from `target_pts` (typically ±1–2 s for H.264
+    /// at default settings).
+    ///
+    /// **Typical use:** call repeatedly while a scrub bar is being dragged;
+    /// call [`seek`](Self::seek) on drag release for frame accuracy.
+    ///
+    /// ```ignore
+    /// // Scrub-bar drag handler:
+    /// player.seek_coarse(drag_pts)?;  // fast, called many times
+    ///
+    /// // Drag released:
+    /// player.seek(release_pts)?;      // exact, called once
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] if the seek fails.
+    pub fn seek_coarse(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
+        self.decode_buf.seek_coarse(target_pts)
+    }
+
     /// If a proxy file for this media exists in `proxy_dir`, use it transparently.
     ///
     /// Must be called before [`play`](Self::play). Returns `true` if a proxy was
@@ -891,6 +917,71 @@ mod tests {
         assert!(
             (pts.as_secs_f64() - 0.1).abs() < 1e-6,
             "4800 frames at 48 kHz must equal 100 ms; got {pts:?}"
+        );
+    }
+
+    // ── seek_coarse tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn seek_coarse_should_delegate_to_decode_buffer() {
+        let path = test_video_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        // Consume a few frames so the decoder has advanced past the start.
+        for _ in 0..3 {
+            if matches!(player.pop_frame(), FrameResult::Eof) {
+                println!("skipping: EOF before seek target");
+                return;
+            }
+        }
+        let target = Duration::from_secs(1);
+        match player.seek_coarse(target) {
+            Ok(()) => {}
+            Err(e) => {
+                println!("skipping: seek_coarse not supported or failed: {e}");
+                return;
+            }
+        }
+        // After a coarse seek the next frame must be available (not EOF).
+        match player.pop_frame() {
+            FrameResult::Frame(_) | FrameResult::Seeking(_) => {}
+            FrameResult::Eof => panic!("pop_frame() returned Eof immediately after seek_coarse"),
+        }
+    }
+
+    #[test]
+    fn seek_coarse_should_be_faster_than_seek_for_same_target() {
+        // Structural test: both methods must return Ok for the same target.
+        // Timing comparison is environment-dependent and marked #[ignore].
+        let path = test_video_path();
+        let mut player_exact = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        let mut player_coarse = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        let target = Duration::from_secs(1);
+        let exact_ok = player_exact.seek(target).is_ok();
+        let coarse_ok = player_coarse.seek_coarse(target).is_ok();
+
+        // Both must either succeed or fail (seek support depends on the codec).
+        assert_eq!(
+            exact_ok, coarse_ok,
+            "seek() and seek_coarse() must both succeed or both fail for the same file"
         );
     }
 

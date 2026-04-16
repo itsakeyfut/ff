@@ -116,6 +116,28 @@ impl AsyncPreviewPlayer {
         })?
     }
 
+    /// Coarse seek to the nearest I-frame at or before `pts`.
+    ///
+    /// See [`PreviewPlayer::seek_coarse`] for full semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] if the seek fails or the blocking thread panics.
+    pub async fn seek_coarse(&self, pts: Duration) -> Result<(), PreviewError> {
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .seek_coarse(pts)
+        })
+        .await
+        .map_err(|e| PreviewError::Ffmpeg {
+            code: 0,
+            message: format!("tokio task join error: {e}"),
+        })?
+    }
+
     /// Pop the next decoded video frame.
     ///
     /// Runs on a blocking thread until a frame is available.
