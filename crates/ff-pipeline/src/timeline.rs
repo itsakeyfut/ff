@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
@@ -20,6 +20,7 @@ use crate::clip::Clip;
 use crate::encoder_config::EncoderConfig;
 use crate::error::PipelineError;
 use crate::pipeline::hwaccel_to_hardware_encoder;
+use crate::progress::Progress;
 
 /// An ordered layout of [`Clip`] instances across video and audio tracks.
 ///
@@ -102,10 +103,8 @@ impl Timeline {
 
     /// Renders the timeline to an output file.
     ///
-    /// Animation tracks registered via [`TimelineBuilder::video_animation`] and
-    /// [`TimelineBuilder::audio_animation`] are forwarded to the corresponding
-    /// [`VideoLayer`] / [`AudioTrack`] fields before the filter graphs are built.
-    /// Unrecognised animation keys are ignored and logged as `warn!`.
+    /// Convenience wrapper around [`render_with_progress`](Self::render_with_progress)
+    /// that discards progress notifications.
     ///
     /// # Errors
     ///
@@ -118,7 +117,65 @@ impl Timeline {
         output: impl AsRef<Path>,
         config: EncoderConfig,
     ) -> Result<(), PipelineError> {
+        self.render_with_progress(output, config, |_| true)
+    }
+
+    /// Renders the timeline to an output file, invoking `on_progress` after
+    /// each encoded video frame.
+    ///
+    /// Animation tracks registered via [`TimelineBuilder::video_animation`] and
+    /// [`TimelineBuilder::audio_animation`] are forwarded to the corresponding
+    /// [`VideoLayer`] / [`AudioTrack`] fields before the filter graphs are built.
+    /// Unrecognised animation keys are ignored and logged as `warn!`.
+    ///
+    /// `on_progress` receives a [`Progress`] reference after every video frame.
+    /// Returning `false` cancels the render and returns
+    /// [`PipelineError::Cancelled`]. Audio-only timelines do not invoke the
+    /// callback (there are no video frames to report).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let timeline = Timeline::builder()
+    ///     .canvas(1920, 1080)
+    ///     .frame_rate(30.0)
+    ///     .video_track(vec![Clip::new("input.mp4")])
+    ///     .build()?;
+    ///
+    /// timeline.render_with_progress("output.mp4", EncoderConfig::default(), |p| {
+    ///     println!("frame {} / {:?}", p.frames_processed, p.total_frames);
+    ///     true // return false to cancel
+    /// })?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - [`PipelineError::ClipNotFound`] — a clip's source file is missing
+    /// - [`PipelineError::Cancelled`] — `on_progress` returned `false`
+    /// - [`PipelineError::Encode`] — encoder failure
+    /// - [`PipelineError::Filter`] — filter graph construction failure
+    /// - [`PipelineError::TimelineRenderFailed`] — other structural failure
+    pub fn render_with_progress(
+        self,
+        output: impl AsRef<Path>,
+        config: EncoderConfig,
+        on_progress: impl Fn(&Progress) -> bool + Send,
+    ) -> Result<(), PipelineError> {
         let output = output.as_ref();
+
+        // Compute total expected video frame count from clips with known durations.
+        // `None` when any clip runs to end-of-file (out_point not set).
+        // Sum clip durations; short-circuits to None if any clip has no out_point.
+        // frame_rate and total_dur are always non-negative; max(0.0) + round()
+        // guarantees the value fits in u64 for any realistic frame count.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let total_frames: Option<u64> = self
+            .video_tracks
+            .iter()
+            .flat_map(|track| track.iter())
+            .map(Clip::duration)
+            .try_fold(Duration::ZERO, |acc, dur| dur.map(|d| acc + d))
+            .map(|total_dur| (total_dur.as_secs_f64() * self.frame_rate).round().max(0.0) as u64);
 
         let Timeline {
             canvas_width,
@@ -243,9 +300,12 @@ impl Timeline {
         }
         let mut encoder = enc_builder.build().map_err(PipelineError::Encode)?;
 
+        let start = Instant::now();
+
         // 6. Drain video graph → encoder.
         //    tick() must be called before each pull so that animation entries
         //    registered on the graph update the filter parameters for that frame.
+        //    on_progress is invoked after each push; returning false cancels.
         if let Some(mut vgraph) = video_graph {
             let mut video_idx: u32 = 0;
             loop {
@@ -257,6 +317,14 @@ impl Timeline {
                     Some(frame) => {
                         encoder.push_video(&frame).map_err(PipelineError::Encode)?;
                         video_idx = video_idx.saturating_add(1);
+                        let progress = Progress {
+                            frames_processed: u64::from(video_idx),
+                            total_frames,
+                            elapsed: start.elapsed(),
+                        };
+                        if !on_progress(&progress) {
+                            return Err(PipelineError::Cancelled);
+                        }
                     }
                     None => break,
                 }
