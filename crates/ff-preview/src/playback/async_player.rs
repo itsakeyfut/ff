@@ -3,7 +3,7 @@
 //! This module is only compiled when the `tokio` feature is enabled.
 
 use std::path::Path;
-use std::sync::atomic::AtomicI64;
+use std::sync::atomic::{AtomicI64, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -163,6 +163,26 @@ impl AsyncPreviewPlayer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .av_offset_handle()
+    }
+
+    /// Set the playback rate. Not async — only writes to the atomic.
+    ///
+    /// See [`PreviewPlayer::set_rate`] for full semantics.
+    pub fn set_rate(&self, rate: f64) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_rate(rate);
+    }
+
+    /// Returns a cloneable handle to the rate atomic.
+    ///
+    /// See [`PreviewPlayer::rate_handle`] for full semantics.
+    pub fn rate_handle(&self) -> Arc<AtomicU64> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rate_handle()
     }
 
     /// Returns the PTS of the most recently presented frame.
