@@ -3,6 +3,7 @@
 //! This module is only compiled when the `tokio` feature is enabled.
 
 use std::path::Path;
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -152,6 +153,16 @@ impl AsyncPreviewPlayer {
         })
         .await
         .unwrap_or(FrameResult::Eof)
+    }
+
+    /// Returns a cloneable handle to the A/V offset atomic.
+    ///
+    /// See [`PreviewPlayer::av_offset_handle`] for full semantics.
+    pub fn av_offset_handle(&self) -> Arc<AtomicI64> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .av_offset_handle()
     }
 
     /// Returns the PTS of the most recently presented frame.
