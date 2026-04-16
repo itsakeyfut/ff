@@ -745,10 +745,10 @@ mod tests {
             ff_sys::AVPixelFormat_AV_PIX_FMT_NV12
         );
 
-        // Test fallback for Other format
+        // Other(v) passes through the raw integer unchanged.
         assert_eq!(
             color::pixel_format_to_av(ff_format::PixelFormat::Other(999)),
-            ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P
+            999 as AVPixelFormat
         );
 
         // 10-bit formats
@@ -791,10 +791,12 @@ mod tests {
     }
 
     #[test]
-    fn from_av_pixel_format_unknown_should_fall_back_to_yuv420p() {
+    fn from_av_pixel_format_none_should_return_other() {
+        // AV_PIX_FMT_NONE (-1) is an unrecognised value; must round-trip as Other.
+        let fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_NONE;
         assert_eq!(
-            color::from_av_pixel_format(ff_sys::AVPixelFormat_AV_PIX_FMT_NONE),
-            ff_format::PixelFormat::Yuv420p
+            color::from_av_pixel_format(fmt),
+            ff_format::PixelFormat::Other(fmt as u32)
         );
     }
 
