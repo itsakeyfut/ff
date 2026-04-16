@@ -154,6 +154,26 @@ impl AsyncPreviewPlayer {
         .unwrap_or(FrameResult::Eof)
     }
 
+    /// Returns the PTS of the most recently presented frame.
+    ///
+    /// See [`PreviewPlayer::current_pts`] for full semantics.
+    pub fn current_pts(&self) -> Duration {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current_pts()
+    }
+
+    /// Returns the container-reported duration, if known.
+    ///
+    /// See [`PreviewPlayer::duration`] for full semantics.
+    pub fn duration(&self) -> Option<Duration> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .duration()
+    }
+
     /// Pull up to `n` interleaved stereo `f32` PCM samples at 48 kHz.
     ///
     /// See [`PreviewPlayer::pop_audio_samples`] for full semantics.
