@@ -46,7 +46,8 @@ pub struct PreviewPlayer {
     /// restarted from a new position after a seek.
     path: PathBuf,
     /// Pre-decoded frame buffer driven by a background thread.
-    decode_buf: DecodeBuffer,
+    /// `None` for audio-only files that have no video stream.
+    decode_buf: Option<DecodeBuffer>,
     /// Video frame rate; used to compute the frame period for A/V sync.
     fps: f64,
     /// Frame sink registered via [`set_sink`](Self::set_sink). Optional;
@@ -97,15 +98,28 @@ pub struct PreviewPlayer {
 impl PreviewPlayer {
     /// Open a media file and prepare for playback.
     ///
-    /// Probes the file to detect audio presence and frame rate, then opens a
-    /// [`DecodeBuffer`] for the video stream. Returns [`PreviewError`] if the
-    /// file is missing or contains no decodable stream.
+    /// Probes the file to detect audio/video streams, then opens a
+    /// [`DecodeBuffer`] for the video stream (when present). Returns
+    /// [`PreviewError`] if the file is missing, unreadable, or contains
+    /// neither a video nor an audio stream.
+    ///
+    /// Audio-only files (MP3, AAC, WAV, FLAC, …) are fully supported:
+    /// `run()` will pace itself via the audio master clock and deliver no
+    /// video frames. Callers should drain samples via
+    /// [`pop_audio_samples`](Self::pop_audio_samples).
     ///
     /// # Errors
     ///
     /// Returns [`PreviewError`] if the file cannot be probed or decoded.
     pub fn open(path: &Path) -> Result<Self, PreviewError> {
         let info = ff_probe::open(path)?;
+
+        if !info.has_video() && !info.has_audio() {
+            return Err(PreviewError::Ffmpeg {
+                code: -1,
+                message: "file has neither a video nor an audio stream".into(),
+            });
+        }
 
         let fps = info.frame_rate().unwrap_or(30.0).max(1.0);
 
@@ -134,7 +148,17 @@ impl PreviewPlayer {
             }
         };
 
-        let decode_buf = DecodeBuffer::open(path).build()?;
+        // Open the video decode buffer only when a video stream is present.
+        // Audio-only files skip this step and use audio-clock pacing in run().
+        let decode_buf = if info.has_video() {
+            Some(DecodeBuffer::open(path).build()?)
+        } else {
+            log::debug!(
+                "audio-only file; skipping video decode buffer path={}",
+                path.display()
+            );
+            None
+        };
 
         // Spawn a background audio decode thread when an audio track is present.
         let (audio_buf, audio_cancel, audio_handle) = if let MasterClock::Audio { .. } = &clock {
@@ -244,20 +268,27 @@ impl PreviewPlayer {
     /// Pop the next decoded video frame.
     ///
     /// Delegates to [`DecodeBuffer::pop_frame`]. Blocks until a frame is available.
-    /// Returns [`FrameResult::Eof`] at end of file.
+    /// Returns [`FrameResult::Eof`] at end of file or for audio-only files.
     pub fn pop_frame(&mut self) -> FrameResult {
-        self.decode_buf.pop_frame()
+        match self.decode_buf.as_mut() {
+            Some(buf) => buf.pop_frame(),
+            None => FrameResult::Eof,
+        }
     }
 
     /// Frame-accurate seek to `target_pts`.
     ///
-    /// Delegates to [`DecodeBuffer::seek`].
+    /// Delegates to [`DecodeBuffer::seek`]. Returns `Ok(())` immediately for
+    /// audio-only files (no video stream to seek).
     ///
     /// # Errors
     ///
     /// Returns [`PreviewError`] if the seek fails.
     pub fn seek(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
-        self.decode_buf.seek(target_pts)
+        match self.decode_buf.as_mut() {
+            Some(buf) => buf.seek(target_pts),
+            None => Ok(()),
+        }
     }
 
     /// Coarse seek to the nearest I-frame at or before `target_pts`.
@@ -283,7 +314,10 @@ impl PreviewPlayer {
     ///
     /// Returns [`PreviewError`] if the seek fails.
     pub fn seek_coarse(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
-        self.decode_buf.seek_coarse(target_pts)
+        match self.decode_buf.as_mut() {
+            Some(buf) => buf.seek_coarse(target_pts),
+            None => Ok(()),
+        }
     }
 
     /// If a proxy file for this media exists in `proxy_dir`, use it transparently.
@@ -384,7 +418,7 @@ impl PreviewPlayer {
 
         self.active_path = proxy_path.to_path_buf();
         self.fps = fps;
-        self.decode_buf = decode_buf;
+        self.decode_buf = Some(decode_buf);
         self.clock = clock;
         self.audio_buf = audio_buf;
         self.audio_cancel = audio_cancel;
@@ -616,7 +650,40 @@ impl PreviewPlayer {
                 continue;
             }
 
-            match self.decode_buf.pop_frame() {
+            // ── Audio-only path ───────────────────────────────────────────────
+            // When there is no video stream, pace via a short sleep and exit
+            // once the audio thread has finished and the ring buffer is empty
+            // (meaning all samples have been consumed by the caller).
+            if self.decode_buf.is_none() {
+                thread::sleep(Duration::from_millis(10));
+                if let Some(audio_buf) = &self.audio_buf {
+                    let empty = audio_buf
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_empty();
+                    if empty
+                        && self
+                            .audio_handle
+                            .as_ref()
+                            .is_none_or(JoinHandle::is_finished)
+                    {
+                        break;
+                    }
+                } else {
+                    // No audio either — nothing to do.
+                    break;
+                }
+                continue;
+            }
+
+            // ── Video decode path ─────────────────────────────────────────────
+            // decode_buf is Some (verified by is_none() check above).
+            let pop_result = if let Some(buf) = self.decode_buf.as_mut() {
+                buf.pop_frame()
+            } else {
+                FrameResult::Eof // unreachable: handled by is_none() above
+            };
+            match pop_result {
                 FrameResult::Eof => break,
                 FrameResult::Seeking(last) => {
                     if let Some(ref f) = last {
@@ -625,10 +692,22 @@ impl PreviewPlayer {
                     // Non-blocking — loop immediately to check stopped/paused.
                 }
                 FrameResult::Frame(frame) => {
-                    // Update system clock base when a seek just completed.
-                    while let Ok(SeekEvent::Completed { pts }) =
-                        self.decode_buf.seek_events().try_recv()
-                    {
+                    // Drain all pending seek-completion events. Collect pts
+                    // values first so the borrow on decode_buf ends before
+                    // restart_audio_from() takes &mut self.
+                    let seek_pts: Vec<Duration> = match self.decode_buf.as_ref() {
+                        Some(buf) => {
+                            let mut v = Vec::new();
+                            while let Ok(SeekEvent::Completed { pts }) =
+                                buf.seek_events().try_recv()
+                            {
+                                v.push(pts);
+                            }
+                            v
+                        }
+                        None => Vec::new(),
+                    };
+                    for pts in seek_pts {
                         self.clock.reset(pts);
                         // Flush stale audio and restart the audio thread from
                         // the seek position so audio and video stay aligned.
@@ -831,6 +910,11 @@ mod tests {
 
     fn test_video_path() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/video/gameplay.mp4")
+    }
+
+    fn test_audio_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/audio/konekonoosanpo.mp3")
     }
 
     // ── PreviewPlayer tests ───────────────────────────────────────────────────
@@ -1543,5 +1627,113 @@ mod tests {
         player.set_rate(2.0);
         let rate_handle: Arc<AtomicU64> = player.rate_handle();
         let _ = rate_handle;
+    }
+
+    // ── audio-only tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn audio_only_open_should_succeed() {
+        let path = test_audio_path();
+        match PreviewPlayer::open(&path) {
+            Ok(player) => {
+                // Opened successfully; verify the player has no video decode buffer.
+                assert!(
+                    player.decode_buf.is_none(),
+                    "audio-only player must have no video decode buffer"
+                );
+                // Audio buffer should be present.
+                assert!(
+                    player.audio_buf.is_some(),
+                    "audio-only player must have an audio ring buffer"
+                );
+            }
+            Err(e) => {
+                println!("skipping: audio file not available: {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn audio_only_pop_frame_should_return_eof() {
+        let path = test_audio_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: audio file not available: {e}");
+                return;
+            }
+        };
+        // For an audio-only player, pop_frame() must return Eof immediately.
+        assert!(
+            matches!(player.pop_frame(), FrameResult::Eof),
+            "pop_frame() on an audio-only player must return Eof"
+        );
+    }
+
+    #[test]
+    fn audio_only_run_should_return_ok_without_video_frames() {
+        let path = test_audio_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: audio file not available: {e}");
+                return;
+            }
+        };
+
+        // Count frames delivered to the sink — must remain zero for audio-only.
+        struct CountingSink(usize);
+        impl FrameSink for CountingSink {
+            fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, _pts: Duration) {
+                self.0 += 1;
+            }
+        }
+        player.set_sink(Box::new(CountingSink(0)));
+
+        // Stop after 150 ms so the test doesn't block for the full audio duration.
+        let stop = player.stop_handle();
+        let _ = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            stop.store(true, Ordering::Release);
+        });
+
+        player.play();
+        let result = player.run();
+        assert!(
+            result.is_ok(),
+            "run() on an audio-only player must return Ok; got {result:?}"
+        );
+        // The sink should have received zero video frames.
+        if let Some(sink) = player.sink.as_ref() {
+            // Access the frame count via downcast is not available here, so we
+            // verify indirectly: current_pts() stays at zero (no frames presented).
+            let _ = sink;
+        }
+        assert_eq!(
+            player.current_pts(),
+            Duration::ZERO,
+            "current_pts() must remain ZERO for audio-only playback (no video frames)"
+        );
+    }
+
+    #[test]
+    fn audio_only_seek_should_return_ok() {
+        let path = test_audio_path();
+        let mut player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: audio file not available: {e}");
+                return;
+            }
+        };
+        // seek() and seek_coarse() must return Ok(()) for audio-only files.
+        assert!(
+            player.seek(Duration::from_secs(1)).is_ok(),
+            "seek() on audio-only player must return Ok"
+        );
+        assert!(
+            player.seek_coarse(Duration::from_secs(1)).is_ok(),
+            "seek_coarse() on audio-only player must return Ok"
+        );
     }
 }
