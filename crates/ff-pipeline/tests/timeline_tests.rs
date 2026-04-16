@@ -131,6 +131,127 @@ fn timeline_render_should_produce_ffprobe_valid_output() {
     );
 }
 
+/// Verifies that `render_with_progress` returns `PipelineError::Cancelled` when
+/// the callback immediately returns `false`.
+///
+/// This is the acceptance-criterion test for issue #1016:
+/// "A unit test verifies that a cancelling callback returns `Cancelled` after
+/// the first frame."
+#[test]
+fn render_with_progress_should_cancel_when_callback_returns_false() {
+    let src_path = test_output_path("rwp_cancel_src.mp4");
+    let out_path = test_output_path("rwp_cancel_out.mp4");
+    let _g_src = FileGuard::new(src_path.clone());
+    let _g_out = FileGuard::new(out_path.clone());
+
+    // Y=100, U=100, V=100 ≈ grey
+    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 100, 100, 100).is_none() {
+        return;
+    }
+
+    let clip = Clip::new(&src_path).trim(Duration::ZERO, Duration::from_secs(1));
+
+    let timeline = match Timeline::builder()
+        .canvas(W, H)
+        .frame_rate(FPS)
+        .video_track(vec![clip])
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return;
+        }
+    };
+
+    // A callback that always returns false should cancel on the first frame.
+    let result = timeline.render_with_progress(&out_path, render_config(), |_| false);
+
+    match result {
+        Err(PipelineError::Cancelled) => { /* expected */ }
+        Err(PipelineError::Filter(e)) => {
+            println!("Skipping: filter graph construction failed: {e}");
+        }
+        Err(PipelineError::Encode(e)) => {
+            println!("Skipping: encoder unavailable: {e}");
+        }
+        Err(PipelineError::Decode(e)) => {
+            println!("Skipping: decoder unavailable: {e}");
+        }
+        Err(e) => panic!("expected Cancelled, got {e}"),
+        Ok(()) => panic!("render_with_progress must not succeed when callback returns false"),
+    }
+}
+
+/// Verifies that `render_with_progress` invokes the callback at least once
+/// and reports monotonically increasing `frames_processed`.
+#[test]
+fn render_with_progress_should_invoke_callback_with_incrementing_frame_count() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let src_path = test_output_path("rwp_count_src.mp4");
+    let out_path = test_output_path("rwp_count_out.mp4");
+    let _g_src = FileGuard::new(src_path.clone());
+    let _g_out = FileGuard::new(out_path.clone());
+
+    if make_source_file(&src_path, W, H, FPS, FRAME_COUNT, 100, 100, 100).is_none() {
+        return;
+    }
+
+    let clip = Clip::new(&src_path).trim(Duration::ZERO, Duration::from_secs(1));
+
+    let timeline = match Timeline::builder()
+        .canvas(W, H)
+        .frame_rate(FPS)
+        .video_track(vec![clip])
+        .build()
+    {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Skipping: Timeline::builder().build() failed: {e}");
+            return;
+        }
+    };
+
+    let call_count = AtomicU64::new(0);
+    let last_frames = AtomicU64::new(0);
+
+    let result = timeline.render_with_progress(&out_path, render_config(), |p| {
+        let prev = last_frames.load(Ordering::Relaxed);
+        assert!(
+            p.frames_processed > prev,
+            "frames_processed must increase monotonically: prev={prev} got={}",
+            p.frames_processed
+        );
+        last_frames.store(p.frames_processed, Ordering::Relaxed);
+        call_count.fetch_add(1, Ordering::Relaxed);
+        true
+    });
+
+    match result {
+        Ok(()) => {}
+        Err(PipelineError::Filter(e)) => {
+            println!("Skipping: filter graph construction failed: {e}");
+            return;
+        }
+        Err(PipelineError::Encode(e)) => {
+            println!("Skipping: encoder unavailable: {e}");
+            return;
+        }
+        Err(PipelineError::Decode(e)) => {
+            println!("Skipping: decoder unavailable: {e}");
+            return;
+        }
+        Err(e) => panic!("unexpected error from render_with_progress: {e}"),
+    }
+
+    let count = call_count.load(Ordering::Relaxed);
+    assert!(
+        count > 0,
+        "on_progress must be invoked at least once, got {count} calls"
+    );
+}
+
 /// Verifies that a `Timeline` with an audio volume fade track encodes without
 /// error.  The volume track fades from −60 dB to 0 dB over the clip's
 /// duration; the test confirms the output is a valid file with both streams.
