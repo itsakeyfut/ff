@@ -11,6 +11,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.1] - 2026-04-16
+
+### Added
+
+#### ff-pipeline
+- `Clip::transition` field and xfade filter wiring in `Timeline::render` ([#1015](https://github.com/itsakeyfut/avio/issues/1015))
+- `Timeline::render_with_progress()` with per-frame progress callback and cancellation support ([#1016](https://github.com/itsakeyfut/avio/issues/1016))
+
+#### ff-preview
+- Audio-only file support in `PreviewPlayer::open()` and `run()` ([#1009](https://github.com/itsakeyfut/avio/issues/1009))
+- `set_rate()` and `rate_handle()` for runtime playback speed control ([#1014](https://github.com/itsakeyfut/avio/issues/1014))
+- `av_offset_handle()`: cloneable `Arc<AtomicI64>` handle for A/V offset from outside the player ([#1013](https://github.com/itsakeyfut/avio/issues/1013))
+- `current_pts()` and `duration()` for real-time position and file length queries ([#1012](https://github.com/itsakeyfut/avio/issues/1012))
+- `seek_coarse()` exposed at both `PreviewPlayer` and `AsyncPreviewPlayer` level ([#1011](https://github.com/itsakeyfut/avio/issues/1011))
+- `pause_handle()`: cloneable `Arc<AtomicBool>` handle for external pause control ([#1008](https://github.com/itsakeyfut/avio/issues/1008))
+
+### Changed
+
+#### ff-preview
+- `pause()` and `play()` now take `&self` instead of `&mut self` ([#1008](https://github.com/itsakeyfut/avio/issues/1008))
+- `pop_audio_samples()` receiver changed from `&mut self` to `&self` ([#1007](https://github.com/itsakeyfut/avio/issues/1007))
+
+### Fixed
+
+#### ff-decode
+- `into_stream` now terminates after the first error; subsequent polls return `None` ([#1006](https://github.com/itsakeyfut/avio/issues/1006))
+
+#### ff-encode
+- `PixelFormat::Other(v)` now passes through `pixel_format_to_av` without silently falling back to `yuv420p` ([#1018](https://github.com/itsakeyfut/avio/issues/1018))
+
+#### ff-filter
+- Insert explicit `format=yuv420p` filter before video buffersinks to prevent `gbrp` format negotiation on newer FFmpeg builds ([#1017](https://github.com/itsakeyfut/avio/issues/1017))
+
+---
+
 ## [0.13.0] - 2026-04-13
 
 ### Added
