@@ -25,6 +25,7 @@ pub(super) fn pixel_format_to_av(format: ff_format::PixelFormat) -> AVPixelForma
         PixelFormat::Yuv444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUV444P10LE,
         PixelFormat::Yuva444p10le => ff_sys::AVPixelFormat_AV_PIX_FMT_YUVA444P10LE,
         PixelFormat::P010le => ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE,
+        PixelFormat::Other(v) => v as AVPixelFormat,
         _ => {
             log::warn!(
                 "pixel_format has no AV mapping, falling back to Yuv420p \
@@ -69,10 +70,7 @@ pub(super) fn from_av_pixel_format(fmt: AVPixelFormat) -> ff_format::PixelFormat
     } else if fmt == ff_sys::AVPixelFormat_AV_PIX_FMT_P010LE {
         PixelFormat::P010le
     } else {
-        log::warn!(
-            "pixel_format unsupported, falling back to Yuv420p requested={fmt} fallback=Yuv420p"
-        );
-        PixelFormat::Yuv420p
+        PixelFormat::Other(fmt as u32)
     }
 }
 
@@ -115,6 +113,49 @@ pub(super) fn color_primaries_to_av(cp: ff_format::ColorPrimaries) -> ff_sys::AV
         ColorPrimaries::Bt2020 => ff_sys::AVColorPrimaries_AVCOL_PRI_BT2020,
         ColorPrimaries::Unknown => ff_sys::AVColorPrimaries_AVCOL_PRI_UNSPECIFIED,
         _ => ff_sys::AVColorPrimaries_AVCOL_PRI_UNSPECIFIED,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ff_format::PixelFormat;
+
+    /// `PixelFormat::Other(v)` must pass through to the raw `AVPixelFormat` integer unchanged,
+    /// not fall back to `AV_PIX_FMT_YUV420P`.
+    #[test]
+    fn pixel_format_other_should_passthrough_av_value() {
+        // AVPixelFormat value 29 = AV_PIX_FMT_GBRP on most FFmpeg builds.
+        let result = pixel_format_to_av(PixelFormat::Other(29));
+        assert_eq!(
+            result, 29,
+            "Other(29) must map to AVPixelFormat 29, got {result}"
+        );
+    }
+
+    /// An unrecognised `AVPixelFormat` integer must be wrapped in `PixelFormat::Other`,
+    /// not silently coerced to `Yuv420p`.
+    #[test]
+    fn from_av_pixel_format_unknown_should_return_other() {
+        let result = from_av_pixel_format(99);
+        assert_eq!(
+            result,
+            PixelFormat::Other(99),
+            "AVPixelFormat 99 must yield Other(99), got {result:?}"
+        );
+    }
+
+    /// Round-trip: `from_av_pixel_format(pixel_format_to_av(Other(v))) == Other(v)`.
+    /// Acceptance criterion from issue #1018.
+    #[test]
+    fn pixel_format_other_round_trip_should_be_identity() {
+        let original = PixelFormat::Other(29);
+        let av_fmt = pixel_format_to_av(original);
+        let round_tripped = from_av_pixel_format(av_fmt);
+        assert_eq!(
+            round_tripped, original,
+            "Other(29) round-trip must be identity; got {round_tripped:?}"
+        );
     }
 }
 
