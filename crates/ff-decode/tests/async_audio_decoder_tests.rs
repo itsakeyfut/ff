@@ -81,6 +81,29 @@ async fn into_stream_drop_mid_stream_should_not_leak() {
     // AudioDecoder cleanup happens via Drop when stream is dropped here
 }
 
+/// Acceptance criterion for issue #1006: the stream must terminate after EOF
+/// and not continue polling indefinitely.  This tests the `Ok(None)` path of
+/// the fixed `into_stream` (the error-termination path is covered by the unit
+/// test in `async_decoder.rs`).
+#[tokio::test]
+async fn into_stream_should_terminate_at_eof() {
+    use futures::StreamExt;
+    let decoder = match AsyncAudioDecoder::open(test_audio_path()).await {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: {e}");
+            return;
+        }
+    };
+    // collect() must complete — an infinite stream would hang the test.
+    let frames: Vec<_> = decoder.into_stream().collect().await;
+    assert!(!frames.is_empty(), "expected at least one frame before EOF");
+    assert!(
+        frames.iter().all(|r| r.is_ok()),
+        "no errors expected for a valid file"
+    );
+}
+
 #[tokio::test]
 async fn async_audio_decode_sample_count_matches_sync() {
     use futures::StreamExt;
