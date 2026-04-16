@@ -88,6 +88,10 @@ pub struct PreviewPlayer {
     /// Container-reported duration in milliseconds.
     /// `u64::MAX` when the container does not report a duration (live/streaming sources).
     duration_millis: u64,
+    /// Playback rate stored as `f64` bits in an atomic (default: `1.0`).
+    /// Read once per frame in `run()` to scale the frame-pacing sleep duration.
+    /// Use `rate_handle()` to share this across threads.
+    rate_bits: Arc<AtomicU64>,
 }
 
 impl PreviewPlayer {
@@ -165,6 +169,7 @@ impl PreviewPlayer {
             started: AtomicBool::new(false),
             current_pts_millis: AtomicU64::new(0),
             duration_millis,
+            rate_bits: Arc::new(AtomicU64::new(1.0_f64.to_bits())),
         })
     }
 
@@ -441,6 +446,49 @@ impl PreviewPlayer {
         Arc::clone(&self.av_offset_ms)
     }
 
+    /// Set the playback rate.
+    ///
+    /// Values ≤ 0.0 are silently ignored — the rate remains unchanged.
+    ///
+    /// The new rate takes effect on the next frame's sleep calculation inside
+    /// [`run`](Self::run). Safe to call from any thread while `run()` is
+    /// executing (same contract as [`set_av_offset`](Self::set_av_offset)).
+    ///
+    /// - `1.0` — real-time (default)
+    /// - `2.0` — twice real-time (sleep halved)
+    /// - `0.5` — half real-time (sleep doubled)
+    pub fn set_rate(&self, rate: f64) {
+        if rate > 0.0 {
+            self.rate_bits.store(rate.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Returns a cloneable handle to the rate atomic.
+    ///
+    /// Writing `new_rate.to_bits()` into the returned [`Arc<AtomicU64>`] has
+    /// the same effect as calling [`set_rate`](Self::set_rate) and is safe to
+    /// do from any thread while [`run`](Self::run) is executing.
+    ///
+    /// Note: the handle does **not** validate the value; storing bits that
+    /// correspond to `≤ 0.0` or `NaN` will produce undefined sleep behaviour.
+    /// Prefer [`set_rate`](Self::set_rate) when the validation guard is desired.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let rate   = player.rate_handle();
+    /// let stop   = player.stop_handle();
+    ///
+    /// std::thread::spawn(move || { player.play(); let _ = player.run(); });
+    ///
+    /// // Double speed from the UI thread without stopping playback.
+    /// rate.store(2.0_f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    /// stop.store(true, std::sync::atomic::Ordering::Release);
+    /// ```
+    pub fn rate_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.rate_bits)
+    }
+
     /// Returns the PTS of the most recently presented frame.
     ///
     /// Returns [`Duration::ZERO`] before the first frame has been presented.
@@ -613,7 +661,10 @@ impl PreviewPlayer {
 
                         if diff > fp {
                             // Frame is early — sleep until it aligns with the clock.
-                            let sleep_secs = (diff - fp / 2.0).max(0.0);
+                            // Divide by rate so higher rates shorten the sleep proportionally.
+                            let rate = f64::from_bits(self.rate_bits.load(Ordering::Relaxed));
+                            let sleep_secs =
+                                (diff - fp / 2.0).max(0.0) / rate.max(f64::MIN_POSITIVE);
                             thread::sleep(Duration::from_secs_f64(sleep_secs));
                         } else if diff < -fp {
                             // Frame is more than one period late — drop silently.
@@ -1384,5 +1435,113 @@ mod tests {
             path.as_path(),
             "active_source() must equal the original path before any proxy activation"
         );
+    }
+
+    // ── set_rate / rate_handle tests ──────────────────────────────────────────
+
+    #[test]
+    fn set_rate_should_update_rate_bits() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        // Default rate is 1.0.
+        let default_rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
+        assert!(
+            (default_rate - 1.0).abs() < f64::EPSILON,
+            "default rate must be 1.0; got {default_rate}"
+        );
+
+        player.set_rate(2.0);
+        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
+        assert!(
+            (rate - 2.0).abs() < f64::EPSILON,
+            "set_rate(2.0) must store 2.0; got {rate}"
+        );
+
+        player.set_rate(0.5);
+        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
+        assert!(
+            (rate - 0.5).abs() < f64::EPSILON,
+            "set_rate(0.5) must store 0.5; got {rate}"
+        );
+    }
+
+    #[test]
+    fn set_rate_should_ignore_non_positive_values() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.set_rate(2.0);
+
+        // 0.0 must be a no-op.
+        player.set_rate(0.0);
+        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
+        assert!(
+            (rate - 2.0).abs() < f64::EPSILON,
+            "set_rate(0.0) must be a no-op; rate must remain 2.0, got {rate}"
+        );
+
+        // Negative must also be a no-op.
+        player.set_rate(-1.0);
+        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
+        assert!(
+            (rate - 2.0).abs() < f64::EPSILON,
+            "set_rate(-1.0) must be a no-op; rate must remain 2.0, got {rate}"
+        );
+    }
+
+    #[test]
+    fn rate_handle_should_return_shared_reference_to_rate_bits() {
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        let handle = player.rate_handle();
+
+        handle.store(3.0_f64.to_bits(), Ordering::Relaxed);
+        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
+        assert!(
+            (rate - 3.0).abs() < f64::EPSILON,
+            "rate_handle() write must be visible through rate_bits; got {rate}"
+        );
+
+        // Arc clone proves the thread-sharing pattern compiles.
+        let cloned = Arc::clone(&handle);
+        cloned.store(0.25_f64.to_bits(), Ordering::Relaxed);
+        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
+        assert!(
+            (rate - 0.25).abs() < f64::EPSILON,
+            "cloned rate_handle write must be visible; got {rate}"
+        );
+    }
+
+    #[test]
+    fn set_rate_should_be_callable_via_shared_reference() {
+        // No `mut` binding — proves &self receiver.
+        let path = test_video_path();
+        let player = match PreviewPlayer::open(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        player.set_rate(2.0);
+        let rate_handle: Arc<AtomicU64> = player.rate_handle();
+        let _ = rate_handle;
     }
 }
