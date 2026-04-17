@@ -34,6 +34,7 @@
 pub mod analysis;
 pub mod animation;
 pub mod blend;
+pub mod effects;
 pub mod error;
 mod filter_inner;
 pub mod graph;
@@ -41,6 +42,7 @@ pub mod graph;
 pub use analysis::{LoudnessMeter, LoudnessResult, QualityMetrics};
 pub use animation::{AnimatedValue, AnimationEntry, AnimationTrack, Easing, Keyframe, Lerp};
 pub use blend::BlendMode;
+pub use effects::{AnalyzeOptions, Stabilizer};
 pub use error::FilterError;
 pub use graph::{
     AudioConcatenator, AudioTrack, ClipJoiner, ClipTransition, DrawTextOptions, EqBand,
