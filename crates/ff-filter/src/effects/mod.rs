@@ -7,4 +7,4 @@
 pub(crate) mod effects_inner;
 mod stabilizer;
 
-pub use stabilizer::{AnalyzeOptions, Stabilizer};
+pub use stabilizer::{AnalyzeOptions, Interpolation, StabilizeOptions, Stabilizer};
