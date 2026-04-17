@@ -607,6 +607,18 @@ pub enum FilterStep {
         sub_frames: u8,
     },
 
+    /// Add synthetic per-frame random film grain to luma and chroma channels
+    /// via `FFmpeg`'s `noise` filter.
+    ///
+    /// `luma_strength` and `chroma_strength` are clamped to [0.0, 100.0].
+    /// The `allf=t` flag varies the seed each frame to simulate real film grain.
+    FilmGrain {
+        /// Grain strength applied to the luma (Y) plane. Clamped to [0.0, 100.0].
+        luma_strength: f32,
+        /// Grain strength applied to the Cb and Cr planes. Clamped to [0.0, 100.0].
+        chroma_strength: f32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -753,6 +765,7 @@ impl FilterStep {
             Self::CropAnimated { .. } => "crop",
             Self::GBlurAnimated { .. } => "gblur",
             Self::MotionBlur { .. } => "tblend",
+            Self::FilmGrain { .. } => "noise",
         }
     }
 
@@ -1155,6 +1168,16 @@ impl FilterStep {
                 let keep = 1.0 - alpha;
                 let blend = alpha;
                 format!("all_expr='A*{keep}+B*{blend}'")
+            }
+            Self::FilmGrain {
+                luma_strength,
+                chroma_strength,
+            } => {
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let ls = luma_strength.clamp(0.0, 100.0) as u32;
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let cs = chroma_strength.clamp(0.0, 100.0) as u32;
+                format!("alls={ls}:c0s={cs}:c1s={cs}:allf=t")
             }
         }
     }
