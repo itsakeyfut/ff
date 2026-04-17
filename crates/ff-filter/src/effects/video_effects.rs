@@ -41,6 +41,28 @@ impl FilterGraph {
         });
         Ok(self)
     }
+
+    /// Add random per-frame film grain to luma and chroma channels.
+    ///
+    /// `luma_strength` and `chroma_strength` control grain intensity and are
+    /// clamped to [0.0, 100.0]. The `allf=t` flag varies the noise seed each
+    /// frame to simulate real film grain temporal variation.
+    ///
+    /// Uses `FFmpeg`'s `noise` filter with `alls` (luma), `c0s`/`c1s` (Cb/Cr),
+    /// and `allf=t` (per-frame seed).
+    ///
+    /// Call this method after [`FilterGraph::builder()`] / [`build()`] but
+    /// **before** the first [`push_video`] call.
+    ///
+    /// [`build()`]: crate::FilterGraphBuilder::build
+    /// [`push_video`]: FilterGraph::push_video
+    pub fn film_grain(&mut self, luma_strength: f32, chroma_strength: f32) -> &mut Self {
+        self.inner.push_step(FilterStep::FilmGrain {
+            luma_strength,
+            chroma_strength,
+        });
+        self
+    }
 }
 
 #[cfg(test)]
@@ -124,5 +146,77 @@ mod tests {
             args.contains("A*0.5+B*0.5"),
             "180° shutter angle must produce equal blend (A*0.5+B*0.5): {args}"
         );
+    }
+
+    // ── film_grain ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn film_grain_with_valid_params_should_return_mutable_self() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.film_grain(20.0, 5.0);
+        // Method returns &mut Self — confirm it compiles and doesn't panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn filter_step_film_grain_should_have_noise_filter_name() {
+        let step = FilterStep::FilmGrain {
+            luma_strength: 20.0,
+            chroma_strength: 5.0,
+        };
+        assert_eq!(step.filter_name(), "noise");
+    }
+
+    #[test]
+    fn film_grain_args_should_contain_alls_c0s_c1s_and_allf_t() {
+        let step = FilterStep::FilmGrain {
+            luma_strength: 20.0,
+            chroma_strength: 5.0,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("alls=20"),
+            "args must contain alls=20: {args}"
+        );
+        assert!(args.contains("c0s=5"), "args must contain c0s=5: {args}");
+        assert!(args.contains("c1s=5"), "args must contain c1s=5: {args}");
+        assert!(args.contains("allf=t"), "args must contain allf=t: {args}");
+    }
+
+    #[test]
+    fn film_grain_zero_strength_should_produce_zero_alls() {
+        let step = FilterStep::FilmGrain {
+            luma_strength: 0.0,
+            chroma_strength: 0.0,
+        };
+        let args = step.args();
+        assert_eq!(args, "alls=0:c0s=0:c1s=0:allf=t");
+    }
+
+    #[test]
+    fn film_grain_values_above_100_should_be_clamped_to_100() {
+        let step = FilterStep::FilmGrain {
+            luma_strength: 200.0,
+            chroma_strength: 999.0,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("alls=100"),
+            "luma_strength > 100 must clamp to 100: {args}"
+        );
+        assert!(
+            args.contains("c0s=100") && args.contains("c1s=100"),
+            "chroma_strength > 100 must clamp to 100: {args}"
+        );
+    }
+
+    #[test]
+    fn film_grain_negative_values_should_be_clamped_to_zero() {
+        let step = FilterStep::FilmGrain {
+            luma_strength: -50.0,
+            chroma_strength: -10.0,
+        };
+        let args = step.args();
+        assert_eq!(args, "alls=0:c0s=0:c1s=0:allf=t");
     }
 }
