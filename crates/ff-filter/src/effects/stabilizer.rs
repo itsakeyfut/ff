@@ -27,19 +27,56 @@ impl Default for AnalyzeOptions {
     }
 }
 
+/// Interpolation algorithm used by [`Stabilizer::transform`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interpolation {
+    /// Bilinear interpolation (faster, default).
+    Bilinear,
+    /// Bicubic interpolation (higher quality, slower).
+    Bicubic,
+}
+
+/// Options for the second stabilization pass (transform application).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StabilizeOptions {
+    /// Temporal smoothing radius in frames 0–500 (default: 10).
+    pub smoothing: u16,
+    /// Fill stabilization borders with black instead of previous-frame content
+    /// (default: true).
+    pub crop_black: bool,
+    /// Zoom factor: 0.0 = no zoom, positive = fixed zoom-in (default: 0.0).
+    pub zoom: f32,
+    /// Optimal zoom: 0 = disabled, 1 = auto-static, 2 = adaptive (default: 0).
+    pub optzoom: u8,
+    /// Pixel interpolation algorithm (default: [`Interpolation::Bilinear`]).
+    pub interpol: Interpolation,
+}
+
+impl Default for StabilizeOptions {
+    fn default() -> Self {
+        Self {
+            smoothing: 10,
+            crop_black: true,
+            zoom: 0.0,
+            optzoom: 0,
+            interpol: Interpolation::Bilinear,
+        }
+    }
+}
+
 /// Two-pass video stabilization using `FFmpeg`'s `vidstabdetect` /
 /// `vidstabtransform` filters.
 ///
 /// **Pass 1**: [`Stabilizer::analyze`] — motion analysis, produces a `.trf` file.
-/// **Pass 2**: `Stabilizer::transform` (issue #393) — correction, consumes the `.trf` file.
+/// **Pass 2**: [`Stabilizer::transform`] — correction, consumes the `.trf` file.
 pub struct Stabilizer;
 
 impl Stabilizer {
     /// Analyze motion in `input` and write the transform file to `output_trf`.
     ///
     /// Runs a self-contained `FFmpeg` filter graph:
-    /// `movie → vidstabdetect → nullsink`.
-    /// The resulting `.trf` file is consumed by `Stabilizer::transform` in pass 2.
+    /// `movie → vidstabdetect → buffersink`.
+    /// The resulting `.trf` file is consumed by [`Stabilizer::transform`] in pass 2.
     ///
     /// # Errors
     ///
@@ -55,9 +92,35 @@ impl Stabilizer {
         // SAFETY: analyze_vidstab_unsafe manages all raw pointer lifetimes
         // under the avfilter ownership rules: graph allocated with
         // avfilter_graph_alloc(), built and configured, drained via
-        // avfilter_graph_request_oldest(), then freed before returning.
+        // av_buffersink_get_frame(), then freed before returning.
         // All CString values are kept alive for the duration of the graph build.
         unsafe { super::effects_inner::analyze_vidstab_unsafe(input, output_trf, opts) }
+    }
+
+    /// Apply motion transforms from the `.trf` file produced by [`Stabilizer::analyze`].
+    ///
+    /// Reads `input`, applies `vidstabtransform`, and writes the stabilized video
+    /// to `output` (re-encoded with the best available H.264 encoder).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if:
+    /// - `vidstabtransform` is not available in the linked `FFmpeg` build.
+    /// - `trf_path` does not exist or is unreadable.
+    /// - The input file is unreadable or does not exist.
+    /// - The output file cannot be created or encoded.
+    pub fn transform(
+        input: &Path,
+        trf_path: &Path,
+        output: &Path,
+        opts: &StabilizeOptions,
+    ) -> Result<(), FilterError> {
+        // SAFETY: transform_vidstab_unsafe manages all raw pointer lifetimes:
+        // - avfilter graph is allocated, built, drained, then freed.
+        // - AVCodecContext is allocated, opened, flushed, then freed.
+        // - AVFormatContext is allocated, written to, trailer flushed, then freed.
+        // All CString values are kept alive for the duration of each operation.
+        unsafe { super::effects_inner::transform_vidstab_unsafe(input, trf_path, output, opts) }
     }
 }
 
@@ -71,5 +134,15 @@ mod tests {
         assert_eq!(opts.shakiness, 5);
         assert_eq!(opts.accuracy, 15);
         assert_eq!(opts.stepsize, 6);
+    }
+
+    #[test]
+    fn stabilize_options_default_should_have_expected_values() {
+        let opts = StabilizeOptions::default();
+        assert_eq!(opts.smoothing, 10);
+        assert!(opts.crop_black);
+        assert!((opts.zoom - 0.0_f32).abs() < f32::EPSILON);
+        assert_eq!(opts.optzoom, 0);
+        assert_eq!(opts.interpol, Interpolation::Bilinear);
     }
 }

@@ -4,6 +4,7 @@
 //!
 //! Current `unsafe` entry points:
 //! - [`analyze_vidstab_unsafe`] — motion analysis via `vidstabdetect` filter
+//! - [`transform_vidstab_unsafe`] — correction via `vidstabtransform` filter + encode
 
 #![allow(unsafe_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -12,7 +13,7 @@ use std::ffi::CString;
 use std::path::Path;
 
 use crate::FilterError;
-use crate::effects::stabilizer::AnalyzeOptions;
+use crate::effects::stabilizer::{AnalyzeOptions, Interpolation, StabilizeOptions};
 
 /// Runs `vidstabdetect` motion analysis on `input`, writing the transform data
 /// to `output_trf`.
@@ -209,6 +210,496 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
     log::info!(
         "stabilization analysis complete trf={}",
         output_trf.display()
+    );
+
+    Ok(())
+}
+
+// ── Pass 2 — transform ────────────────────────────────────────────────────────
+
+/// Drain all available encoded packets from `enc_ctx` into `out_ctx`, rescaling
+/// timestamps from `enc_tb` to the output stream's time base.
+///
+/// # Safety
+///
+/// - `enc_ctx` must be a valid, open `AVCodecContext` after at least one
+///   `avcodec_send_frame` call.
+/// - `pkt` must be a valid, allocated `AVPacket`.
+/// - `out_ctx` must be a valid `AVFormatContext` whose header has been written.
+unsafe fn drain_encoded_packets(
+    enc_ctx: *mut ff_sys::AVCodecContext,
+    pkt: *mut ff_sys::AVPacket,
+    out_ctx: *mut ff_sys::AVFormatContext,
+    stream_tb: ff_sys::AVRational,
+) {
+    while ff_sys::avcodec::receive_packet(enc_ctx, pkt).is_ok() {
+        // Read enc_tb at drain time — some encoders mutate time_base lazily.
+        let enc_tb = (*enc_ctx).time_base;
+        ff_sys::av_packet_rescale_ts(pkt, enc_tb, stream_tb);
+        (*pkt).stream_index = 0;
+        let ret = ff_sys::av_interleaved_write_frame(out_ctx, pkt);
+        ff_sys::av_packet_unref(pkt);
+        if ret < 0 {
+            log::warn!(
+                "av_interleaved_write_frame failed error={}",
+                ff_sys::av_error_string(ret)
+            );
+            break;
+        }
+    }
+}
+
+/// Runs `vidstabtransform` motion correction on `input` using the `.trf` file
+/// produced by [`analyze_vidstab_unsafe`], writing the result to `output`.
+///
+/// Filter graph: `movie={input} → vidstabtransform=... → format=yuv420p → buffersink`
+///
+/// Decoded frames are re-encoded with the best available H.264 encoder and
+/// multiplexed into `output` (format inferred from the file extension).
+///
+/// # Safety
+///
+/// All raw pointer operations follow the avfilter / avcodec / avformat ownership
+/// rules. Every allocated resource is freed on all exit paths:
+/// - `avfilter_graph_alloc()` / `avfilter_graph_free()` for the filter graph.
+/// - `avcodec_alloc_context3()` / `avcodec_free_context()` for the encoder.
+/// - `avformat_alloc_output_context2()` / `avformat_free_context()` for the muxer.
+/// - `avio_open()` / `avio_closep()` (via wrappers) for the output file I/O.
+/// - `av_frame_alloc()` / `av_frame_free()` and `av_packet_alloc()` /
+///   `av_packet_free()` for frame and packet lifetimes.
+pub(super) unsafe fn transform_vidstab_unsafe(
+    input: &Path,
+    trf_path: &Path,
+    output: &Path,
+    opts: &StabilizeOptions,
+) -> Result<(), FilterError> {
+    macro_rules! bail {
+        ($graph:ident, $code:expr, $msg:expr) => {{
+            let mut g = $graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::Ffmpeg {
+                code: $code,
+                message: format!("{}", $msg),
+            });
+        }};
+    }
+
+    // ── Pre-flight: check that vidstabtransform is available ──────────────────
+    let vstab_filt = ff_sys::avfilter_get_by_name(c"vidstabtransform".as_ptr());
+    if vstab_filt.is_null() {
+        return Err(FilterError::Ffmpeg {
+            code: 0,
+            message: "vidstabtransform filter not available in this FFmpeg build".to_string(),
+        });
+    }
+
+    // ── Build CString arguments before allocating the graph ───────────────────
+    let input_str = input.to_string_lossy();
+    let trf_str = trf_path.to_string_lossy();
+
+    let movie_args =
+        CString::new(format!("filename={input_str}")).map_err(|_| FilterError::Ffmpeg {
+            code: 0,
+            message: "input path contains null byte".to_string(),
+        })?;
+
+    let c_output =
+        CString::new(output.to_string_lossy().as_ref()).map_err(|_| FilterError::Ffmpeg {
+            code: 0,
+            message: "output path contains null byte".to_string(),
+        })?;
+
+    let crop_str = if opts.crop_black { "black" } else { "keep" };
+    let interpol_str = match opts.interpol {
+        Interpolation::Bilinear => "bilinear",
+        Interpolation::Bicubic => "bicubic",
+    };
+    let smoothing = opts.smoothing;
+    let zoom = opts.zoom;
+    let optzoom = opts.optzoom.clamp(0, 2);
+
+    let vstab_args = CString::new(format!(
+        "input={trf_str}:smoothing={smoothing}:crop={crop_str}:zoom={zoom}:optzoom={optzoom}:interpol={interpol_str}"
+    ))
+    .map_err(|_| FilterError::Ffmpeg {
+        code: 0,
+        message: "trf path contains null byte".to_string(),
+    })?;
+
+    // ── Allocate the filter graph ─────────────────────────────────────────────
+    let graph = ff_sys::avfilter_graph_alloc();
+    if graph.is_null() {
+        return Err(FilterError::Ffmpeg {
+            code: 0,
+            message: "avfilter_graph_alloc failed".to_string(),
+        });
+    }
+
+    // ── 1. movie source ───────────────────────────────────────────────────────
+    let movie_filt = ff_sys::avfilter_get_by_name(c"movie".as_ptr());
+    if movie_filt.is_null() {
+        bail!(graph, 0, "filter not found: movie");
+    }
+    let mut src_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut src_ctx,
+        movie_filt,
+        c"vstab_t_src".as_ptr(),
+        movie_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(graph, ret, format!("movie create_filter failed code={ret}"));
+    }
+
+    // ── 2. vidstabtransform ───────────────────────────────────────────────────
+    log::debug!(
+        "filter added name=vidstabtransform args={}",
+        vstab_args.to_string_lossy()
+    );
+    let mut vstab_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut vstab_ctx,
+        vstab_filt,
+        c"vstab_t_filter".as_ptr(),
+        vstab_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            ret,
+            format!("vidstabtransform create_filter failed code={ret}")
+        );
+    }
+
+    // ── 3. format — normalize to yuv420p for encoder compatibility ────────────
+    let format_filt = ff_sys::avfilter_get_by_name(c"format".as_ptr());
+    if format_filt.is_null() {
+        bail!(graph, 0, "filter not found: format");
+    }
+    let mut fmt_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut fmt_ctx,
+        format_filt,
+        c"vstab_t_fmt".as_ptr(),
+        c"pix_fmts=yuv420p".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            ret,
+            format!("format create_filter failed code={ret}")
+        );
+    }
+
+    // ── 4. buffersink ─────────────────────────────────────────────────────────
+    let buffersink_filt = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+    if buffersink_filt.is_null() {
+        bail!(graph, 0, "filter not found: buffersink");
+    }
+    let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sink_ctx,
+        buffersink_filt,
+        c"vstab_t_sink".as_ptr(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        bail!(
+            graph,
+            ret,
+            format!("buffersink create_filter failed code={ret}")
+        );
+    }
+
+    // ── Link: movie → vidstabtransform → format → buffersink ─────────────────
+    let ret = ff_sys::avfilter_link(src_ctx, 0, vstab_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            ret,
+            format!("avfilter_link movie→vidstabtransform failed code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(vstab_ctx, 0, fmt_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            ret,
+            format!("avfilter_link vidstabtransform→format failed code={ret}")
+        );
+    }
+    let ret = ff_sys::avfilter_link(fmt_ctx, 0, sink_ctx, 0);
+    if ret < 0 {
+        bail!(
+            graph,
+            ret,
+            format!("avfilter_link format→buffersink failed code={ret}")
+        );
+    }
+
+    // ── Configure the graph — opens input file and validates the trf path ─────
+    let ret = ff_sys::avfilter_graph_config(graph, std::ptr::null_mut());
+    if ret < 0 {
+        bail!(
+            graph,
+            ret,
+            format!(
+                "avfilter_graph_config failed code={ret} message={}",
+                ff_sys::av_error_string(ret)
+            )
+        );
+    }
+
+    // After graph config the output time base is stable.
+    let filter_tb = ff_sys::av_buffersink_get_time_base(sink_ctx);
+
+    // ── From here manual cleanup is required (encoder + muxer are allocated) ──
+
+    // Pull the first frame to discover frame dimensions.
+    let first_frame = ff_sys::av_frame_alloc();
+    if first_frame.is_null() {
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code: 0,
+            message: "av_frame_alloc failed".to_string(),
+        });
+    }
+    let ret = ff_sys::av_buffersink_get_frame(sink_ctx, first_frame);
+    if ret < 0 {
+        let mut fp = first_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code: ret,
+            message: format!(
+                "first frame pull failed code={ret} message={}",
+                ff_sys::av_error_string(ret)
+            ),
+        });
+    }
+    let frame_width = (*first_frame).width;
+    let frame_height = (*first_frame).height;
+
+    // ── Find the best available H.264 encoder ─────────────────────────────────
+    let enc_codec = {
+        let candidates: &[&std::ffi::CStr] = &[
+            c"h264_nvenc",
+            c"h264_qsv",
+            c"h264_amf",
+            c"h264_videotoolbox",
+            c"libx264",
+            c"mpeg4",
+        ];
+        let mut found: Option<*const ff_sys::AVCodec> = None;
+        for name in candidates {
+            if let Some(c) = ff_sys::avcodec::find_encoder_by_name(name.as_ptr()) {
+                log::info!(
+                    "stabilization transform selected encoder encoder={}",
+                    name.to_string_lossy()
+                );
+                found = Some(c);
+                break;
+            }
+        }
+        if let Some(c) = found {
+            c
+        } else {
+            let mut fp = first_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+            let mut g = graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: "no H.264 encoder available (tried h264_nvenc, libx264, mpeg4, etc.)"
+                    .to_string(),
+            });
+        }
+    };
+
+    // ── Allocate and configure the encoder context ────────────────────────────
+    let mut enc_ctx = match ff_sys::avcodec::alloc_context3(enc_codec) {
+        Ok(ctx) => ctx,
+        Err(code) => {
+            let mut fp = first_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+            let mut g = graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::Ffmpeg {
+                code,
+                message: "avcodec_alloc_context3 failed".to_string(),
+            });
+        }
+    };
+
+    (*enc_ctx).width = frame_width;
+    (*enc_ctx).height = frame_height;
+    (*enc_ctx).pix_fmt = ff_sys::AVPixelFormat_AV_PIX_FMT_YUV420P;
+    (*enc_ctx).time_base = filter_tb;
+
+    if let Err(code) = ff_sys::avcodec::open2(enc_ctx, enc_codec, std::ptr::null_mut()) {
+        let mut fp = first_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+        ff_sys::avcodec::free_context(&raw mut enc_ctx);
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code,
+            message: format!("avcodec_open2 failed code={code}"),
+        });
+    }
+
+    // ── Allocate the output format context ────────────────────────────────────
+    let mut out_ctx: *mut ff_sys::AVFormatContext = std::ptr::null_mut();
+    let ret = ff_sys::avformat_alloc_output_context2(
+        &raw mut out_ctx,
+        std::ptr::null_mut(),
+        std::ptr::null(),
+        c_output.as_ptr(),
+    );
+    if ret < 0 || out_ctx.is_null() {
+        let mut fp = first_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+        ff_sys::avcodec::free_context(&raw mut enc_ctx);
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code: ret,
+            message: format!("avformat_alloc_output_context2 failed code={ret}"),
+        });
+    }
+
+    // ── Add video stream and copy codec parameters ────────────────────────────
+    let out_stream = ff_sys::avformat_new_stream(out_ctx, std::ptr::null());
+    if out_stream.is_null() {
+        let mut fp = first_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+        ff_sys::avcodec::free_context(&raw mut enc_ctx);
+        ff_sys::avformat_free_context(out_ctx);
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code: 0,
+            message: "avformat_new_stream failed".to_string(),
+        });
+    }
+
+    if let Err(code) = ff_sys::avcodec::parameters_from_context((*out_stream).codecpar, enc_ctx) {
+        let mut fp = first_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+        ff_sys::avcodec::free_context(&raw mut enc_ctx);
+        ff_sys::avformat_free_context(out_ctx);
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code,
+            message: format!("avcodec_parameters_from_context failed code={code}"),
+        });
+    }
+
+    // ── Open the output file ──────────────────────────────────────────────────
+    let pb = match ff_sys::avformat::open_output(output, ff_sys::avformat::avio_flags::WRITE) {
+        Ok(pb) => pb,
+        Err(code) => {
+            let mut fp = first_frame;
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+            ff_sys::avcodec::free_context(&raw mut enc_ctx);
+            ff_sys::avformat_free_context(out_ctx);
+            let mut g = graph;
+            ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+            return Err(FilterError::Ffmpeg {
+                code,
+                message: format!("avio_open failed code={code}"),
+            });
+        }
+    };
+    (*out_ctx).pb = pb;
+
+    // ── Write container header ────────────────────────────────────────────────
+    let ret = ff_sys::avformat_write_header(out_ctx, std::ptr::null_mut());
+    if ret < 0 {
+        let mut fp = first_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+        ff_sys::avcodec::free_context(&raw mut enc_ctx);
+        ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
+        ff_sys::avformat_free_context(out_ctx);
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code: ret,
+            message: format!("avformat_write_header failed code={ret}"),
+        });
+    }
+
+    // Read stream time base AFTER write_header — the muxer may adjust it.
+    let stream_tb = (*out_stream).time_base;
+
+    // ── Allocate encode packet ────────────────────────────────────────────────
+    let mut pkt = ff_sys::av_packet_alloc();
+    if pkt.is_null() {
+        let mut fp = first_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+        ff_sys::avcodec::free_context(&raw mut enc_ctx);
+        ff_sys::av_write_trailer(out_ctx);
+        ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
+        ff_sys::avformat_free_context(out_ctx);
+        let mut g = graph;
+        ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+        return Err(FilterError::Ffmpeg {
+            code: 0,
+            message: "av_packet_alloc failed".to_string(),
+        });
+    }
+
+    // ── Encode first frame ────────────────────────────────────────────────────
+    let _ = ff_sys::avcodec::send_frame(enc_ctx, first_frame);
+    drain_encoded_packets(enc_ctx, pkt, out_ctx, stream_tb);
+    let mut fp = first_frame;
+    ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+
+    // ── Encode remaining frames from the filter graph ─────────────────────────
+    loop {
+        let frame = ff_sys::av_frame_alloc();
+        if frame.is_null() {
+            break;
+        }
+        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, frame);
+        let mut fp = frame;
+        if ret < 0 {
+            ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+            break;
+        }
+        let _ = ff_sys::avcodec::send_frame(enc_ctx, frame);
+        drain_encoded_packets(enc_ctx, pkt, out_ctx, stream_tb);
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(fp));
+    }
+
+    // ── Flush the encoder ─────────────────────────────────────────────────────
+    let _ = ff_sys::avcodec::send_frame(enc_ctx, std::ptr::null());
+    drain_encoded_packets(enc_ctx, pkt, out_ctx, stream_tb);
+
+    // ── Finalize output ───────────────────────────────────────────────────────
+    ff_sys::av_packet_free(&raw mut pkt);
+    ff_sys::avcodec::free_context(&raw mut enc_ctx);
+    ff_sys::av_write_trailer(out_ctx);
+    ff_sys::avformat::close_output(std::ptr::addr_of_mut!((*out_ctx).pb));
+    ff_sys::avformat_free_context(out_ctx);
+
+    let mut g = graph;
+    ff_sys::avfilter_graph_free(std::ptr::addr_of_mut!(g));
+
+    log::info!(
+        "stabilization transform complete output={}",
+        output.display()
     );
 
     Ok(())
