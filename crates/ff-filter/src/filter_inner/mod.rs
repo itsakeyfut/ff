@@ -169,6 +169,16 @@ impl FilterGraphInner {
         }
     }
 
+    /// Append a filter step to the pending chain.
+    ///
+    /// Must be called before the first [`push_video`] or [`push_audio`] — the
+    /// `FFmpeg` graph is constructed lazily on the first push, so steps added
+    /// before that point are included. Steps added after graph initialisation
+    /// have no effect.
+    pub(crate) fn push_step(&mut self, step: FilterStep) {
+        self.steps.push(step);
+    }
+
     /// Creates a pre-initialised inner for a source-only video composition graph.
     ///
     /// `graph` and `vsink_ctx` are owned by the returned struct and freed on drop
