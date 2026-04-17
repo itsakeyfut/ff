@@ -607,6 +607,19 @@ pub enum FilterStep {
         sub_frames: u8,
     },
 
+    /// Correct radial lens distortion using two polynomial coefficients via
+    /// `FFmpeg`'s `lenscorrection` filter.
+    ///
+    /// Negative values correct barrel distortion; positive values correct
+    /// pincushion distortion. Both `k1` and `k2` must be in [−1.0, 1.0];
+    /// validated by [`FilterGraph::lens_correction`](crate::FilterGraph::lens_correction).
+    LensCorrection {
+        /// First-order radial distortion coefficient. Range: [−1.0, 1.0].
+        k1: f32,
+        /// Second-order radial distortion coefficient. Range: [−1.0, 1.0].
+        k2: f32,
+    },
+
     /// Add synthetic per-frame random film grain to luma and chroma channels
     /// via `FFmpeg`'s `noise` filter.
     ///
@@ -765,6 +778,7 @@ impl FilterStep {
             Self::CropAnimated { .. } => "crop",
             Self::GBlurAnimated { .. } => "gblur",
             Self::MotionBlur { .. } => "tblend",
+            Self::LensCorrection { .. } => "lenscorrection",
             Self::FilmGrain { .. } => "noise",
         }
     }
@@ -1169,6 +1183,7 @@ impl FilterStep {
                 let blend = alpha;
                 format!("all_expr='A*{keep}+B*{blend}'")
             }
+            Self::LensCorrection { k1, k2 } => format!("k1={k1}:k2={k2}"),
             Self::FilmGrain {
                 luma_strength,
                 chroma_strength,
