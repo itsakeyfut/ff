@@ -594,6 +594,19 @@ pub enum FilterStep {
         radius: u32,
     },
 
+    /// Simulate motion blur by blending consecutive frames via `FFmpeg`'s `tblend` filter.
+    ///
+    /// `shutter_angle_degrees` controls the blend ratio; 360° equals a full
+    /// frame-period exposure (maximum blur). `sub_frames` is the number of
+    /// frames blended and must be in [2, 16]; it is validated by
+    /// [`FilterGraph::motion_blur`](crate::FilterGraph::motion_blur).
+    MotionBlur {
+        /// Shutter angle in degrees (0° = no blur, 360° = full-period blur).
+        shutter_angle_degrees: f32,
+        /// Number of frames blended. Must be in [2, 16].
+        sub_frames: u8,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -739,6 +752,7 @@ impl FilterStep {
             Self::PolygonMatte { .. } => "geq",
             Self::CropAnimated { .. } => "crop",
             Self::GBlurAnimated { .. } => "gblur",
+            Self::MotionBlur { .. } => "tblend",
         }
     }
 
@@ -1132,6 +1146,15 @@ impl FilterStep {
             Self::GBlurAnimated { sigma } => {
                 let s0 = sigma.value_at(Duration::ZERO);
                 format!("sigma={s0}")
+            }
+            Self::MotionBlur {
+                shutter_angle_degrees,
+                ..
+            } => {
+                let alpha = f64::from(*shutter_angle_degrees / 360.0).clamp(0.0, 1.0);
+                let keep = 1.0 - alpha;
+                let blend = alpha;
+                format!("all_expr='A*{keep}+B*{blend}'")
             }
         }
     }
