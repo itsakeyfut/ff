@@ -130,15 +130,16 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
         );
     }
 
-    // 3. nullsink — discards output frames; we only care about the .trf side effect.
-    let nullsink_filt = ff_sys::avfilter_get_by_name(c"nullsink".as_ptr());
-    if nullsink_filt.is_null() {
-        bail!(graph, 0, "filter not found: nullsink");
+    // 3. buffersink — drains output frames; vidstabdetect writes the .trf file
+    //    as frames pass through it, so the sink content is discarded.
+    let buffersink_filt = ff_sys::avfilter_get_by_name(c"buffersink".as_ptr());
+    if buffersink_filt.is_null() {
+        bail!(graph, 0, "filter not found: buffersink");
     }
     let mut sink_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
     let ret = ff_sys::avfilter_graph_create_filter(
         &raw mut sink_ctx,
-        nullsink_filt,
+        buffersink_filt,
         c"vidstab_sink".as_ptr(),
         std::ptr::null_mut(),
         std::ptr::null_mut(),
@@ -148,14 +149,11 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
         bail!(
             graph,
             ret,
-            format!("nullsink create_filter failed code={ret}")
+            format!("buffersink create_filter failed code={ret}")
         );
     }
 
-    // Suppress unused-variable warning: sink_ctx is required by avfilter_link.
-    let _ = sink_ctx;
-
-    // Link: movie → vidstabdetect → nullsink
+    // Link: movie → vidstabdetect → buffersink
     let ret = ff_sys::avfilter_link(src_ctx, 0, vstab_ctx, 0);
     if ret < 0 {
         bail!(
@@ -169,7 +167,7 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
         bail!(
             graph,
             ret,
-            format!("avfilter_link vidstabdetect→nullsink failed code={ret}")
+            format!("avfilter_link vidstabdetect→buffersink failed code={ret}")
         );
     }
 
@@ -186,15 +184,21 @@ pub(super) unsafe fn analyze_vidstab_unsafe(
         );
     }
 
-    // Drive the graph until EOF.  avfilter_graph_request_oldest processes one
-    // frame per call, propagating it through all filters.  vidstabdetect writes
-    // the .trf file incrementally as each frame passes through it.
+    // Drain all frames.  av_buffersink_get_frame pulls one frame per call;
+    // vidstabdetect writes the .trf file incrementally as each frame passes
+    // through it.  We discard the frame data — only the side effect matters.
     loop {
-        // SAFETY: graph is non-null (checked above); avfilter_graph_request_oldest
-        // is safe to call on a configured graph.
-        let ret = ff_sys::avfilter_graph_request_oldest(graph);
+        let raw_frame = ff_sys::av_frame_alloc();
+        if raw_frame.is_null() {
+            break;
+        }
+        // SAFETY: sink_ctx is a valid buffersink context; raw_frame is a
+        // freshly allocated AVFrame owned by this scope.
+        let ret = ff_sys::av_buffersink_get_frame(sink_ctx, raw_frame);
+        let mut ptr = raw_frame;
+        ff_sys::av_frame_free(std::ptr::addr_of_mut!(ptr));
         if ret < 0 {
-            // AVERROR_EOF or AVERROR(EAGAIN): all frames have been processed.
+            // AVERROR_EOF or AVERROR(EAGAIN): all frames processed.
             break;
         }
     }
