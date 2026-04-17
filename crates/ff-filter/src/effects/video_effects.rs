@@ -93,6 +93,47 @@ impl FilterGraph {
         self
     }
 
+    /// Reduce lateral chromatic aberration by independently scaling R and B channels.
+    ///
+    /// `red_scale` and `blue_scale` are fractional adjustments relative to 1.0
+    /// (e.g. `red_scale = 1.002` scales R by 0.2%). Valid range for each: 0.9–1.1.
+    ///
+    /// The scale deviation is converted to an integer pixel shift for `FFmpeg`'s
+    /// `rgbashift` filter: `shift = ((scale - 1.0) * 100.0).round()`.
+    ///
+    /// Uses `FFmpeg`'s `rgbashift` filter with `edge=smear`.
+    ///
+    /// Call this method after [`FilterGraph::builder()`] / [`build()`] but
+    /// **before** the first [`push_video`] call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if either scale is outside [0.9, 1.1].
+    ///
+    /// [`build()`]: crate::FilterGraphBuilder::build
+    /// [`push_video`]: FilterGraph::push_video
+    pub fn fix_chromatic_aberration(
+        &mut self,
+        red_scale: f32,
+        blue_scale: f32,
+    ) -> Result<&mut Self, FilterError> {
+        if !(0.9..=1.1).contains(&red_scale) || !(0.9..=1.1).contains(&blue_scale) {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!(
+                    "red_scale/blue_scale must be in 0.9–1.1, got red={red_scale} blue={blue_scale}"
+                ),
+            });
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let rh = ((red_scale - 1.0) * 100.0).round() as i32;
+        #[allow(clippy::cast_possible_truncation)]
+        let bh = ((blue_scale - 1.0) * 100.0).round() as i32;
+        self.inner
+            .push_step(FilterStep::ChromaticAberration { rh, bh });
+        Ok(self)
+    }
+
     /// Apply a predefined camera lens distortion correction profile.
     ///
     /// Looks up the radial coefficients (`k1`, `k2`) and `scale` from the
@@ -368,5 +409,72 @@ mod tests {
         let step = FilterStep::ScaleMultiplier { factor: 1.0 };
         let args = step.args();
         assert_eq!(args, "w=iw*1:h=ih*1");
+    }
+
+    // ── fix_chromatic_aberration ──────────────────────────────────────────────
+
+    #[test]
+    fn fix_chromatic_aberration_with_valid_scales_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.fix_chromatic_aberration(1.002, 0.998);
+        assert!(
+            result.is_ok(),
+            "fix_chromatic_aberration(1.002, 0.998) must succeed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn fix_chromatic_aberration_identity_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.fix_chromatic_aberration(1.0, 1.0);
+        assert!(
+            result.is_ok(),
+            "fix_chromatic_aberration(1.0, 1.0) identity must succeed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn fix_chromatic_aberration_red_scale_out_of_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.fix_chromatic_aberration(1.2, 1.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "red_scale=1.2 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn fix_chromatic_aberration_blue_scale_out_of_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.fix_chromatic_aberration(1.0, 0.8);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "blue_scale=0.8 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filter_step_chromatic_aberration_should_have_rgbashift_filter_name() {
+        let step = FilterStep::ChromaticAberration { rh: 2, bh: -2 };
+        assert_eq!(step.filter_name(), "rgbashift");
+    }
+
+    #[test]
+    fn fix_chromatic_aberration_args_should_contain_rh_bh_and_edge_smear() {
+        let step = FilterStep::ChromaticAberration { rh: 2, bh: -2 };
+        let args = step.args();
+        assert!(args.contains("rh=2"), "args must contain rh=2: {args}");
+        assert!(args.contains("bh=-2"), "args must contain bh=-2: {args}");
+        assert!(
+            args.contains("edge=smear"),
+            "args must contain edge=smear: {args}"
+        );
+    }
+
+    #[test]
+    fn fix_chromatic_aberration_identity_scale_should_produce_zero_shifts() {
+        let step = FilterStep::ChromaticAberration { rh: 0, bh: 0 };
+        let args = step.args();
+        assert_eq!(args, "rh=0:bh=0:edge=smear");
     }
 }

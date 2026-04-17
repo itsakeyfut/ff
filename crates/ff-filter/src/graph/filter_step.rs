@@ -641,6 +641,19 @@ pub enum FilterStep {
         factor: f32,
     },
 
+    /// Reduce lateral chromatic aberration by independently shifting the R and B
+    /// channels via `FFmpeg`'s `rgbashift` filter.
+    ///
+    /// `rh` and `bh` are the horizontal pixel shifts for the red and blue
+    /// channels respectively. Derived from scale deviations by
+    /// [`FilterGraph::fix_chromatic_aberration`](crate::FilterGraph::fix_chromatic_aberration).
+    ChromaticAberration {
+        /// Horizontal shift for the red channel in pixels (positive = right).
+        rh: i32,
+        /// Horizontal shift for the blue channel in pixels (positive = right).
+        bh: i32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -790,6 +803,7 @@ impl FilterStep {
             Self::LensCorrection { .. } => "lenscorrection",
             Self::FilmGrain { .. } => "noise",
             Self::ScaleMultiplier { .. } => "scale",
+            Self::ChromaticAberration { .. } => "rgbashift",
         }
     }
 
@@ -1206,6 +1220,9 @@ impl FilterStep {
             }
             Self::ScaleMultiplier { factor } => {
                 format!("w=iw*{factor}:h=ih*{factor}")
+            }
+            Self::ChromaticAberration { rh, bh } => {
+                format!("rh={rh}:bh={bh}:edge=smear")
             }
         }
     }
