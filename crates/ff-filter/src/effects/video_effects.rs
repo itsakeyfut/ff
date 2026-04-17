@@ -42,6 +42,34 @@ impl FilterGraph {
         Ok(self)
     }
 
+    /// Correct radial lens distortion using two polynomial coefficients.
+    ///
+    /// `k1` and `k2` are the first- and second-order radial distortion
+    /// coefficients. Negative values correct barrel distortion; positive values
+    /// correct pincushion distortion.
+    ///
+    /// Uses `FFmpeg`'s `lenscorrection` filter.
+    ///
+    /// Call this method after [`FilterGraph::builder()`] / [`build()`] but
+    /// **before** the first [`push_video`] call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if either coefficient is outside [−1.0, 1.0].
+    ///
+    /// [`build()`]: crate::FilterGraphBuilder::build
+    /// [`push_video`]: FilterGraph::push_video
+    pub fn lens_correction(&mut self, k1: f32, k2: f32) -> Result<&mut Self, FilterError> {
+        if !(-1.0..=1.0).contains(&k1) || !(-1.0..=1.0).contains(&k2) {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!("k1/k2 must be in −1.0..=1.0, got k1={k1} k2={k2}"),
+            });
+        }
+        self.inner.push_step(FilterStep::LensCorrection { k1, k2 });
+        Ok(self)
+    }
+
     /// Add random per-frame film grain to luma and chroma channels.
     ///
     /// `luma_strength` and `chroma_strength` control grain intensity and are
@@ -146,6 +174,65 @@ mod tests {
             args.contains("A*0.5+B*0.5"),
             "180° shutter angle must produce equal blend (A*0.5+B*0.5): {args}"
         );
+    }
+
+    // ── lens_correction ───────────────────────────────────────────────────────
+
+    #[test]
+    fn lens_correction_with_valid_coefficients_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.lens_correction(-0.2, 0.0);
+        assert!(
+            result.is_ok(),
+            "lens_correction(-0.2, 0.0) must succeed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn lens_correction_identity_k1_zero_k2_zero_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.lens_correction(0.0, 0.0);
+        assert!(
+            result.is_ok(),
+            "lens_correction(0.0, 0.0) identity must succeed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn lens_correction_k1_out_of_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.lens_correction(1.5, 0.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "k1=1.5 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn lens_correction_k2_out_of_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.lens_correction(0.0, -1.5);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "k2=-1.5 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filter_step_lens_correction_should_have_lenscorrection_filter_name() {
+        let step = FilterStep::LensCorrection { k1: -0.2, k2: 0.0 };
+        assert_eq!(step.filter_name(), "lenscorrection");
+    }
+
+    #[test]
+    fn lens_correction_args_should_contain_k1_and_k2() {
+        let step = FilterStep::LensCorrection { k1: -0.2, k2: 0.1 };
+        let args = step.args();
+        assert!(
+            args.contains("k1=-0.2"),
+            "args must contain k1=-0.2: {args}"
+        );
+        assert!(args.contains("k2=0.1"), "args must contain k2=0.1: {args}");
     }
 
     // ── film_grain ────────────────────────────────────────────────────────────
