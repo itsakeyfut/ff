@@ -64,6 +64,31 @@ impl Default for StabilizeOptions {
     }
 }
 
+impl StabilizeOptions {
+    /// Set the fixed zoom-in factor (0.0 = no zoom).
+    #[must_use]
+    pub fn zoom(mut self, z: f32) -> Self {
+        self.zoom = z;
+        self
+    }
+
+    /// Set the auto-zoom mode: 0 = disabled, 1 = static, 2 = adaptive.
+    ///
+    /// Values outside 0–2 are clamped.
+    #[must_use]
+    pub fn optzoom(mut self, mode: u8) -> Self {
+        self.optzoom = mode.clamp(0, 2);
+        self
+    }
+
+    /// Set the sub-pixel interpolation algorithm used during frame warping.
+    #[must_use]
+    pub fn interpol(mut self, i: Interpolation) -> Self {
+        self.interpol = i;
+        self
+    }
+}
+
 /// Two-pass video stabilization using `FFmpeg`'s `vidstabdetect` /
 /// `vidstabtransform` filters.
 ///
@@ -144,5 +169,29 @@ mod tests {
         assert!((opts.zoom - 0.0_f32).abs() < f32::EPSILON);
         assert_eq!(opts.optzoom, 0);
         assert_eq!(opts.interpol, Interpolation::Bilinear);
+    }
+
+    #[test]
+    fn zoom_builder_should_set_zoom_field() {
+        let opts = StabilizeOptions::default().zoom(1.5);
+        assert!((opts.zoom - 1.5_f32).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn optzoom_builder_should_set_optzoom_field() {
+        let opts = StabilizeOptions::default().optzoom(1);
+        assert_eq!(opts.optzoom, 1);
+    }
+
+    #[test]
+    fn optzoom_builder_should_clamp_above_maximum_to_two() {
+        let opts = StabilizeOptions::default().optzoom(5);
+        assert_eq!(opts.optzoom, 2);
+    }
+
+    #[test]
+    fn interpol_builder_should_set_interpol_field() {
+        let opts = StabilizeOptions::default().interpol(Interpolation::Bicubic);
+        assert_eq!(opts.interpol, Interpolation::Bicubic);
     }
 }
