@@ -632,6 +632,15 @@ pub enum FilterStep {
         chroma_strength: f32,
     },
 
+    /// Uniform scale by a fractional multiplier via `FFmpeg`'s `scale` filter.
+    ///
+    /// Both width and height are multiplied by `factor`. Used to hide warped
+    /// border pixels left after lens distortion correction.
+    ScaleMultiplier {
+        /// Scale factor applied to both dimensions (e.g. `1.05` = 5 % zoom-in).
+        factor: f32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -780,6 +789,7 @@ impl FilterStep {
             Self::MotionBlur { .. } => "tblend",
             Self::LensCorrection { .. } => "lenscorrection",
             Self::FilmGrain { .. } => "noise",
+            Self::ScaleMultiplier { .. } => "scale",
         }
     }
 
@@ -1193,6 +1203,9 @@ impl FilterStep {
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 let cs = chroma_strength.clamp(0.0, 100.0) as u32;
                 format!("alls={ls}:c0s={cs}:c1s={cs}:allf=t")
+            }
+            Self::ScaleMultiplier { factor } => {
+                format!("w=iw*{factor}:h=ih*{factor}")
             }
         }
     }

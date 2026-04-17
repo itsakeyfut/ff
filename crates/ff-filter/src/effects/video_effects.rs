@@ -1,5 +1,6 @@
 //! Frame-level video effects added to [`FilterGraph`] after construction.
 
+use crate::effects::lens_profile::LensProfile;
 use crate::error::FilterError;
 use crate::graph::FilterGraph;
 use crate::graph::filter_step::FilterStep;
@@ -91,10 +92,32 @@ impl FilterGraph {
         });
         self
     }
+
+    /// Apply a predefined camera lens distortion correction profile.
+    ///
+    /// Looks up the radial coefficients (`k1`, `k2`) and `scale` from the
+    /// profile and pushes a `lenscorrection` step followed by a `scale` step
+    /// that zooms slightly to hide the warped border pixels.
+    ///
+    /// Uses `FFmpeg`'s `lenscorrection` and `scale` filters.
+    ///
+    /// Call this method after [`FilterGraph::builder()`] / [`build()`] but
+    /// **before** the first [`push_video`] call.
+    ///
+    /// [`build()`]: crate::FilterGraphBuilder::build
+    /// [`push_video`]: FilterGraph::push_video
+    pub fn lens_profile(&mut self, profile: LensProfile) -> &mut Self {
+        let (k1, k2, scale) = profile.coefficients();
+        self.inner.push_step(FilterStep::LensCorrection { k1, k2 });
+        self.inner
+            .push_step(FilterStep::ScaleMultiplier { factor: scale });
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::effects::lens_profile::LensProfile;
     use crate::graph::filter_step::FilterStep;
     use crate::{FilterError, FilterGraph};
 
@@ -305,5 +328,45 @@ mod tests {
         };
         let args = step.args();
         assert_eq!(args, "alls=0:c0s=0:c1s=0:allf=t");
+    }
+
+    // ── lens_profile ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn lens_profile_gopro_hero9_wide_should_push_two_steps() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.lens_profile(LensProfile::GoproHero9Wide);
+        let _ = result; // returns &mut Self
+    }
+
+    #[test]
+    fn lens_profile_custom_should_push_lens_correction_step() {
+        let step = FilterStep::LensCorrection { k1: -0.1, k2: 0.02 };
+        assert_eq!(step.filter_name(), "lenscorrection");
+        assert!(step.args().contains("k1=-0.1"));
+        assert!(step.args().contains("k2=0.02"));
+    }
+
+    #[test]
+    fn lens_profile_scale_multiplier_should_have_scale_filter_name() {
+        let step = FilterStep::ScaleMultiplier { factor: 1.05 };
+        assert_eq!(step.filter_name(), "scale");
+    }
+
+    #[test]
+    fn lens_profile_scale_multiplier_args_should_contain_factor() {
+        let step = FilterStep::ScaleMultiplier { factor: 1.05 };
+        let args = step.args();
+        assert!(
+            args.contains("iw*1.05") && args.contains("ih*1.05"),
+            "ScaleMultiplier args must reference iw*factor and ih*factor: {args}"
+        );
+    }
+
+    #[test]
+    fn lens_profile_identity_custom_should_use_unit_scale() {
+        let step = FilterStep::ScaleMultiplier { factor: 1.0 };
+        let args = step.args();
+        assert_eq!(args, "w=iw*1:h=ih*1");
     }
 }

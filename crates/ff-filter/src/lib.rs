@@ -42,7 +42,7 @@ pub mod graph;
 pub use analysis::{LoudnessMeter, LoudnessResult, QualityMetrics};
 pub use animation::{AnimatedValue, AnimationEntry, AnimationTrack, Easing, Keyframe, Lerp};
 pub use blend::BlendMode;
-pub use effects::{AnalyzeOptions, Interpolation, StabilizeOptions, Stabilizer};
+pub use effects::{AnalyzeOptions, Interpolation, LensProfile, StabilizeOptions, Stabilizer};
 pub use error::FilterError;
 pub use graph::{
     AudioConcatenator, AudioTrack, ClipJoiner, ClipTransition, DrawTextOptions, EqBand,
