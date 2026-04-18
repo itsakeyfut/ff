@@ -58,6 +58,54 @@ impl ScopeAnalyzer {
 
         result
     }
+
+    /// Compute vectorscope data for `frame`.
+    ///
+    /// Returns a [`Vec`] of `(cb, cr)` pairs, one per chroma sample, with both
+    /// values normalised to `[-0.5, 0.5]`.
+    ///
+    /// Chroma dimensions vary by format:
+    /// - `yuv420p` — `(width/2) × (height/2)` samples
+    /// - `yuv422p` — `(width/2) × height` samples
+    /// - `yuv444p` — `width × height` samples
+    ///
+    /// Returns an empty [`Vec`] for unsupported formats or if chroma plane data
+    /// is unavailable.
+    #[must_use]
+    pub fn vectorscope(frame: &VideoFrame) -> Vec<(f32, f32)> {
+        let w = frame.width() as usize;
+        let h = frame.height() as usize;
+
+        let (cb_w, cb_h) = match frame.format() {
+            PixelFormat::Yuv420p => (w.div_ceil(2), h.div_ceil(2)),
+            PixelFormat::Yuv422p => (w.div_ceil(2), h),
+            PixelFormat::Yuv444p => (w, h),
+            _ => return Vec::new(),
+        };
+
+        let Some(u_plane) = frame.plane(1) else {
+            return Vec::new();
+        };
+        let Some(v_plane) = frame.plane(2) else {
+            return Vec::new();
+        };
+        let Some(u_stride) = frame.stride(1) else {
+            return Vec::new();
+        };
+        let Some(v_stride) = frame.stride(2) else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::with_capacity(cb_w * cb_h);
+        for row in 0..cb_h {
+            for col in 0..cb_w {
+                let cb = f32::from(u_plane[row * u_stride + col]) / 255.0 - 0.5;
+                let cr = f32::from(v_plane[row * v_stride + col]) / 255.0 - 0.5;
+                result.push((cb, cr));
+            }
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +240,92 @@ mod tests {
         .unwrap();
         let wf = ScopeAnalyzer::waveform(&frame);
         assert_eq!(wf.len(), 4, "yuv422p must return result of length=width");
+    }
+
+    #[test]
+    fn vectorscope_grey_frame_should_return_near_zero_pairs() {
+        // U=V=128 → (128/255-0.5, 128/255-0.5) ≈ (0.00196, 0.00196)
+        let frame = make_yuv420p_frame(4, 4, 128);
+        let vs = ScopeAnalyzer::vectorscope(&frame);
+        assert_eq!(vs.len(), 4, "yuv420p 4×4 → 2×2 chroma = 4 pairs");
+        for &(cb, cr) in &vs {
+            let expected = 128.0_f32 / 255.0 - 0.5;
+            assert!(
+                (cb - expected).abs() < 1e-6,
+                "cb must be ≈{expected:.6}, got {cb}"
+            );
+            assert!(
+                (cr - expected).abs() < 1e-6,
+                "cr must be ≈{expected:.6}, got {cr}"
+            );
+        }
+    }
+
+    #[test]
+    fn vectorscope_yuv420p_should_have_quarter_sample_count() {
+        let frame = make_yuv420p_frame(8, 6, 100);
+        let vs = ScopeAnalyzer::vectorscope(&frame);
+        // chroma: (8+1)/2=4 × (6+1)/2=3 = 12
+        assert_eq!(vs.len(), 12, "yuv420p 8×6 must produce 4×3=12 chroma pairs");
+    }
+
+    #[test]
+    fn vectorscope_yuv422p_should_have_half_width_sample_count() {
+        let w = 4u32;
+        let h = 4u32;
+        let y_stride = w as usize;
+        let uv_stride = (w as usize + 1) / 2;
+        let frame = VideoFrame::new(
+            vec![
+                PooledBuffer::standalone(vec![200u8; y_stride * h as usize]),
+                PooledBuffer::standalone(vec![128u8; uv_stride * h as usize]),
+                PooledBuffer::standalone(vec![128u8; uv_stride * h as usize]),
+            ],
+            vec![y_stride, uv_stride, uv_stride],
+            w,
+            h,
+            PixelFormat::Yuv422p,
+            Timestamp::default(),
+            true,
+        )
+        .unwrap();
+        let vs = ScopeAnalyzer::vectorscope(&frame);
+        // chroma: 2×4 = 8 pairs
+        assert_eq!(vs.len(), 8, "yuv422p 4×4 must produce 2×4=8 chroma pairs");
+    }
+
+    #[test]
+    fn vectorscope_yuv444p_should_have_full_sample_count() {
+        let w = 4u32;
+        let h = 4u32;
+        let stride = w as usize;
+        let frame = VideoFrame::new(
+            vec![
+                PooledBuffer::standalone(vec![50u8; stride * h as usize]),
+                PooledBuffer::standalone(vec![128u8; stride * h as usize]),
+                PooledBuffer::standalone(vec![128u8; stride * h as usize]),
+            ],
+            vec![stride, stride, stride],
+            w,
+            h,
+            PixelFormat::Yuv444p,
+            Timestamp::default(),
+            true,
+        )
+        .unwrap();
+        let vs = ScopeAnalyzer::vectorscope(&frame);
+        assert_eq!(vs.len(), 16, "yuv444p 4×4 must produce 4×4=16 chroma pairs");
+    }
+
+    #[test]
+    fn vectorscope_unsupported_format_should_return_empty() {
+        let frame = VideoFrame::empty(4, 4, PixelFormat::Rgba).unwrap();
+        let vs = ScopeAnalyzer::vectorscope(&frame);
+        assert!(
+            vs.is_empty(),
+            "unsupported pixel format must return empty Vec, got len={}",
+            vs.len()
+        );
     }
 
     #[test]
