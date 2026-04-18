@@ -654,6 +654,20 @@ pub enum FilterStep {
         bh: i32,
     },
 
+    /// Glow / bloom effect: blends blurred highlights back over the image via
+    /// `split`, `curves`, `gblur`, and `blend` filters.
+    ///
+    /// This is a compound step — see
+    /// [`FilterGraph::glow`](crate::FilterGraph::glow) for parameter semantics.
+    Glow {
+        /// Luminance threshold that triggers the glow (clamped to [0.0, 1.0]).
+        threshold: f32,
+        /// Gaussian blur radius in pixels (clamped to [0.5, 50.0]).
+        radius: f32,
+        /// Additive blend strength (clamped to [0.0, 2.0]).
+        intensity: f32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -804,6 +818,9 @@ impl FilterStep {
             Self::FilmGrain { .. } => "noise",
             Self::ScaleMultiplier { .. } => "scale",
             Self::ChromaticAberration { .. } => "rgbashift",
+            // Glow is a compound step (split → curves → gblur → blend);
+            // "split" is used by validate_filter_steps as the primary check.
+            Self::Glow { .. } => "split",
         }
     }
 
@@ -1223,6 +1240,23 @@ impl FilterStep {
             }
             Self::ChromaticAberration { rh, bh } => {
                 format!("rh={rh}:bh={bh}:edge=smear")
+            }
+            // args() is not consumed by add_and_link_step (which is bypassed for
+            // this compound step); provided here for completeness.
+            Self::Glow {
+                threshold,
+                radius,
+                intensity,
+            } => {
+                let t = threshold.clamp(0.0, 1.0);
+                let r = radius.clamp(0.5, 50.0);
+                let iv = intensity.clamp(0.0, 2.0);
+                let hi_lo = format!("0/0 {t}/0 1/1");
+                format!(
+                    "split=2[base][hl];[hl]curves=all='{hi_lo}'[glow_src];\
+                     [glow_src]gblur=sigma={r}[glow];\
+                     [base][glow]blend=all_mode=addition:all_opacity={iv}"
+                )
             }
         }
     }

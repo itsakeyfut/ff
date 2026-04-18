@@ -1018,6 +1018,173 @@ pub(super) unsafe fn add_blend_expr_step(
 ///
 /// `graph` and `prev_ctx` must be valid pointers owned by the same
 /// `AVFilterGraph`.
+// ── Glow compound step ────────────────────────────────────────────────────────
+/// Insert the glow / bloom compound step.
+///
+/// ```text
+/// prev_ctx → split=2 → pad0 ──────────────────────────────→ blend[0]
+///                    → pad1 → curves(hi_lo) → gblur(r) ──→ blend[1]
+///                                                            blend(addition, opacity=iv) → out
+/// ```
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_glow_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    threshold: f32,
+    radius: f32,
+    intensity: f32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    let t = threshold.clamp(0.0, 1.0);
+    let r = radius.clamp(0.5, 50.0);
+    let iv = intensity.clamp(0.0, 2.0);
+
+    // 1. split=2 — duplicate the stream into a base path and a highlights path.
+    let split_filter = ff_sys::avfilter_get_by_name(c"split".as_ptr());
+    if split_filter.is_null() {
+        log::warn!("filter not found name=split (glow)");
+        return Err(FilterError::BuildFailed);
+    }
+    let split_name =
+        CString::new(format!("glow_split{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let mut split_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    // SAFETY: split_filter and graph are non-null; "2" is valid args.
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut split_ctx,
+        split_filter,
+        split_name.as_ptr(),
+        c"2".as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=split (glow) code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=split args=2 index={index} (glow)");
+
+    // Link: prev_ctx → split[0].
+    // SAFETY: prev_ctx and split_ctx belong to the same graph; pad indices valid.
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, split_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 2. curves — extract highlights: below threshold → black; above → full.
+    let curves_filter = ff_sys::avfilter_get_by_name(c"curves".as_ptr());
+    if curves_filter.is_null() {
+        log::warn!("filter not found name=curves (glow)");
+        return Err(FilterError::BuildFailed);
+    }
+    let curves_name =
+        CString::new(format!("glow_curves{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let hi_lo = format!("0/0 {t}/0 1/1");
+    let curves_args_str = format!("all='{hi_lo}'");
+    let curves_args =
+        CString::new(curves_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut curves_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut curves_ctx,
+        curves_filter,
+        curves_name.as_ptr(),
+        curves_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=curves args={curves_args_str} (glow) code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=curves args={curves_args_str} index={index} (glow)");
+
+    // Link: split[1] → curves[0] (highlights path).
+    // SAFETY: split_ctx and curves_ctx belong to the same graph; pad 1 of split valid.
+    let ret = ff_sys::avfilter_link(split_ctx, 1, curves_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 3. gblur — blur the extracted highlights.
+    let gblur_filter = ff_sys::avfilter_get_by_name(c"gblur".as_ptr());
+    if gblur_filter.is_null() {
+        log::warn!("filter not found name=gblur (glow)");
+        return Err(FilterError::BuildFailed);
+    }
+    let gblur_name =
+        CString::new(format!("glow_gblur{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let gblur_args_str = format!("sigma={r}");
+    let gblur_args = CString::new(gblur_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut gblur_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut gblur_ctx,
+        gblur_filter,
+        gblur_name.as_ptr(),
+        gblur_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=gblur args={gblur_args_str} (glow) code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=gblur args={gblur_args_str} index={index} (glow)");
+
+    // Link: curves → gblur.
+    let ret = ff_sys::avfilter_link(curves_ctx, 0, gblur_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // 4. blend — additively blend blurred highlights back over the base image.
+    let blend_filter = ff_sys::avfilter_get_by_name(c"blend".as_ptr());
+    if blend_filter.is_null() {
+        log::warn!("filter not found name=blend (glow)");
+        return Err(FilterError::BuildFailed);
+    }
+    let blend_name =
+        CString::new(format!("glow_blend{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let blend_args_str = format!("all_mode=addition:all_opacity={iv}");
+    let blend_args = CString::new(blend_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut blend_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut blend_ctx,
+        blend_filter,
+        blend_name.as_ptr(),
+        blend_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=blend args={blend_args_str} (glow) code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=blend args={blend_args_str} index={index} (glow)");
+
+    // Link: split[0] → blend[0] (base path — the bottom stream).
+    // SAFETY: split_ctx and blend_ctx belong to the same graph; pad indices valid.
+    let ret = ff_sys::avfilter_link(split_ctx, 0, blend_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Link: gblur → blend[1] (blurred highlights — the top stream).
+    let ret = ff_sys::avfilter_link(gblur_ctx, 0, blend_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    log::debug!(
+        "filter glow expanded threshold={threshold} radius={radius} intensity={intensity} index={index}"
+    );
+    Ok(blend_ctx)
+}
+
 pub(super) unsafe fn add_feather_mask_step(
     graph: *mut ff_sys::AVFilterGraph,
     prev_ctx: *mut ff_sys::AVFilterContext,
@@ -1682,6 +1849,22 @@ impl FilterGraphInner {
                     *dissolve_dur,
                     i,
                 ) {
+                    Ok(ctx) => ctx,
+                    Err(e) => bail!(e),
+                };
+                continue;
+            }
+
+            // Glow — compound step: split → [base | curves → gblur] → blend(addition).
+            // All filters operate on the single main stream; no extra buffersrc needed.
+            if let FilterStep::Glow {
+                threshold,
+                radius,
+                intensity,
+            } = step
+            {
+                prev_ctx = match add_glow_step(graph, prev_ctx, *threshold, *radius, *intensity, i)
+                {
                     Ok(ctx) => ctx,
                     Err(e) => bail!(e),
                 };

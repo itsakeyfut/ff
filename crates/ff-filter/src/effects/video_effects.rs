@@ -134,6 +134,30 @@ impl FilterGraph {
         Ok(self)
     }
 
+    /// Add a glow / bloom effect by blending blurred highlights back over the image.
+    ///
+    /// `threshold` controls which luminance level triggers glow (clamped to [0.0, 1.0]).
+    /// `radius` is the Gaussian blur sigma in pixels (clamped to [0.5, 50.0]).
+    /// `intensity` is the additive blend strength (clamped to [0.0, 2.0]).
+    ///
+    /// Values outside the valid ranges are silently clamped — no error is returned.
+    ///
+    /// Uses `FFmpeg`'s `split`, `curves`, `gblur`, and `blend` filters.
+    ///
+    /// Call this method after [`FilterGraph::builder()`] / [`build()`] but
+    /// **before** the first [`push_video`] call.
+    ///
+    /// [`build()`]: crate::FilterGraphBuilder::build
+    /// [`push_video`]: FilterGraph::push_video
+    pub fn glow(&mut self, threshold: f32, radius: f32, intensity: f32) -> &mut Self {
+        self.inner.push_step(FilterStep::Glow {
+            threshold,
+            radius,
+            intensity,
+        });
+        self
+    }
+
     /// Apply a predefined camera lens distortion correction profile.
     ///
     /// Looks up the radial coefficients (`k1`, `k2`) and `scale` from the
@@ -476,5 +500,99 @@ mod tests {
         let step = FilterStep::ChromaticAberration { rh: 0, bh: 0 };
         let args = step.args();
         assert_eq!(args, "rh=0:bh=0:edge=smear");
+    }
+
+    // ── glow ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn glow_with_valid_params_should_return_mutable_self() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.glow(0.8, 10.0, 0.8);
+        let _ = result;
+    }
+
+    #[test]
+    fn glow_identity_zero_intensity_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.glow(0.8, 10.0, 0.0);
+        let _ = result;
+    }
+
+    #[test]
+    fn filter_step_glow_should_have_split_filter_name() {
+        let step = FilterStep::Glow {
+            threshold: 0.8,
+            radius: 10.0,
+            intensity: 0.8,
+        };
+        assert_eq!(step.filter_name(), "split");
+    }
+
+    #[test]
+    fn glow_args_should_contain_threshold_radius_intensity() {
+        let step = FilterStep::Glow {
+            threshold: 0.8,
+            radius: 10.0,
+            intensity: 0.8,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("0.8/0"),
+            "args must contain threshold in curve: {args}"
+        );
+        assert!(
+            args.contains("sigma=10"),
+            "args must contain sigma=10: {args}"
+        );
+        assert!(
+            args.contains("all_opacity=0.8"),
+            "args must contain all_opacity=0.8: {args}"
+        );
+        assert!(
+            args.contains("all_mode=addition"),
+            "args must contain all_mode=addition: {args}"
+        );
+    }
+
+    #[test]
+    fn glow_threshold_above_one_should_be_clamped() {
+        let step = FilterStep::Glow {
+            threshold: 1.1,
+            radius: 5.0,
+            intensity: 1.0,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("1/0"),
+            "threshold=1.1 must clamp to 1.0 in curve (1/0): {args}"
+        );
+    }
+
+    #[test]
+    fn glow_radius_below_min_should_be_clamped_to_half() {
+        let step = FilterStep::Glow {
+            threshold: 0.5,
+            radius: 0.1,
+            intensity: 1.0,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("sigma=0.5"),
+            "radius=0.1 must clamp to 0.5: {args}"
+        );
+    }
+
+    #[test]
+    fn glow_intensity_above_two_should_be_clamped() {
+        let step = FilterStep::Glow {
+            threshold: 0.5,
+            radius: 5.0,
+            intensity: 5.0,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("all_opacity=2"),
+            "intensity=5.0 must clamp to 2.0: {args}"
+        );
     }
 }
