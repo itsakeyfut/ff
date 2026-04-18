@@ -107,6 +107,7 @@ pub mod audio;
 pub mod error;
 pub mod extract;
 pub mod image;
+pub mod scope;
 mod shared;
 pub mod video;
 
@@ -124,6 +125,7 @@ pub use extract::{FrameExtractor, ThumbnailSelector};
 pub use ff_common::{FramePool, PooledBuffer};
 pub use ff_format::ContainerInfo;
 pub use image::{ImageDecoder, ImageDecoderBuilder};
+pub use scope::{Histogram, RgbParade, ScopeAnalyzer};
 pub use shared::{HardwareAccel, SeekMode};
 pub use video::{VideoDecoder, VideoDecoderBuilder};
 
