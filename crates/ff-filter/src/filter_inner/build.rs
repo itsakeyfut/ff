@@ -2341,6 +2341,20 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // ReverbIr — compound step: amovie[+adelay] → afir.
+            // amovie is a self-contained audio source; no buffersrc slot is consumed.
+            if let FilterStep::ReverbIr {
+                ir_path,
+                wet,
+                dry,
+                pre_delay_ms,
+            } = step
+            {
+                prev_ctx =
+                    add_reverb_ir_step(graph, prev_ctx, ir_path, *wet, *dry, *pre_delay_ms, i)?;
+                continue;
+            }
+
             // AudioDelay dispatches to adelay (positive/zero) or atrim (negative).
             if let FilterStep::AudioDelay { ms } = step {
                 let (filter_name, args) = if *ms >= 0.0 {
@@ -2387,4 +2401,145 @@ impl FilterGraphInner {
         let sink_nn = NonNull::new_unchecked(sink_ctx);
         Ok((src_ctxs, sink_nn))
     }
+}
+
+// ── ReverbIr compound step ────────────────────────────────────────────────────
+/// Insert the convolution reverb compound step.
+///
+/// ```text
+/// prev_ctx ──────────────────────────────────────────→ afir[0]
+/// amovie(ir_path) [→ adelay(pre_delay_ms)] ─────────→ afir[1]
+///                                           afir(dry, wet) → out
+/// ```
+///
+/// `amovie` is a self-contained audio source — no buffersrc input slot is consumed.
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(super) unsafe fn add_reverb_ir_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    ir_path: &str,
+    wet: f32,
+    dry: f32,
+    pre_delay_ms: u32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    let wet = wet.clamp(0.0, 1.0);
+    let dry = dry.clamp(0.0, 1.0);
+    let delay = pre_delay_ms.min(500);
+
+    // 1. amovie=filename={ir_path} — self-contained IR source.
+    let amovie_filter = ff_sys::avfilter_get_by_name(c"amovie".as_ptr());
+    if amovie_filter.is_null() {
+        log::warn!("filter not found name=amovie (reverb_ir)");
+        return Err(FilterError::BuildFailed);
+    }
+    let amovie_name =
+        CString::new(format!("reverb_amovie{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let amovie_args_str = format!("filename={ir_path}");
+    let amovie_args =
+        CString::new(amovie_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut amovie_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    // SAFETY: amovie_filter and graph are non-null; args are valid null-terminated C strings.
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut amovie_ctx,
+        amovie_filter,
+        amovie_name.as_ptr(),
+        amovie_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!(
+            "filter creation failed name=amovie args={amovie_args_str} (reverb_ir) code={ret}"
+        );
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=amovie args={amovie_args_str} index={index} (reverb_ir)");
+
+    // 2. [optional] adelay={delay}:all=1 — pre-delay on the IR path.
+    let ir_out_ctx = if delay > 0 {
+        let adelay_filter = ff_sys::avfilter_get_by_name(c"adelay".as_ptr());
+        if adelay_filter.is_null() {
+            log::warn!("filter not found name=adelay (reverb_ir)");
+            return Err(FilterError::BuildFailed);
+        }
+        let adelay_name =
+            CString::new(format!("reverb_adelay{index}")).map_err(|_| FilterError::BuildFailed)?;
+        let adelay_args_str = format!("delays={delay}:all=1");
+        let adelay_args =
+            CString::new(adelay_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+        let mut adelay_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut adelay_ctx,
+            adelay_filter,
+            adelay_name.as_ptr(),
+            adelay_args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 {
+            log::warn!(
+                "filter creation failed name=adelay args={adelay_args_str} (reverb_ir) code={ret}"
+            );
+            return Err(FilterError::BuildFailed);
+        }
+        log::debug!("filter added name=adelay args={adelay_args_str} index={index} (reverb_ir)");
+        // SAFETY: amovie_ctx and adelay_ctx belong to the same graph; pad indices valid.
+        let ret = ff_sys::avfilter_link(amovie_ctx, 0, adelay_ctx, 0);
+        if ret < 0 {
+            return Err(FilterError::BuildFailed);
+        }
+        adelay_ctx
+    } else {
+        amovie_ctx
+    };
+
+    // 3. afir=dry={dry}:wet={wet} — convolution reverb.
+    let afir_filter = ff_sys::avfilter_get_by_name(c"afir".as_ptr());
+    if afir_filter.is_null() {
+        log::warn!("filter not found name=afir (reverb_ir)");
+        return Err(FilterError::BuildFailed);
+    }
+    let afir_name =
+        CString::new(format!("reverb_afir{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let afir_args_str = format!("dry={dry}:wet={wet}");
+    let afir_args = CString::new(afir_args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+    let mut afir_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut afir_ctx,
+        afir_filter,
+        afir_name.as_ptr(),
+        afir_args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=afir args={afir_args_str} (reverb_ir) code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    log::debug!("filter added name=afir args={afir_args_str} index={index} (reverb_ir)");
+
+    // Link: prev_ctx → afir[0] (dry audio input).
+    // SAFETY: prev_ctx and afir_ctx belong to the same graph; pad indices valid.
+    let ret = ff_sys::avfilter_link(prev_ctx, 0, afir_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    // Link: ir_out_ctx → afir[1] (impulse response input).
+    let ret = ff_sys::avfilter_link(ir_out_ctx, 0, afir_ctx, 1);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+
+    log::debug!(
+        "filter reverb_ir expanded ir_path={ir_path} wet={wet} dry={dry} pre_delay_ms={pre_delay_ms} index={index}"
+    );
+    Ok(afir_ctx)
 }

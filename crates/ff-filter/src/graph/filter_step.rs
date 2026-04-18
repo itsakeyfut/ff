@@ -668,6 +668,26 @@ pub enum FilterStep {
         intensity: f32,
     },
 
+    /// Convolution reverb using an impulse response (IR) audio file.
+    ///
+    /// The IR is loaded via `FFmpeg`'s `amovie` filter, optionally delayed by
+    /// `pre_delay_ms` via `adelay`, then convolved with the main audio stream
+    /// via `FFmpeg`'s `afir` filter.
+    ///
+    /// This is a compound step — see
+    /// [`FilterGraph::reverb_ir`](crate::FilterGraph::reverb_ir) for parameter
+    /// semantics.
+    ReverbIr {
+        /// Absolute or relative path to the `.wav` or `.flac` IR file.
+        ir_path: String,
+        /// Wet (reverb) mix level in [0.0, 1.0].
+        wet: f32,
+        /// Dry (original) mix level in [0.0, 1.0].
+        dry: f32,
+        /// Pre-delay before the reverb tail in milliseconds (clamped to 0–500).
+        pre_delay_ms: u32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -821,6 +841,9 @@ impl FilterStep {
             // Glow is a compound step (split → curves → gblur → blend);
             // "split" is used by validate_filter_steps as the primary check.
             Self::Glow { .. } => "split",
+            // ReverbIr is a compound step (amovie[+adelay] → afir);
+            // "afir" is used by validate_filter_steps as the primary check.
+            Self::ReverbIr { .. } => "afir",
         }
     }
 
@@ -1257,6 +1280,22 @@ impl FilterStep {
                      [glow_src]gblur=sigma={r}[glow];\
                      [base][glow]blend=all_mode=addition:all_opacity={iv}"
                 )
+            }
+            // args() is not consumed by add_and_link_step (which is bypassed for
+            // this compound step); provided here for completeness.
+            Self::ReverbIr {
+                ir_path,
+                wet,
+                dry,
+                pre_delay_ms,
+            } => {
+                let delay = pre_delay_ms.min(&500);
+                let delay_part = if *delay > 0 {
+                    format!(",adelay={delay}:all=1")
+                } else {
+                    String::new()
+                };
+                format!("amovie={ir_path}{delay_part}[ir];[0:a][ir]afir=dry={dry}:wet={wet}")
             }
         }
     }
