@@ -2373,6 +2373,13 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // TimeStretch — uses the same atempo chain as the audio path of Speed,
+            // but without any video setpts change.
+            if let FilterStep::TimeStretch { factor } = step {
+                prev_ctx = add_atempo_chain(graph, prev_ctx, f64::from(*factor), i)?;
+                continue;
+            }
+
             // PitchShift — compound step: asetrate → atempo.
             // asetrate changes the declared sample rate (shifting pitch); atempo
             // restores the original duration.  The actual sample rate is resolved
