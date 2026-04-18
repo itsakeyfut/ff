@@ -26,6 +26,28 @@ impl FilterGraph {
         Ok(self)
     }
 
+    /// Stretch or compress audio duration by `factor` without pitch change.
+    ///
+    /// `factor < 1.0` = slower (longer duration); `factor > 1.0` = faster
+    /// (shorter duration). Range: 0.1–10.0.
+    ///
+    /// Uses `FFmpeg`'s `atempo` filter (WSOLA algorithm). Values outside
+    /// [0.5, 2.0] are realised by chaining multiple `atempo` instances.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if `factor` is outside 0.1–10.0.
+    pub fn time_stretch(&mut self, factor: f32) -> Result<&mut Self, FilterError> {
+        if !(0.1..=10.0).contains(&factor) {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!("time_stretch factor must be 0.1–10.0, got {factor}"),
+            });
+        }
+        self.inner.push_step(FilterStep::TimeStretch { factor });
+        Ok(self)
+    }
+
     /// Add algorithmic echo/reverb with configurable delay taps.
     ///
     /// `in_gain` and `out_gain` are amplitude multipliers clamped to [0.0, 1.0].
@@ -112,6 +134,40 @@ mod tests {
     use crate::graph::filter_step::FilterStep;
     use crate::{FilterError, FilterGraph};
     use std::path::Path;
+
+    #[test]
+    fn time_stretch_zero_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.time_stretch(0.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "factor=0.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn time_stretch_above_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.time_stretch(11.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "factor=11.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn time_stretch_boundary_values_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(graph.time_stretch(0.1).is_ok(), "factor=0.1 must succeed");
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(graph.time_stretch(10.0).is_ok(), "factor=10.0 must succeed");
+    }
+
+    #[test]
+    fn filter_step_time_stretch_should_have_atempo_filter_name() {
+        let step = FilterStep::TimeStretch { factor: 1.5 };
+        assert_eq!(step.filter_name(), "atempo");
+    }
 
     #[test]
     fn pitch_shift_above_range_should_return_ffmpeg_error() {

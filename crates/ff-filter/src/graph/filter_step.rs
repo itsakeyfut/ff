@@ -723,6 +723,18 @@ pub enum FilterStep {
         semitones: f32,
     },
 
+    /// Time-stretch audio without changing pitch via `FFmpeg`'s `atempo` filter.
+    ///
+    /// `factor < 1.0` = slower (longer duration); `factor > 1.0` = faster
+    /// (shorter duration).  Range: [0.1, 10.0].  Values outside [0.5, 2.0]
+    /// are realised by chaining multiple `atempo` instances (each in [0.5, 2.0]).
+    ///
+    /// Validated by [`FilterGraph::time_stretch`](crate::FilterGraph::time_stretch).
+    TimeStretch {
+        /// Speed / duration factor. 0.5 = 2× longer; 2.0 = 2× shorter. Range: [0.1, 10.0].
+        factor: f32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -883,6 +895,8 @@ impl FilterStep {
             // PitchShift is a compound step (asetrate → atempo);
             // "asetrate" is used by validate_filter_steps as the primary check.
             Self::PitchShift { .. } => "asetrate",
+            // TimeStretch uses one or more chained atempo filters.
+            Self::TimeStretch { .. } => "atempo",
         }
     }
 
@@ -1367,6 +1381,9 @@ impl FilterStep {
                 let atempo = 1.0 / rate;
                 format!("asetrate=sr*{rate:.6},atempo={atempo:.6}")
             }
+            // args() is not consumed by add_and_link_step (bypassed in favour of
+            // add_atempo_chain); provided here for single-instance completeness.
+            Self::TimeStretch { factor } => format!("{factor:.6}"),
         }
     }
 }
