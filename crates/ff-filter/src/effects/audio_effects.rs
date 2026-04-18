@@ -7,23 +7,6 @@ use crate::graph::FilterGraph;
 use crate::graph::filter_step::FilterStep;
 
 impl FilterGraph {
-    /// Add convolution reverb using an impulse response (IR) audio file.
-    ///
-    /// `ir_path` is a path to a `.wav` or `.flac` impulse response file.
-    /// `wet` and `dry` are mix levels clamped to [0.0, 1.0].
-    /// `pre_delay_ms` inserts silence before the reverb tail (clamped to 0–500 ms).
-    ///
-    /// Uses `FFmpeg`'s `amovie` (to load the IR) and `afir` (convolution) filters.
-    ///
-    /// Call this method after [`FilterGraph::builder()`] / [`build()`] but
-    /// **before** the first [`push_audio`] call.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FilterError::Ffmpeg`] if `ir_path` does not exist.
-    /// The `afir` filter availability is checked at graph build time; if not
-    /// available the graph build returns [`FilterError::BuildFailed`].
-    ///
     /// Add algorithmic echo/reverb with configurable delay taps.
     ///
     /// `in_gain` and `out_gain` are amplitude multipliers clamped to [0.0, 1.0].
@@ -64,8 +47,23 @@ impl FilterGraph {
         Ok(self)
     }
 
-    /// [`build()`]: crate::FilterGraphBuilder::build
-    /// [`push_audio`]: FilterGraph::push_audio
+    /// Add convolution reverb using an impulse response (IR) audio file.
+    ///
+    /// `ir_path` is a path to a `.wav` or `.flac` impulse response file.
+    /// `wet` and `dry` are mix levels clamped to [0.0, 1.0].
+    /// `pre_delay_ms` inserts silence before the reverb tail (clamped to 0–500 ms).
+    ///
+    /// Uses `FFmpeg`'s `amovie` (to load the IR) and `afir` (convolution) filters.
+    ///
+    /// Call this method after [`FilterGraph::builder()`] /
+    /// [`FilterGraphBuilder::build()`](crate::FilterGraphBuilder::build) but
+    /// **before** the first [`FilterGraph::push_audio()`] call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if `ir_path` does not exist.
+    /// The `afir` filter availability is checked at graph build time; if not
+    /// available the graph build returns [`FilterError::BuildFailed`].
     pub fn reverb_ir(
         &mut self,
         ir_path: &Path,
