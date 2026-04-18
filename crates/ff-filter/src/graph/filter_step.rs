@@ -778,6 +778,27 @@ pub enum FilterStep {
         nr_level: f32,
     },
 
+    /// Sidechain compression for audio ducking via `FFmpeg`'s `sidechaincompress` filter.
+    ///
+    /// Reduces the background audio level when the foreground (sidechain) signal
+    /// exceeds the threshold.  Push background audio to slot 0 and foreground
+    /// audio to slot 1.
+    ///
+    /// `threshold_linear` is the trigger level as a linear amplitude (pre-converted
+    /// from dBFS by [`FilterGraph::duck`](crate::FilterGraph::duck)).
+    /// `ratio`, `attack_ms`, and `release_ms` are validated by
+    /// [`FilterGraph::duck`](crate::FilterGraph::duck).
+    Duck {
+        /// Compression threshold as a linear amplitude ratio in (0.0, 1.0].
+        threshold_linear: f32,
+        /// Compression ratio (e.g. 20.0 for near hard-limiting). Must be >= 1.0.
+        ratio: f32,
+        /// Attack time in milliseconds. Must be >= 0.0.
+        attack_ms: f32,
+        /// Release time in milliseconds. Must be >= 0.0.
+        release_ms: f32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -943,6 +964,9 @@ impl FilterStep {
             // SpeedChange uses asetrate to shift speed and pitch together.
             Self::SpeedChange { .. } => "asetrate",
             Self::NoiseReduce { .. } | Self::NoiseReduceProfile { .. } => "afftdn",
+            // Duck is a two-input compound step; "sidechaincompress" is checked at
+            // build time by validate_filter_steps.
+            Self::Duck { .. } => "sidechaincompress",
         }
     }
 
@@ -1441,6 +1465,16 @@ impl FilterStep {
                 profile_duration_secs,
                 nr_level,
             } => format!("nr={nr_level}:nf=-25:nt=w:pl={profile_duration_secs}"),
+            // args() is not consumed by add_and_link_step (bypassed for this
+            // compound two-input step); provided for completeness.
+            Self::Duck {
+                threshold_linear,
+                ratio,
+                attack_ms,
+                release_ms,
+            } => format!(
+                "threshold={threshold_linear}:ratio={ratio}:attack={attack_ms}:release={release_ms}"
+            ),
         }
     }
 }

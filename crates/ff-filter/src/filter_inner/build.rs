@@ -2429,6 +2429,36 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // Duck — two-input compound step: sidechaincompress.
+            // Slot 0 = background (main signal, gets ducked); slot 1 = foreground (sidechain).
+            if let FilterStep::Duck {
+                threshold_linear,
+                ratio,
+                attack_ms,
+                release_ms,
+            } = step
+            {
+                let side_ctx = src_ctxs
+                    .get(1)
+                    .and_then(|s| *s)
+                    .ok_or(FilterError::BuildFailed)?
+                    .as_ptr();
+                // SAFETY: graph, prev_ctx, and side_ctx are valid pointers in the same graph.
+                prev_ctx = add_sidechain_compress_step(
+                    graph,
+                    prev_ctx,
+                    side_ctx,
+                    &DuckArgs {
+                        threshold_linear: *threshold_linear,
+                        ratio: *ratio,
+                        attack_ms: *attack_ms,
+                        release_ms: *release_ms,
+                    },
+                    i,
+                )?;
+                continue;
+            }
+
             // AudioDelay dispatches to adelay (positive/zero) or atrim (negative).
             if let FilterStep::AudioDelay { ms } = step {
                 let (filter_name, args) = if *ms >= 0.0 {
@@ -2616,4 +2646,95 @@ pub(super) unsafe fn add_reverb_ir_step(
         "filter reverb_ir expanded ir_path={ir_path} wet={wet} dry={dry} pre_delay_ms={pre_delay_ms} index={index}"
     );
     Ok(afir_ctx)
+}
+
+// ── SidechainCompress compound step ──────────────────────────────────────────
+
+/// Parameters for `add_sidechain_compress_step`.
+pub(super) struct DuckArgs {
+    pub threshold_linear: f32,
+    pub ratio: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+}
+
+/// Wire the two-input `sidechaincompress` filter for audio ducking.
+///
+/// ```text
+/// main_ctx (background, slot 0) ──→ sidechaincompress[0]
+/// side_ctx (foreground, slot 1) ──→ sidechaincompress[1]
+///                                   sidechaincompress → out
+/// ```
+///
+/// # Safety
+///
+/// `graph`, `main_ctx`, and `side_ctx` must be valid pointers owned by the
+/// same `AVFilterGraph`.
+pub(super) unsafe fn add_sidechain_compress_step(
+    graph: *mut ff_sys::AVFilterGraph,
+    main_ctx: *mut ff_sys::AVFilterContext,
+    side_ctx: *mut ff_sys::AVFilterContext,
+    args: &DuckArgs,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    use std::ffi::CString;
+
+    let DuckArgs {
+        threshold_linear,
+        ratio,
+        attack_ms,
+        release_ms,
+    } = args;
+
+    let filter = ff_sys::avfilter_get_by_name(c"sidechaincompress".as_ptr());
+    if filter.is_null() {
+        log::warn!("filter not found name=sidechaincompress (duck)");
+        return Err(FilterError::BuildFailed);
+    }
+
+    let name = CString::new(format!("duck{index}")).map_err(|_| FilterError::BuildFailed)?;
+    let args_str = format!(
+        "threshold={threshold_linear}:ratio={ratio}:attack={attack_ms}:release={release_ms}"
+    );
+    let cargs = CString::new(args_str.as_str()).map_err(|_| FilterError::BuildFailed)?;
+
+    let mut sc_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    // SAFETY: filter and graph are non-null; args are valid null-terminated C strings.
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut sc_ctx,
+        filter,
+        name.as_ptr(),
+        cargs.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!(
+            "filter creation failed name=sidechaincompress args={args_str} code={ret} (duck)"
+        );
+        return Err(ffmpeg_err(ret));
+    }
+    log::debug!("filter added name=sidechaincompress args={args_str} index={index} (duck)");
+
+    // Link main signal → input pad 0 (the stream to be compressed).
+    // SAFETY: main_ctx and sc_ctx belong to the same graph; pad indices are valid.
+    let ret = ff_sys::avfilter_link(main_ctx, 0, sc_ctx, 0);
+    if ret < 0 {
+        log::warn!("avfilter_link failed main→sidechaincompress[0] code={ret}");
+        return Err(ffmpeg_err(ret));
+    }
+
+    // Link sidechain signal → input pad 1 (the trigger signal).
+    // SAFETY: side_ctx and sc_ctx belong to the same graph; pad indices are valid.
+    let ret = ff_sys::avfilter_link(side_ctx, 0, sc_ctx, 1);
+    if ret < 0 {
+        log::warn!("avfilter_link failed sidechain→sidechaincompress[1] code={ret}");
+        return Err(ffmpeg_err(ret));
+    }
+
+    log::debug!(
+        "filter duck expanded threshold_linear={threshold_linear} ratio={ratio} \
+         attack_ms={attack_ms} release_ms={release_ms} index={index}"
+    );
+    Ok(sc_ctx)
 }

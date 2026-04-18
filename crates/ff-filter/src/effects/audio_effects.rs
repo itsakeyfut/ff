@@ -158,6 +158,60 @@ impl FilterGraph {
         Ok(self)
     }
 
+    /// Reduce background audio level when foreground signal exceeds a threshold
+    /// (audio ducking via sidechain compression).
+    ///
+    /// Push background audio to slot 0 and foreground (sidechain trigger) audio
+    /// to slot 1.  When the foreground signal rises above `threshold_db`, the
+    /// background is attenuated by `ratio`:1 over `attack_ms` milliseconds; it
+    /// recovers over `release_ms` milliseconds when the foreground drops below the
+    /// threshold.
+    ///
+    /// `threshold_db` is the trigger level in dBFS (e.g., −20.0).  It is
+    /// converted to a linear amplitude ratio before being passed to the filter.
+    /// `ratio` must be ≥ 1.0.  `attack_ms` and `release_ms` must be ≥ 0.0.
+    ///
+    /// Uses `FFmpeg`'s `sidechaincompress` filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if `ratio < 1.0` or either time value is
+    /// negative.
+    pub fn duck(
+        &mut self,
+        threshold_db: f32,
+        ratio: f32,
+        attack_ms: f32,
+        release_ms: f32,
+    ) -> Result<&mut Self, FilterError> {
+        if ratio < 1.0 {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!("duck ratio must be >= 1.0, got {ratio}"),
+            });
+        }
+        if attack_ms < 0.0 {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!("duck attack_ms must be >= 0.0, got {attack_ms}"),
+            });
+        }
+        if release_ms < 0.0 {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!("duck release_ms must be >= 0.0, got {release_ms}"),
+            });
+        }
+        let threshold_linear = 10f32.powf(threshold_db / 20.0);
+        self.inner.push_step(FilterStep::Duck {
+            threshold_linear,
+            ratio,
+            attack_ms,
+            release_ms,
+        });
+        Ok(self)
+    }
+
     /// Add convolution reverb using an impulse response (IR) audio file.
     ///
     /// `ir_path` is a path to a `.wav` or `.flac` impulse response file.
@@ -520,6 +574,83 @@ mod tests {
         assert!(
             args.contains("adelay=100"),
             "args must contain adelay=100 when pre_delay_ms=100: {args}"
+        );
+    }
+
+    #[test]
+    fn duck_ratio_below_one_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.duck(-20.0, 0.5, 10.0, 200.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "ratio=0.5 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn duck_negative_attack_ms_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.duck(-20.0, 20.0, -1.0, 200.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "attack_ms=-1.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn duck_negative_release_ms_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.duck(-20.0, 20.0, 10.0, -1.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "release_ms=-1.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn duck_valid_params_should_push_duck_step() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(
+            graph.duck(-20.0, 20.0, 10.0, 200.0).is_ok(),
+            "valid duck params must succeed"
+        );
+    }
+
+    #[test]
+    fn filter_step_duck_should_have_sidechaincompress_filter_name() {
+        let step = FilterStep::Duck {
+            threshold_linear: 0.1,
+            ratio: 20.0,
+            attack_ms: 10.0,
+            release_ms: 200.0,
+        };
+        assert_eq!(step.filter_name(), "sidechaincompress");
+    }
+
+    #[test]
+    fn filter_step_duck_args_should_contain_threshold_ratio_attack_release() {
+        let step = FilterStep::Duck {
+            threshold_linear: 0.1,
+            ratio: 20.0,
+            attack_ms: 10.0,
+            release_ms: 200.0,
+        };
+        let args = step.args();
+        assert!(
+            args.contains("threshold=0.1"),
+            "args must contain threshold=0.1: {args}"
+        );
+        assert!(
+            args.contains("ratio=20"),
+            "args must contain ratio=20: {args}"
+        );
+        assert!(
+            args.contains("attack=10"),
+            "args must contain attack=10: {args}"
+        );
+        assert!(
+            args.contains("release=200"),
+            "args must contain release=200: {args}"
         );
     }
 
