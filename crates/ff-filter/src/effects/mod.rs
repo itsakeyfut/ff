@@ -6,6 +6,7 @@
 //!   motion blur via `tblend` (frame-level, extends [`crate::FilterGraph`]).
 //! - [`LensProfile`] — predefined lens distortion correction profiles for common cameras.
 
+mod audio_effects;
 pub(crate) mod effects_inner;
 pub mod lens_profile;
 mod stabilizer;
