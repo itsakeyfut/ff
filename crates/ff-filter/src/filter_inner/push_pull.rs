@@ -274,6 +274,9 @@ impl FilterGraphInner {
             if let FilterStep::ConcatAudio { n } = step {
                 return *n as usize;
             }
+            if matches!(step, FilterStep::Duck { .. }) {
+                return 2;
+            }
         }
         1
     }
