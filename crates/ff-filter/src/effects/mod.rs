@@ -12,5 +12,6 @@ pub mod lens_profile;
 mod stabilizer;
 mod video_effects;
 
+pub use audio_effects::NoiseType;
 pub use lens_profile::LensProfile;
 pub use stabilizer::{AnalyzeOptions, Interpolation, StabilizeOptions, Stabilizer};

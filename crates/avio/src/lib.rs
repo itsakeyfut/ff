@@ -262,9 +262,9 @@ pub use ff_filter::{
     AnalyzeOptions, AnimatedValue, AnimationEntry, AnimationTrack, AudioConcatenator, AudioTrack,
     BlendMode, ClipJoiner, DrawTextOptions, Easing, EqBand, FilterError, FilterGraph,
     FilterGraphBuilder, FilterStep, HwAccel, Interpolation, Keyframe, LensProfile, Lerp,
-    LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, QualityMetrics, Rgb,
-    ScaleAlgorithm, StabilizeOptions, Stabilizer, ToneMap, VideoConcatenator, VideoLayer,
-    XfadeTransition, YadifMode,
+    LoudnessMeter, LoudnessResult, MultiTrackAudioMixer, MultiTrackComposer, NoiseType,
+    QualityMetrics, Rgb, ScaleAlgorithm, StabilizeOptions, Stabilizer, ToneMap, VideoConcatenator,
+    VideoLayer, XfadeTransition, YadifMode,
 };
 
 // ── pipeline feature ──────────────────────────────────────────────────────────

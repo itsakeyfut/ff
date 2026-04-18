@@ -6,7 +6,56 @@ use crate::error::FilterError;
 use crate::graph::FilterGraph;
 use crate::graph::filter_step::FilterStep;
 
+/// Noise type used as the initial spectral model for `afftdn`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NoiseType {
+    /// White noise (flat spectrum).
+    White,
+    /// Pink noise (−3 dB/octave).
+    Pink,
+    /// Brown / red noise (−6 dB/octave).
+    Brown,
+}
+
+impl NoiseType {
+    fn afftdn_flag(self) -> &'static str {
+        match self {
+            NoiseType::White => "w",
+            NoiseType::Pink => "p",
+            NoiseType::Brown => "b",
+        }
+    }
+}
+
 impl FilterGraph {
+    /// Reduce noise using a statistical noise-type model.
+    ///
+    /// `nr_level` is the noise reduction amount in dB, clamped to [0.0, 97.0].
+    ///
+    /// Uses `FFmpeg`'s `afftdn` filter.
+    pub fn noise_reduce(&mut self, nt: NoiseType, nr_level: f32) -> &mut Self {
+        self.inner.push_step(FilterStep::NoiseReduce {
+            noise_type_flag: nt.afftdn_flag().to_string(),
+            nr_level: nr_level.clamp(0.0, 97.0),
+        });
+        self
+    }
+
+    /// Capture a noise profile from the first `profile_duration_secs` seconds,
+    /// then reduce noise in the full stream.
+    ///
+    /// `nr_level` is the reduction amount in dB, clamped to [0.0, 97.0].
+    /// `profile_duration_secs` is clamped to a minimum of 0.1 seconds.
+    ///
+    /// Uses `FFmpeg`'s `afftdn` filter with the `pl` profile-length option.
+    pub fn noise_reduce_profile(&mut self, profile_duration_secs: f32, nr_level: f32) -> &mut Self {
+        self.inner.push_step(FilterStep::NoiseReduceProfile {
+            profile_duration_secs: profile_duration_secs.max(0.1),
+            nr_level: nr_level.clamp(0.0, 97.0),
+        });
+        self
+    }
+
     /// Change audio speed and pitch simultaneously by `factor`.
     ///
     /// Equivalent to playing a tape at a different speed: `factor > 1.0` makes
@@ -152,9 +201,63 @@ impl FilterGraph {
 
 #[cfg(test)]
 mod tests {
+    use crate::effects::audio_effects::NoiseType;
     use crate::graph::filter_step::FilterStep;
     use crate::{FilterError, FilterGraph};
     use std::path::Path;
+
+    #[test]
+    fn noise_reduce_should_push_noise_reduce_step() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        graph.noise_reduce(NoiseType::White, 50.0);
+        let step = FilterStep::NoiseReduce {
+            noise_type_flag: "w".to_string(),
+            nr_level: 50.0,
+        };
+        assert_eq!(step.filter_name(), "afftdn");
+        assert!(
+            step.args().contains("nt=w"),
+            "args must contain nt=w: {}",
+            step.args()
+        );
+        assert!(
+            step.args().contains("nr=50"),
+            "args must contain nr=50: {}",
+            step.args()
+        );
+    }
+
+    #[test]
+    fn noise_reduce_clamps_nr_level_above_97() {
+        let step = FilterStep::NoiseReduce {
+            noise_type_flag: "p".to_string(),
+            nr_level: 97.0,
+        };
+        assert!(
+            step.args().contains("nr=97"),
+            "nr_level=97.0 must appear in args: {}",
+            step.args()
+        );
+    }
+
+    #[test]
+    fn noise_reduce_profile_args_should_contain_pl_and_nr() {
+        let step = FilterStep::NoiseReduceProfile {
+            profile_duration_secs: 0.5,
+            nr_level: 30.0,
+        };
+        let args = step.args();
+        assert!(args.contains("pl=0.5"), "args must contain pl=0.5: {args}");
+        assert!(args.contains("nr=30"), "args must contain nr=30: {args}");
+        assert!(args.contains("nf=-25"), "args must contain nf=-25: {args}");
+    }
+
+    #[test]
+    fn noise_type_flags_should_match_afftdn_spec() {
+        assert_eq!(NoiseType::White.afftdn_flag(), "w");
+        assert_eq!(NoiseType::Pink.afftdn_flag(), "p");
+        assert_eq!(NoiseType::Brown.afftdn_flag(), "b");
+    }
 
     #[test]
     fn speed_change_zero_should_return_ffmpeg_error() {

@@ -748,6 +748,36 @@ pub enum FilterStep {
         factor: f64,
     },
 
+    /// Spectral noise reduction using a statistical noise-type model.
+    ///
+    /// Uses `FFmpeg`'s `afftdn` filter.  `noise_type_flag` is the single-letter
+    /// `nt` parameter (`"w"` = white, `"p"` = pink, `"b"` = brown).
+    /// `nr_level` is the reduction amount in dB, clamped to [0.0, 97.0].
+    ///
+    /// Created by [`FilterGraph::noise_reduce`](crate::FilterGraph::noise_reduce).
+    NoiseReduce {
+        /// `afftdn` `nt` flag: `"w"`, `"p"`, or `"b"`.
+        noise_type_flag: String,
+        /// Noise reduction amount in dB. Clamped to [0.0, 97.0].
+        nr_level: f32,
+    },
+
+    /// Spectral noise reduction using a captured noise profile.
+    ///
+    /// Uses `FFmpeg`'s `afftdn` with the `pl` (profile length) option: the
+    /// filter learns the noise profile from the first `profile_duration_secs`
+    /// seconds, then subtracts it from the rest of the stream.
+    /// `nr_level` is the reduction amount in dB, clamped to [0.0, 97.0].
+    ///
+    /// Created by
+    /// [`FilterGraph::noise_reduce_profile`](crate::FilterGraph::noise_reduce_profile).
+    NoiseReduceProfile {
+        /// Duration in seconds from which to capture the noise profile. Minimum 0.1.
+        profile_duration_secs: f32,
+        /// Noise reduction amount in dB. Clamped to [0.0, 97.0].
+        nr_level: f32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -912,6 +942,7 @@ impl FilterStep {
             Self::TimeStretch { .. } => "atempo",
             // SpeedChange uses asetrate to shift speed and pitch together.
             Self::SpeedChange { .. } => "asetrate",
+            Self::NoiseReduce { .. } | Self::NoiseReduceProfile { .. } => "afftdn",
         }
     }
 
@@ -1402,6 +1433,14 @@ impl FilterStep {
             // args() is not consumed by add_and_link_step (bypassed; sample rate
             // is resolved from buffersrc_args at build time); provided for completeness.
             Self::SpeedChange { factor } => format!("asetrate=sr*{factor:.6}"),
+            Self::NoiseReduce {
+                noise_type_flag,
+                nr_level,
+            } => format!("nt={noise_type_flag}:nr={nr_level}"),
+            Self::NoiseReduceProfile {
+                profile_duration_secs,
+                nr_level,
+            } => format!("nr={nr_level}:nf=-25:nt=w:pl={profile_duration_secs}"),
         }
     }
 }
