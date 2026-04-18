@@ -1451,6 +1451,24 @@ pub(super) fn audio_buffersrc_args(
     )
 }
 
+/// Parse the `sample_rate` field from a `buffersrc_args` string.
+///
+/// The expected format is `sample_rate=R:sample_fmt=FMT:channels=C:...`.
+/// Returns `44100` as a safe fallback if the field is absent or unparseable.
+pub(super) fn parse_sample_rate_from_buffersrc(buffersrc_args: &str) -> u32 {
+    buffersrc_args
+        .split(':')
+        .find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            if k == "sample_rate" {
+                v.parse().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(44100)
+}
+
 // ── Parametric EQ (multi-band chain) ─────────────────────────────────────────
 
 /// Insert a chain of filter nodes for a [`FilterStep::ParametricEq`] step.
@@ -2352,6 +2370,36 @@ impl FilterGraphInner {
             {
                 prev_ctx =
                     add_reverb_ir_step(graph, prev_ctx, ir_path, *wet, *dry, *pre_delay_ms, i)?;
+                continue;
+            }
+
+            // PitchShift — compound step: asetrate → atempo.
+            // asetrate changes the declared sample rate (shifting pitch); atempo
+            // restores the original duration.  The actual sample rate is resolved
+            // from buffersrc_args so the integer value is substituted literally.
+            if let FilterStep::PitchShift { semitones } = step {
+                let rate = 2f64.powf(f64::from(*semitones) / 12.0);
+                let sr = parse_sample_rate_from_buffersrc(buffersrc_args);
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let new_sr = (f64::from(sr) * rate).round() as u64;
+                let atempo = 1.0 / rate;
+                // SAFETY: graph and prev_ctx are valid pointers in the same graph.
+                prev_ctx = add_raw_filter_step(
+                    graph,
+                    prev_ctx,
+                    "asetrate",
+                    &format!("r={new_sr}"),
+                    i,
+                    "pitch_asetrate",
+                )?;
+                prev_ctx = add_raw_filter_step(
+                    graph,
+                    prev_ctx,
+                    "atempo",
+                    &format!("{atempo:.6}"),
+                    i,
+                    "pitch_atempo",
+                )?;
                 continue;
             }
 

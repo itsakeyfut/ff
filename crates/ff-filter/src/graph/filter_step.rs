@@ -706,6 +706,23 @@ pub enum FilterStep {
         decays: Vec<f32>,
     },
 
+    /// Pitch shift without tempo change.
+    ///
+    /// Shifts audio pitch by `semitones` semitones without altering playback
+    /// duration.  Implemented as `asetrate` (changes the declared sample rate
+    /// to shift pitch) followed by `atempo` (restores the original duration).
+    ///
+    /// Range: [−12.0, 12.0]; validated by
+    /// [`FilterGraph::pitch_shift`](crate::FilterGraph::pitch_shift).
+    ///
+    /// This is a compound step — `filter_name()` returns `"asetrate"` for
+    /// `validate_filter_steps`; the actual graph construction is handled by
+    /// `filter_inner::build::build_audio_graph`.
+    PitchShift {
+        /// Pitch shift in semitones. Range: [−12.0, 12.0].
+        semitones: f32,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -863,6 +880,9 @@ impl FilterStep {
             // "afir" is used by validate_filter_steps as the primary check.
             Self::ReverbIr { .. } => "afir",
             Self::ReverbEcho { .. } => "aecho",
+            // PitchShift is a compound step (asetrate → atempo);
+            // "asetrate" is used by validate_filter_steps as the primary check.
+            Self::PitchShift { .. } => "asetrate",
         }
     }
 
@@ -1339,6 +1359,13 @@ impl FilterStep {
                     String::new()
                 };
                 format!("amovie={ir_path}{delay_part}[ir];[0:a][ir]afir=dry={dry}:wet={wet}")
+            }
+            // args() is not consumed by add_and_link_step (which is bypassed for
+            // this compound step); provided here for completeness.
+            Self::PitchShift { semitones } => {
+                let rate = 2f64.powf(f64::from(*semitones) / 12.0);
+                let atempo = 1.0 / rate;
+                format!("asetrate=sr*{rate:.6},atempo={atempo:.6}")
             }
         }
     }

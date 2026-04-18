@@ -7,6 +7,25 @@ use crate::graph::FilterGraph;
 use crate::graph::filter_step::FilterStep;
 
 impl FilterGraph {
+    /// Shift audio pitch by `semitones` without changing playback speed.
+    ///
+    /// Range: −12.0 to +12.0 semitones. Uses `asetrate` to change the
+    /// decoded sample rate followed by `atempo` to restore original duration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if `semitones` is outside −12.0..=12.0.
+    pub fn pitch_shift(&mut self, semitones: f32) -> Result<&mut Self, FilterError> {
+        if !(-12.0..=12.0).contains(&semitones) {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!("semitones must be in -12..=12, got {semitones}"),
+            });
+        }
+        self.inner.push_step(FilterStep::PitchShift { semitones });
+        Ok(self)
+    }
+
     /// Add algorithmic echo/reverb with configurable delay taps.
     ///
     /// `in_gain` and `out_gain` are amplitude multipliers clamped to [0.0, 1.0].
@@ -93,6 +112,48 @@ mod tests {
     use crate::graph::filter_step::FilterStep;
     use crate::{FilterError, FilterGraph};
     use std::path::Path;
+
+    #[test]
+    fn pitch_shift_above_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.pitch_shift(13.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "semitones=13.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn pitch_shift_below_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.pitch_shift(-13.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "semitones=-13.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn pitch_shift_boundary_values_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(
+            graph.pitch_shift(12.0).is_ok(),
+            "semitones=12.0 must succeed"
+        );
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(
+            graph.pitch_shift(-12.0).is_ok(),
+            "semitones=-12.0 must succeed"
+        );
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(graph.pitch_shift(0.0).is_ok(), "semitones=0.0 must succeed");
+    }
+
+    #[test]
+    fn filter_step_pitch_shift_should_have_asetrate_filter_name() {
+        let step = FilterStep::PitchShift { semitones: 7.0 };
+        assert_eq!(step.filter_name(), "asetrate");
+    }
 
     #[test]
     fn reverb_echo_mismatched_lengths_should_return_ffmpeg_error() {
