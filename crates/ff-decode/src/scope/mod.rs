@@ -6,6 +6,8 @@
 //!
 //! Currently implemented:
 //! - [`ScopeAnalyzer::waveform`] — luminance waveform monitor (Y values per column)
+//! - [`ScopeAnalyzer::vectorscope`] — Cb/Cr chroma scatter data
+//! - [`ScopeAnalyzer::rgb_parade`] — per-channel RGB waveform (parade)
 //!
 
 use ff_format::{PixelFormat, VideoFrame};
@@ -18,8 +20,18 @@ pub struct ScopeAnalyzer;
 /// Placeholder for per-channel RGB histogram data (future issue).
 pub struct Histogram;
 
-/// Placeholder for RGB parade scope data (future issue).
-pub struct RgbParade;
+/// Per-channel waveform monitor data (RGB parade).
+///
+/// Each channel has the same shape as [`ScopeAnalyzer::waveform`]:
+/// outer index = column (x), inner values are normalised channel values `[0.0, 1.0]`.
+pub struct RgbParade {
+    /// Red channel: column-major waveform values in `[0.0, 1.0]`.
+    pub r: Vec<Vec<f32>>,
+    /// Green channel: column-major waveform values in `[0.0, 1.0]`.
+    pub g: Vec<Vec<f32>>,
+    /// Blue channel: column-major waveform values in `[0.0, 1.0]`.
+    pub b: Vec<Vec<f32>>,
+}
 
 impl ScopeAnalyzer {
     /// Compute waveform monitor data for `frame`.
@@ -105,6 +117,108 @@ impl ScopeAnalyzer {
             }
         }
         result
+    }
+
+    /// Compute RGB parade data for `frame`.
+    ///
+    /// Each pixel is converted from YUV to RGB using the BT.601 full-range matrix
+    /// before sampling. Returns an [`RgbParade`] whose `r`, `g`, and `b` fields
+    /// each have the same column-major shape as [`ScopeAnalyzer::waveform`].
+    ///
+    /// Only `yuv420p`, `yuv422p`, and `yuv444p` pixel formats are supported.
+    /// Returns `RgbParade { r: vec![], g: vec![], b: vec![] }` for unsupported
+    /// formats or if plane data is unavailable.
+    #[must_use]
+    pub fn rgb_parade(frame: &VideoFrame) -> RgbParade {
+        let width = frame.width() as usize;
+        let height = frame.height() as usize;
+        let fmt = frame.format();
+
+        match fmt {
+            PixelFormat::Yuv420p | PixelFormat::Yuv422p | PixelFormat::Yuv444p => {}
+            _ => {
+                return RgbParade {
+                    r: vec![],
+                    g: vec![],
+                    b: vec![],
+                };
+            }
+        }
+
+        let Some(luma) = frame.plane(0) else {
+            return RgbParade {
+                r: vec![],
+                g: vec![],
+                b: vec![],
+            };
+        };
+        let Some(u_plane) = frame.plane(1) else {
+            return RgbParade {
+                r: vec![],
+                g: vec![],
+                b: vec![],
+            };
+        };
+        let Some(v_plane) = frame.plane(2) else {
+            return RgbParade {
+                r: vec![],
+                g: vec![],
+                b: vec![],
+            };
+        };
+        let Some(luma_stride) = frame.stride(0) else {
+            return RgbParade {
+                r: vec![],
+                g: vec![],
+                b: vec![],
+            };
+        };
+        let Some(u_stride) = frame.stride(1) else {
+            return RgbParade {
+                r: vec![],
+                g: vec![],
+                b: vec![],
+            };
+        };
+        let Some(v_stride) = frame.stride(2) else {
+            return RgbParade {
+                r: vec![],
+                g: vec![],
+                b: vec![],
+            };
+        };
+
+        let mut red_cols = vec![Vec::with_capacity(height); width];
+        let mut grn_cols = vec![Vec::with_capacity(height); width];
+        let mut blu_cols = vec![Vec::with_capacity(height); width];
+
+        for row in 0..height {
+            for col in 0..width {
+                let (chr_row, chr_col) = match fmt {
+                    PixelFormat::Yuv420p => (row / 2, col / 2),
+                    PixelFormat::Yuv422p => (row, col / 2),
+                    _ => (row, col),
+                };
+
+                let yy = f32::from(luma[row * luma_stride + col]);
+                let uu = f32::from(u_plane[chr_row * u_stride + chr_col]) - 128.0;
+                let vv = f32::from(v_plane[chr_row * v_stride + chr_col]) - 128.0;
+
+                let r = (yy + 1.402 * vv).clamp(0.0, 255.0) / 255.0;
+                let g = (yy - 0.344 * uu - 0.714 * vv).clamp(0.0, 255.0) / 255.0;
+                let b = (yy + 1.772 * uu).clamp(0.0, 255.0) / 255.0;
+
+                red_cols[col].push(r);
+                grn_cols[col].push(g);
+                blu_cols[col].push(b);
+            }
+        }
+
+        RgbParade {
+            r: red_cols,
+            g: grn_cols,
+            b: blu_cols,
+        }
     }
 }
 
@@ -326,6 +440,104 @@ mod tests {
             "unsupported pixel format must return empty Vec, got len={}",
             vs.len()
         );
+    }
+
+    // YUV (full-range BT.601) values for a pure red frame (R=255,G=0,B=0):
+    //   Y=76, Cb=85, Cr=255
+    // Decoded: r≈(76+1.402*(255-128))/255≈0.996, g≈0.0, b≈0.0
+    fn make_red_yuv420p_frame(w: u32, h: u32) -> VideoFrame {
+        let stride = w as usize;
+        let uv_stride = w.div_ceil(2) as usize;
+        let uv_h = h.div_ceil(2) as usize;
+        VideoFrame::new(
+            vec![
+                PooledBuffer::standalone(vec![76u8; stride * h as usize]),
+                PooledBuffer::standalone(vec![85u8; uv_stride * uv_h]),
+                PooledBuffer::standalone(vec![255u8; uv_stride * uv_h]),
+            ],
+            vec![stride, uv_stride, uv_stride],
+            w,
+            h,
+            PixelFormat::Yuv420p,
+            Timestamp::default(),
+            true,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn rgb_parade_red_frame_should_have_high_r_and_low_g_b() {
+        let frame = make_red_yuv420p_frame(4, 4);
+        let parade = ScopeAnalyzer::rgb_parade(&frame);
+        assert_eq!(parade.r.len(), 4, "r must have one Vec per column");
+        assert_eq!(parade.g.len(), 4, "g must have one Vec per column");
+        assert_eq!(parade.b.len(), 4, "b must have one Vec per column");
+        for col in 0..4 {
+            for &rv in &parade.r[col] {
+                assert!(
+                    rv > 0.9,
+                    "red channel must be near 1.0 for red frame, got {rv}"
+                );
+            }
+            for &gv in &parade.g[col] {
+                assert!(
+                    gv < 0.1,
+                    "green channel must be near 0.0 for red frame, got {gv}"
+                );
+            }
+            for &bv in &parade.b[col] {
+                assert!(
+                    bv < 0.1,
+                    "blue channel must be near 0.0 for red frame, got {bv}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rgb_parade_white_frame_should_have_all_channels_at_one() {
+        // Y=255, Cb=128, Cr=128 → R=G=B=1.0
+        let frame = make_yuv420p_frame(4, 4, 255);
+        let parade = ScopeAnalyzer::rgb_parade(&frame);
+        for col in 0..4 {
+            for (&rv, (&gv, &bv)) in parade.r[col]
+                .iter()
+                .zip(parade.g[col].iter().zip(parade.b[col].iter()))
+            {
+                assert!(
+                    (rv - 1.0).abs() < 1e-5,
+                    "r must be 1.0 for white frame, got {rv}"
+                );
+                assert!(
+                    (gv - 1.0).abs() < 1e-5,
+                    "g must be 1.0 for white frame, got {gv}"
+                );
+                assert!(
+                    (bv - 1.0).abs() < 1e-5,
+                    "b must be 1.0 for white frame, got {bv}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rgb_parade_unsupported_format_should_return_empty() {
+        let frame = VideoFrame::empty(4, 4, PixelFormat::Rgba).unwrap();
+        let parade = ScopeAnalyzer::rgb_parade(&frame);
+        assert!(
+            parade.r.is_empty() && parade.g.is_empty() && parade.b.is_empty(),
+            "unsupported format must return empty parade"
+        );
+    }
+
+    #[test]
+    fn rgb_parade_dimensions_should_match_frame_resolution() {
+        let frame = make_yuv420p_frame(8, 6, 100);
+        let parade = ScopeAnalyzer::rgb_parade(&frame);
+        assert_eq!(parade.r.len(), 8, "r must have width columns");
+        for col in &parade.r {
+            assert_eq!(col.len(), 6, "each column must have height rows");
+        }
     }
 
     #[test]
