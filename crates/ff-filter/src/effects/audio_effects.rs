@@ -7,6 +7,46 @@ use crate::graph::FilterGraph;
 use crate::graph::filter_step::FilterStep;
 
 impl FilterGraph {
+    /// Add algorithmic echo/reverb with configurable delay taps.
+    ///
+    /// `in_gain` and `out_gain` are amplitude multipliers clamped to [0.0, 1.0].
+    /// `delays` is a list of delay times in milliseconds.
+    /// `decays` is the corresponding decay factor for each delay, clamped to [0.0, 1.0].
+    /// `delays` and `decays` must have equal length (1–8 taps).
+    ///
+    /// Uses `FFmpeg`'s `aecho` filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if lengths differ or tap count is outside 1–8.
+    pub fn reverb_echo(
+        &mut self,
+        in_gain: f32,
+        out_gain: f32,
+        delays: &[f32],
+        decays: &[f32],
+    ) -> Result<&mut Self, FilterError> {
+        if delays.len() != decays.len() {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: "delays and decays must have equal length".into(),
+            });
+        }
+        if !(1..=8).contains(&delays.len()) {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!("tap count must be 1–8, got {}", delays.len()),
+            });
+        }
+        self.inner.push_step(FilterStep::ReverbEcho {
+            in_gain: in_gain.clamp(0.0, 1.0),
+            out_gain: out_gain.clamp(0.0, 1.0),
+            delays: delays.to_vec(),
+            decays: decays.iter().map(|d| d.clamp(0.0, 1.0)).collect(),
+        });
+        Ok(self)
+    }
+
     /// Add convolution reverb using an impulse response (IR) audio file.
     ///
     /// `ir_path` is a path to a `.wav` or `.flac` impulse response file.
@@ -15,17 +55,15 @@ impl FilterGraph {
     ///
     /// Uses `FFmpeg`'s `amovie` (to load the IR) and `afir` (convolution) filters.
     ///
-    /// Call this method after [`FilterGraph::builder()`] / [`build()`] but
-    /// **before** the first [`push_audio`] call.
+    /// Call this method after [`FilterGraph::builder()`] /
+    /// [`FilterGraphBuilder::build()`](crate::FilterGraphBuilder::build) but
+    /// **before** the first [`FilterGraph::push_audio()`] call.
     ///
     /// # Errors
     ///
     /// Returns [`FilterError::Ffmpeg`] if `ir_path` does not exist.
     /// The `afir` filter availability is checked at graph build time; if not
     /// available the graph build returns [`FilterError::BuildFailed`].
-    ///
-    /// [`build()`]: crate::FilterGraphBuilder::build
-    /// [`push_audio`]: FilterGraph::push_audio
     pub fn reverb_ir(
         &mut self,
         ir_path: &Path,
@@ -55,6 +93,95 @@ mod tests {
     use crate::graph::filter_step::FilterStep;
     use crate::{FilterError, FilterGraph};
     use std::path::Path;
+
+    #[test]
+    fn reverb_echo_mismatched_lengths_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.reverb_echo(0.8, 0.9, &[500.0], &[0.5, 0.3]);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "mismatched lengths must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn reverb_echo_zero_taps_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.reverb_echo(0.8, 0.9, &[], &[]);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "zero taps must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn reverb_echo_nine_taps_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let delays = vec![100.0; 9];
+        let decays = vec![0.5; 9];
+        let result = graph.reverb_echo(0.8, 0.9, &delays, &decays);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "nine taps must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filter_step_reverb_echo_should_have_aecho_filter_name() {
+        let step = FilterStep::ReverbEcho {
+            in_gain: 0.8,
+            out_gain: 0.9,
+            delays: vec![500.0],
+            decays: vec![0.5],
+        };
+        assert_eq!(step.filter_name(), "aecho");
+    }
+
+    #[test]
+    fn reverb_echo_args_should_contain_gains_delays_decays() {
+        let step = FilterStep::ReverbEcho {
+            in_gain: 0.8,
+            out_gain: 0.9,
+            delays: vec![500.0],
+            decays: vec![0.5],
+        };
+        let args = step.args();
+        assert!(
+            args.contains("in_gain=0.8"),
+            "args must contain in_gain=0.8: {args}"
+        );
+        assert!(
+            args.contains("out_gain=0.9"),
+            "args must contain out_gain=0.9: {args}"
+        );
+        assert!(
+            args.contains("delays=500"),
+            "args must contain delays=500: {args}"
+        );
+        assert!(
+            args.contains("decays=0.5"),
+            "args must contain decays=0.5: {args}"
+        );
+    }
+
+    #[test]
+    fn reverb_echo_multi_tap_args_should_join_with_pipe() {
+        let step = FilterStep::ReverbEcho {
+            in_gain: 0.8,
+            out_gain: 0.9,
+            delays: vec![500.0, 300.0],
+            decays: vec![0.5, 0.3],
+        };
+        let args = step.args();
+        assert!(
+            args.contains("500|300") || args.contains("500.0|300"),
+            "multi-tap delays must be joined with '|': {args}"
+        );
+        assert!(
+            args.contains("0.5|0.3"),
+            "multi-tap decays must be joined with '|': {args}"
+        );
+    }
 
     #[test]
     fn reverb_ir_nonexistent_path_should_return_ffmpeg_error() {

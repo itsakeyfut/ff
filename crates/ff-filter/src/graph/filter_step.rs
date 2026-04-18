@@ -688,6 +688,24 @@ pub enum FilterStep {
         pre_delay_ms: u32,
     },
 
+    /// Algorithmic multi-tap echo/reverb via `FFmpeg`'s `aecho` filter.
+    ///
+    /// `in_gain` and `out_gain` are amplitude multipliers clamped to [0.0, 1.0].
+    /// `delays` contains delay times in milliseconds (one per tap); `decays`
+    /// contains the corresponding decay factors in [0.0, 1.0].  Both vecs must
+    /// have equal length in the range 1–8; validated by
+    /// [`FilterGraph::reverb_echo`](crate::FilterGraph::reverb_echo).
+    ReverbEcho {
+        /// Input gain (amplitude multiplier). Clamped to [0.0, 1.0].
+        in_gain: f32,
+        /// Output gain (amplitude multiplier). Clamped to [0.0, 1.0].
+        out_gain: f32,
+        /// Delay times in milliseconds (one per tap).
+        delays: Vec<f32>,
+        /// Decay factors per tap. Clamped to [0.0, 1.0].
+        decays: Vec<f32>,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -844,6 +862,7 @@ impl FilterStep {
             // ReverbIr is a compound step (amovie[+adelay] → afir);
             // "afir" is used by validate_filter_steps as the primary check.
             Self::ReverbIr { .. } => "afir",
+            Self::ReverbEcho { .. } => "aecho",
         }
     }
 
@@ -1279,6 +1298,30 @@ impl FilterStep {
                     "split=2[base][hl];[hl]curves=all='{hi_lo}'[glow_src];\
                      [glow_src]gblur=sigma={r}[glow];\
                      [base][glow]blend=all_mode=addition:all_opacity={iv}"
+                )
+            }
+            Self::ReverbEcho {
+                in_gain,
+                out_gain,
+                delays,
+                decays,
+            } => {
+                let delay_str = delays
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("|");
+                let decay_str = decays
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!(
+                    "in_gain={ig}:out_gain={og}:delays={ds}:decays={dec}",
+                    ig = in_gain,
+                    og = out_gain,
+                    ds = delay_str,
+                    dec = decay_str,
                 )
             }
             // args() is not consumed by add_and_link_step (which is bypassed for
