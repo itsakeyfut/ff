@@ -7,6 +7,27 @@ use crate::graph::FilterGraph;
 use crate::graph::filter_step::FilterStep;
 
 impl FilterGraph {
+    /// Change audio speed and pitch simultaneously by `factor`.
+    ///
+    /// Equivalent to playing a tape at a different speed: `factor > 1.0` makes
+    /// audio faster and higher-pitched; `factor < 1.0` makes it slower and lower.
+    ///
+    /// Uses `FFmpeg`'s `asetrate` filter. Range: 0.1–10.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError::Ffmpeg`] if `factor` is outside 0.1–10.0.
+    pub fn speed_change(&mut self, factor: f64) -> Result<&mut Self, FilterError> {
+        if !(0.1..=10.0).contains(&factor) {
+            return Err(FilterError::Ffmpeg {
+                code: 0,
+                message: format!("speed_change factor must be 0.1–10.0, got {factor}"),
+            });
+        }
+        self.inner.push_step(FilterStep::SpeedChange { factor });
+        Ok(self)
+    }
+
     /// Shift audio pitch by `semitones` without changing playback speed.
     ///
     /// Range: −12.0 to +12.0 semitones. Uses `asetrate` to change the
@@ -134,6 +155,42 @@ mod tests {
     use crate::graph::filter_step::FilterStep;
     use crate::{FilterError, FilterGraph};
     use std::path::Path;
+
+    #[test]
+    fn speed_change_zero_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.speed_change(0.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "factor=0.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn speed_change_above_range_should_return_ffmpeg_error() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        let result = graph.speed_change(11.0);
+        assert!(
+            matches!(result, Err(FilterError::Ffmpeg { .. })),
+            "factor=11.0 must return Err(FilterError::Ffmpeg {{ .. }}), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn speed_change_boundary_values_should_succeed() {
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(graph.speed_change(0.1).is_ok(), "factor=0.1 must succeed");
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(graph.speed_change(10.0).is_ok(), "factor=10.0 must succeed");
+        let mut graph = FilterGraph::builder().trim(0.0, 1.0).build().unwrap();
+        assert!(graph.speed_change(1.0).is_ok(), "factor=1.0 must succeed");
+    }
+
+    #[test]
+    fn filter_step_speed_change_should_have_asetrate_filter_name() {
+        let step = FilterStep::SpeedChange { factor: 2.0 };
+        assert_eq!(step.filter_name(), "asetrate");
+    }
 
     #[test]
     fn time_stretch_zero_should_return_ffmpeg_error() {

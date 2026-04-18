@@ -2380,6 +2380,25 @@ impl FilterGraphInner {
                 continue;
             }
 
+            // SpeedChange — asetrate only (speed and pitch change together).
+            // The sample rate is resolved from buffersrc_args so the integer
+            // value is substituted literally into the filter args.
+            if let FilterStep::SpeedChange { factor } = step {
+                let sr = parse_sample_rate_from_buffersrc(buffersrc_args);
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let new_sr = (f64::from(sr) * factor).round() as u64;
+                // SAFETY: graph and prev_ctx are valid pointers in the same graph.
+                prev_ctx = add_raw_filter_step(
+                    graph,
+                    prev_ctx,
+                    "asetrate",
+                    &format!("r={new_sr}"),
+                    i,
+                    "speed_asetrate",
+                )?;
+                continue;
+            }
+
             // PitchShift — compound step: asetrate → atempo.
             // asetrate changes the declared sample rate (shifting pitch); atempo
             // restores the original duration.  The actual sample rate is resolved

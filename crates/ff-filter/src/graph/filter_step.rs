@@ -735,6 +735,19 @@ pub enum FilterStep {
         factor: f32,
     },
 
+    /// Simultaneously change audio speed and pitch by the same factor.
+    ///
+    /// Equivalent to playing a tape at a different speed: `factor > 1.0` makes
+    /// audio faster and higher; `factor < 1.0` makes it slower and lower.
+    ///
+    /// Uses `FFmpeg`'s `asetrate` to multiply the declared sample rate by
+    /// `factor` without resampling.  Range: [0.1, 10.0]; validated by
+    /// [`FilterGraph::speed_change`](crate::FilterGraph::speed_change).
+    SpeedChange {
+        /// Speed/pitch multiplier. Range: [0.1, 10.0].
+        factor: f64,
+    },
+
     /// Apply a polygon alpha mask using `FFmpeg`'s `geq` filter with a
     /// crossing-number point-in-polygon test.
     ///
@@ -897,6 +910,8 @@ impl FilterStep {
             Self::PitchShift { .. } => "asetrate",
             // TimeStretch uses one or more chained atempo filters.
             Self::TimeStretch { .. } => "atempo",
+            // SpeedChange uses asetrate to shift speed and pitch together.
+            Self::SpeedChange { .. } => "asetrate",
         }
     }
 
@@ -1384,6 +1399,9 @@ impl FilterStep {
             // args() is not consumed by add_and_link_step (bypassed in favour of
             // add_atempo_chain); provided here for single-instance completeness.
             Self::TimeStretch { factor } => format!("{factor:.6}"),
+            // args() is not consumed by add_and_link_step (bypassed; sample rate
+            // is resolved from buffersrc_args at build time); provided for completeness.
+            Self::SpeedChange { factor } => format!("asetrate=sr*{factor:.6}"),
         }
     }
 }
