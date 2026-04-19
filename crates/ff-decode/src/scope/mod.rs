@@ -8,6 +8,7 @@
 //! - [`ScopeAnalyzer::waveform`] — luminance waveform monitor (Y values per column)
 //! - [`ScopeAnalyzer::vectorscope`] — Cb/Cr chroma scatter data
 //! - [`ScopeAnalyzer::rgb_parade`] — per-channel RGB waveform (parade)
+//! - [`ScopeAnalyzer::histogram`] — 256-bin luminance and per-channel RGB histogram
 //!
 
 use ff_format::{PixelFormat, VideoFrame};
@@ -17,8 +18,17 @@ use ff_format::{PixelFormat, VideoFrame};
 /// All methods are associated functions (no instance state).
 pub struct ScopeAnalyzer;
 
-/// Placeholder for per-channel RGB histogram data (future issue).
-pub struct Histogram;
+/// 256-bin luminance and per-channel RGB histogram.
+pub struct Histogram {
+    /// Red channel bin counts (8-bit value → bin index).
+    pub r: [u32; 256],
+    /// Green channel bin counts (8-bit value → bin index).
+    pub g: [u32; 256],
+    /// Blue channel bin counts (8-bit value → bin index).
+    pub b: [u32; 256],
+    /// Luminance bin counts (Y plane for YUV frames; BT.601-derived for others).
+    pub luma: [u32; 256],
+}
 
 /// Per-channel waveform monitor data (RGB parade).
 ///
@@ -219,6 +229,89 @@ impl ScopeAnalyzer {
             g: grn_cols,
             b: blu_cols,
         }
+    }
+
+    /// Compute a 256-bin histogram for each channel and for luminance.
+    ///
+    /// For YUV frames luma is read directly from the Y plane; R, G, and B are
+    /// computed via BT.601 full-range conversion. Bins are indexed by the raw
+    /// 8-bit value `[0, 255]`.
+    ///
+    /// Only `yuv420p`, `yuv422p`, and `yuv444p` pixel formats are supported.
+    /// Returns a zeroed [`Histogram`] for unsupported formats or if plane data
+    /// is unavailable.
+    #[must_use]
+    pub fn histogram(frame: &VideoFrame) -> Histogram {
+        let mut hist = Histogram {
+            r: [0; 256],
+            g: [0; 256],
+            b: [0; 256],
+            luma: [0; 256],
+        };
+
+        let width = frame.width() as usize;
+        let height = frame.height() as usize;
+        let fmt = frame.format();
+
+        match fmt {
+            PixelFormat::Yuv420p | PixelFormat::Yuv422p | PixelFormat::Yuv444p => {}
+            _ => return hist,
+        }
+
+        let Some(luma_plane) = frame.plane(0) else {
+            return hist;
+        };
+        let Some(u_plane) = frame.plane(1) else {
+            return hist;
+        };
+        let Some(v_plane) = frame.plane(2) else {
+            return hist;
+        };
+        let Some(luma_stride) = frame.stride(0) else {
+            return hist;
+        };
+        let Some(u_stride) = frame.stride(1) else {
+            return hist;
+        };
+        let Some(v_stride) = frame.stride(2) else {
+            return hist;
+        };
+
+        for row in 0..height {
+            for col in 0..width {
+                let (chr_row, chr_col) = match fmt {
+                    PixelFormat::Yuv420p => (row / 2, col / 2),
+                    PixelFormat::Yuv422p => (row, col / 2),
+                    _ => (row, col),
+                };
+
+                let y_px = luma_plane[row * luma_stride + col];
+                let u_px = u_plane[chr_row * u_stride + chr_col];
+                let v_px = v_plane[chr_row * v_stride + chr_col];
+
+                hist.luma[usize::from(y_px)] += 1;
+
+                // BT.601 full-range integer approximation (10-bit scaling).
+                let yy_int = i32::from(y_px);
+                let u_diff = i32::from(u_px) - 128;
+                let v_diff = i32::from(v_px) - 128;
+
+                let red_bin =
+                    usize::try_from((yy_int + ((1436 * v_diff) >> 10)).clamp(0, 255)).unwrap_or(0);
+                let grn_bin = usize::try_from(
+                    (yy_int - ((352 * u_diff) >> 10) - ((731 * v_diff) >> 10)).clamp(0, 255),
+                )
+                .unwrap_or(0);
+                let blu_bin =
+                    usize::try_from((yy_int + ((1815 * u_diff) >> 10)).clamp(0, 255)).unwrap_or(0);
+
+                hist.r[red_bin] += 1;
+                hist.g[grn_bin] += 1;
+                hist.b[blu_bin] += 1;
+            }
+        }
+
+        hist
     }
 }
 
@@ -561,5 +654,55 @@ mod tests {
         .unwrap();
         let wf = ScopeAnalyzer::waveform(&frame);
         assert_eq!(wf.len(), 4, "yuv444p must return result of length=width");
+    }
+
+    #[test]
+    fn histogram_uniform_luma_should_concentrate_in_one_bin() {
+        // Y=128, Cb=Cr=128 (grey) — luma bin 128 must hold all pixels.
+        let frame = make_yuv420p_frame(4, 4, 128);
+        let hist = ScopeAnalyzer::histogram(&frame);
+        assert_eq!(
+            hist.luma[128], 16,
+            "all 16 pixels must land in luma bin 128"
+        );
+        let non_128: u32 = hist
+            .luma
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != 128)
+            .map(|(_, &v)| v)
+            .sum();
+        assert_eq!(non_128, 0, "all other luma bins must be zero");
+    }
+
+    #[test]
+    fn histogram_total_luma_count_should_equal_pixel_count() {
+        let frame = make_yuv420p_frame(8, 6, 200);
+        let hist = ScopeAnalyzer::histogram(&frame);
+        let total: u32 = hist.luma.iter().sum();
+        assert_eq!(total, 8 * 6, "total luma bin counts must equal pixel count");
+    }
+
+    #[test]
+    fn histogram_total_rgb_counts_should_equal_pixel_count() {
+        let frame = make_yuv420p_frame(4, 4, 100);
+        let hist = ScopeAnalyzer::histogram(&frame);
+        let r_total: u32 = hist.r.iter().sum();
+        let g_total: u32 = hist.g.iter().sum();
+        let b_total: u32 = hist.b.iter().sum();
+        assert_eq!(r_total, 16, "r bin counts must equal pixel count");
+        assert_eq!(g_total, 16, "g bin counts must equal pixel count");
+        assert_eq!(b_total, 16, "b bin counts must equal pixel count");
+    }
+
+    #[test]
+    fn histogram_unsupported_format_should_return_zeroed() {
+        let frame = VideoFrame::empty(4, 4, PixelFormat::Rgba).unwrap();
+        let hist = ScopeAnalyzer::histogram(&frame);
+        let all_zero = hist.luma.iter().all(|&v| v == 0)
+            && hist.r.iter().all(|&v| v == 0)
+            && hist.g.iter().all(|&v| v == 0)
+            && hist.b.iter().all(|&v| v == 0);
+        assert!(all_zero, "unsupported format must return zeroed histogram");
     }
 }
