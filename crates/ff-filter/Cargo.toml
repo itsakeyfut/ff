@@ -25,6 +25,7 @@ thiserror  = { workspace = true }
 serde      = { version = "1.0.228", features = ["derive"], optional = true }
 
 [dev-dependencies]
+ff-decode  = { workspace = true }
 ff-encode  = { workspace = true }
 ff-probe   = { workspace = true }
 image      = { workspace = true, features = ["png"] }
