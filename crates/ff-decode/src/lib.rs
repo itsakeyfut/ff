@@ -130,11 +130,11 @@ pub use shared::{HardwareAccel, SeekMode};
 pub use video::{VideoDecoder, VideoDecoderBuilder};
 
 #[cfg(feature = "tokio")]
-pub use audio::AsyncAudioDecoder;
+pub use audio::{AsyncAudioDecoder, AsyncAudioDecoderBuilder};
 #[cfg(feature = "tokio")]
 pub use image::AsyncImageDecoder;
 #[cfg(feature = "tokio")]
-pub use video::AsyncVideoDecoder;
+pub use video::{AsyncVideoDecoder, AsyncVideoDecoderBuilder};
 
 /// Prelude module for convenient imports.
 ///

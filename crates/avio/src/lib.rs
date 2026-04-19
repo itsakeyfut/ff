@@ -252,7 +252,10 @@ pub use ff_encode::{
 // is a thin Send + async shell around its synchronous counterpart, backed by
 // spawn_blocking and a bounded tokio::sync::mpsc channel (encoders, cap=8).
 #[cfg(feature = "tokio")]
-pub use ff_decode::{AsyncAudioDecoder, AsyncImageDecoder, AsyncVideoDecoder};
+pub use ff_decode::{
+    AsyncAudioDecoder, AsyncAudioDecoderBuilder, AsyncImageDecoder, AsyncVideoDecoder,
+    AsyncVideoDecoderBuilder,
+};
 #[cfg(feature = "tokio")]
 pub use ff_encode::{AsyncAudioEncoder, AsyncVideoEncoder};
 

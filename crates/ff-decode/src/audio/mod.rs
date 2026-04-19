@@ -10,5 +10,5 @@ pub mod decoder_inner;
 pub(crate) mod resample_inner;
 
 #[cfg(feature = "tokio")]
-pub use async_decoder::AsyncAudioDecoder;
+pub use async_decoder::{AsyncAudioDecoder, AsyncAudioDecoderBuilder};
 pub use builder::{AudioDecoder, AudioDecoderBuilder};
