@@ -9,5 +9,5 @@ pub mod builder;
 pub mod decoder_inner;
 
 #[cfg(feature = "tokio")]
-pub use async_decoder::AsyncVideoDecoder;
+pub use async_decoder::{AsyncVideoDecoder, AsyncVideoDecoderBuilder};
 pub use builder::{VideoDecoder, VideoDecoderBuilder};

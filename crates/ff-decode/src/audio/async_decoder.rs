@@ -2,12 +2,92 @@
 
 use std::path::{Path, PathBuf};
 
-use ff_format::AudioFrame;
+use ff_format::{AudioFrame, SampleFormat};
 use futures::stream::{self, Stream};
 
 use crate::async_decoder::AsyncDecoder;
-use crate::audio::builder::AudioDecoder;
+use crate::audio::builder::{AudioDecoder, AudioDecoderBuilder};
 use crate::error::DecodeError;
+
+/// Async builder for [`AsyncAudioDecoder`] that mirrors the options available
+/// on the synchronous [`AudioDecoderBuilder`].
+///
+/// Obtain one with [`AsyncAudioDecoder::builder`]. Call [`build`](Self::build)
+/// to open the file asynchronously on a `spawn_blocking` thread.
+///
+/// # Examples
+///
+/// ```ignore
+/// use ff_decode::AsyncAudioDecoder;
+/// use ff_format::SampleFormat;
+///
+/// let decoder = AsyncAudioDecoder::builder("audio.mp3")
+///     .output_format(SampleFormat::F32)
+///     .output_sample_rate(48_000)
+///     .build()
+///     .await?;
+/// ```
+pub struct AsyncAudioDecoderBuilder {
+    inner: AudioDecoderBuilder,
+}
+
+impl AsyncAudioDecoderBuilder {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            inner: AudioDecoderBuilder::new(path),
+        }
+    }
+
+    /// Sets the output sample format for decoded frames.
+    ///
+    /// Equivalent to [`AudioDecoderBuilder::output_format`].
+    #[must_use]
+    pub fn output_format(mut self, format: SampleFormat) -> Self {
+        self.inner = self.inner.output_format(format);
+        self
+    }
+
+    /// Sets the output sample rate in Hz.
+    ///
+    /// Equivalent to [`AudioDecoderBuilder::output_sample_rate`].
+    #[must_use]
+    pub fn output_sample_rate(mut self, sample_rate: u32) -> Self {
+        self.inner = self.inner.output_sample_rate(sample_rate);
+        self
+    }
+
+    /// Sets the output channel count.
+    ///
+    /// Equivalent to [`AudioDecoderBuilder::output_channels`].
+    #[must_use]
+    pub fn output_channels(mut self, channels: u32) -> Self {
+        self.inner = self.inner.output_channels(channels);
+        self
+    }
+
+    /// Opens the file and builds the async decoder.
+    ///
+    /// File I/O and codec initialisation run on a `spawn_blocking` thread so
+    /// the async executor is not blocked. All errors from
+    /// [`AudioDecoderBuilder::build`] are propagated transparently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError`] if the file is missing, contains no audio
+    /// stream, or uses an unsupported codec.
+    pub async fn build(self) -> Result<AsyncAudioDecoder, DecodeError> {
+        let builder = self.inner;
+        let decoder = tokio::task::spawn_blocking(move || builder.build())
+            .await
+            .map_err(|e| DecodeError::Ffmpeg {
+                code: 0,
+                message: format!("spawn_blocking panicked: {e}"),
+            })??;
+        Ok(AsyncAudioDecoder {
+            inner: AsyncDecoder::new(decoder),
+        })
+    }
+}
 
 /// Async wrapper around [`AudioDecoder`].
 ///
@@ -31,6 +111,28 @@ pub struct AsyncAudioDecoder {
 }
 
 impl AsyncAudioDecoder {
+    /// Returns a builder for configuring the async audio decoder.
+    ///
+    /// Use this when you need to control the output sample format, sample rate,
+    /// or channel count. For zero-configuration decoding, prefer
+    /// [`AsyncAudioDecoder::open`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use ff_decode::AsyncAudioDecoder;
+    /// use ff_format::SampleFormat;
+    ///
+    /// let decoder = AsyncAudioDecoder::builder("audio.mp3")
+    ///     .output_format(SampleFormat::F32)
+    ///     .output_sample_rate(48_000)
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn builder(path: impl AsRef<Path>) -> AsyncAudioDecoderBuilder {
+        AsyncAudioDecoderBuilder::new(path.as_ref().to_path_buf())
+    }
+
     /// Opens the audio file asynchronously.
     ///
     /// File I/O and codec initialisation are performed on a `spawn_blocking`
@@ -105,6 +207,30 @@ mod tests {
         assert!(
             matches!(result, Err(DecodeError::FileNotFound { .. })),
             "expected FileNotFound"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_audio_decoder_builder_output_format_should_propagate_to_sync_builder() {
+        let result = AsyncAudioDecoder::builder("/nonexistent/path/audio.mp3")
+            .output_format(SampleFormat::F32)
+            .build()
+            .await;
+        assert!(
+            matches!(result, Err(DecodeError::FileNotFound { .. })),
+            "builder with output_format must propagate FileNotFound"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_audio_decoder_builder_output_sample_rate_should_propagate_to_sync_builder() {
+        let result = AsyncAudioDecoder::builder("/nonexistent/path/audio.mp3")
+            .output_sample_rate(48_000)
+            .build()
+            .await;
+        assert!(
+            matches!(result, Err(DecodeError::FileNotFound { .. })),
+            "builder with output_sample_rate must propagate FileNotFound"
         );
     }
 
