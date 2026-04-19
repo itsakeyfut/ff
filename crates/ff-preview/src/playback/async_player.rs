@@ -46,15 +46,13 @@ impl AsyncPreviewPlayer {
     /// neither a video nor an audio stream.
     pub async fn open(path: impl AsRef<Path> + Send + 'static) -> Result<Self, PreviewError> {
         let path = path.as_ref().to_path_buf();
-        let (runner, handle) =
-            tokio::task::spawn_blocking(move || {
-                PreviewPlayer::open(&path).map(PreviewPlayer::split)
-            })
-                .await
-                .map_err(|e| PreviewError::Ffmpeg {
-                    code: 0,
-                    message: format!("tokio task join error: {e}"),
-                })??;
+        let task = tokio::task::spawn_blocking(move || {
+            PreviewPlayer::open(&path).map(PreviewPlayer::split)
+        });
+        let (runner, handle) = task.await.map_err(|e| PreviewError::Ffmpeg {
+            code: 0,
+            message: format!("tokio task join error: {e}"),
+        })??;
 
         tokio::task::spawn_blocking(move || {
             let _ = runner.run();
@@ -158,7 +156,7 @@ mod tests {
             .build()
         {
             Ok(rt) => rt.block_on(async {
-                let player = match AsyncPreviewPlayer::open(&path).await {
+                let player = match AsyncPreviewPlayer::open(path.clone()).await {
                     Ok(p) => p,
                     Err(e) => {
                         println!("skipping: open failed: {e}");
