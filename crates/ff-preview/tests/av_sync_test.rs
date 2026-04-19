@@ -49,8 +49,8 @@ fn av_sync_delta_should_not_exceed_one_frame_over_60_seconds() {
         return;
     }
 
-    let mut player = match PreviewPlayer::open(&path) {
-        Ok(p) => p,
+    let (mut runner, _handle) = match PreviewPlayer::open(&path) {
+        Ok(p) => p.split(),
         Err(e) => {
             println!("skipping: {e}");
             return;
@@ -58,22 +58,16 @@ fn av_sync_delta_should_not_exceed_one_frame_over_60_seconds() {
     };
 
     let log = Arc::new(Mutex::new(Vec::<(Instant, Duration)>::new()));
-    player.set_sink(Box::new(RecordingSink {
+    runner.set_sink(Box::new(RecordingSink {
         log: Arc::clone(&log),
     }));
-    player.play();
-    let _ = player.run();
+    let _ = runner.run();
 
     let log = log
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(!log.is_empty(), "no frames were delivered during playback");
 
-    // Measure consecutive-frame delivery jitter: |wall_delta − pts_delta| per pair.
-    // This is immune to initialization overhead and OS scheduler coarseness that
-    // accumulate in an absolute wall-to-PTS comparison.
-    //
-    // 30 fps → one frame period ≈ 33.3 ms; allow up to 2× for scheduling variance.
     let tolerance = Duration::from_millis(67);
     let mut max_delta = Duration::ZERO;
     for window in log.windows(2) {

@@ -24,7 +24,7 @@ pub(crate) mod async_player;
 
 pub use clock::PlaybackClock;
 pub use decode_buffer::{DecodeBuffer, DecodeBufferBuilder, FrameResult, SeekEvent};
-pub use player::PreviewPlayer;
+pub use player::{PlayerCommand, PlayerHandle, PlayerRunner, PreviewPlayer};
 pub use sink::{FrameSink, RgbaFrame, RgbaSink};
 
 #[cfg(feature = "tokio")]

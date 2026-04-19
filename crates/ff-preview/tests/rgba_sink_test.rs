@@ -3,7 +3,7 @@
 //!
 //! Opens `assets/test/av_sync_test_60s.mp4` (video-only, 30 fps) via
 //! [`PreviewPlayer`], records the first 10 frames, then stops the player early
-//! via [`PreviewPlayer::stop_handle`]. Asserts buffer sizes and non-blank pixel
+//! via [`PlayerHandle::stop`]. Asserts buffer sizes and non-blank pixel
 //! content for all recorded frames.
 //!
 //! Run with:
@@ -12,11 +12,10 @@
 //! ```
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ff_preview::{FrameSink, PreviewPlayer};
+use ff_preview::{FrameSink, PlayerHandle, PreviewPlayer};
 
 // ── Asset path ────────────────────────────────────────────────────────────────
 
@@ -27,11 +26,11 @@ fn test_file_path() -> PathBuf {
 // ── EarlySink ─────────────────────────────────────────────────────────────────
 
 /// Records `(width, height, rgba_len, any_nonzero_pixel)` for each frame.
-/// Stops the player after `max_frames` frames by setting the shared stop flag.
+/// Stops the player after `max_frames` frames via the shared handle.
 struct EarlySink {
     records: Arc<Mutex<Vec<(u32, u32, usize, bool)>>>,
     max_frames: usize,
-    stop: Arc<AtomicBool>,
+    handle: PlayerHandle,
 }
 
 impl FrameSink for EarlySink {
@@ -43,7 +42,7 @@ impl FrameSink for EarlySink {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.push((width, height, rgba.len(), any_nonzero));
         if guard.len() >= self.max_frames {
-            self.stop.store(true, Ordering::Release);
+            self.handle.stop();
         }
     }
 }
@@ -59,8 +58,8 @@ fn rgba_sink_should_deliver_10_frames_with_correct_size_and_no_blank_output() {
         return;
     }
 
-    let mut player = match PreviewPlayer::open(&path) {
-        Ok(p) => p,
+    let (mut runner, handle) = match PreviewPlayer::open(&path) {
+        Ok(p) => p.split(),
         Err(e) => {
             println!("skipping: {e}");
             return;
@@ -68,15 +67,13 @@ fn rgba_sink_should_deliver_10_frames_with_correct_size_and_no_blank_output() {
     };
 
     let records = Arc::new(Mutex::new(Vec::<(u32, u32, usize, bool)>::new()));
-    let stop = player.stop_handle();
 
-    player.set_sink(Box::new(EarlySink {
+    runner.set_sink(Box::new(EarlySink {
         records: Arc::clone(&records),
         max_frames: 10,
-        stop,
+        handle: handle.clone(),
     }));
-    player.play();
-    let _ = player.run();
+    let _ = runner.run();
 
     let records = records
         .lock()
