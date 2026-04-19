@@ -297,7 +297,9 @@ impl PlayerRunner {
     /// channel. Consecutive [`PlayerCommand::Seek`] commands are coalesced —
     /// only the last one executes.
     ///
-    /// Emits [`PlayerEvent::SeekCompleted`] after each successful seek and
+    /// Emits [`PlayerEvent::SeekCompleted`] after each successful seek,
+    /// [`PlayerEvent::PositionUpdate`] after each presented video frame,
+    /// [`PlayerEvent::Error`] on non-fatal decode errors, and
     /// [`PlayerEvent::Eof`] before returning.
     ///
     /// # Errors
@@ -346,6 +348,13 @@ impl PlayerRunner {
                 self.clock.reset(pts);
                 self.restart_audio_from(pts);
                 let _ = self.event_tx.try_send(PlayerEvent::SeekCompleted(pts));
+            }
+
+            // Surface non-fatal decode errors from the background thread.
+            if let Some(buf) = self.decode_buf.as_ref() {
+                while let Ok(msg) = buf.error_events().try_recv() {
+                    let _ = self.event_tx.try_send(PlayerEvent::Error(msg));
+                }
             }
 
             if self.stopped.load(Ordering::Acquire) {
@@ -426,6 +435,8 @@ impl PlayerRunner {
                     }
 
                     self.present_frame(&frame);
+                    let pts = frame.timestamp().as_duration();
+                    let _ = self.event_tx.try_send(PlayerEvent::PositionUpdate(pts));
                 }
             }
         }
@@ -1354,9 +1365,107 @@ mod tests {
             Some(PlayerEvent::Eof) => {
                 panic!("received Eof before SeekCompleted — file may be too short");
             }
-            None => {
+            Some(PlayerEvent::PositionUpdate(_) | PlayerEvent::Error(_)) | None => {
                 panic!("no PlayerEvent::SeekCompleted received within 2 seconds");
             }
         }
+    }
+
+    // ── PlayerEvent: PositionUpdate + Error ───────────────────────────────────
+
+    #[test]
+    fn position_update_and_error_event_variants_should_be_accessible() {
+        let _ = PlayerEvent::PositionUpdate(Duration::ZERO);
+        let _ = PlayerEvent::Error("test error".to_string());
+    }
+
+    #[test]
+    fn eof_event_should_be_delivered_after_run_completes() {
+        let path = test_audio_path();
+        let (runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
+            Err(e) => {
+                println!("skipping: {e}");
+                return;
+            }
+        };
+
+        // Stop after 150 ms so the test does not wait for the full audio duration.
+        let handle_stop = handle.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            handle_stop.stop();
+        });
+
+        let _ = runner.run();
+        let events: Vec<_> = std::iter::from_fn(|| handle.poll_event()).collect();
+        assert!(
+            events.iter().any(|e| matches!(e, PlayerEvent::Eof)),
+            "Eof event must be delivered after run() returns; collected {} events",
+            events.len()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires assets/video/gameplay.mp4; run with -- --include-ignored"]
+    fn position_update_should_be_emitted_for_each_video_frame() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/video/gameplay.mp4");
+        if !path.exists() {
+            println!("skipping: video asset not found");
+            return;
+        }
+
+        use std::sync::{Arc, Mutex};
+        struct CountSink {
+            count: Arc<Mutex<usize>>,
+            max: usize,
+            handle: PlayerHandle,
+        }
+        impl FrameSink for CountSink {
+            fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, _pts: Duration) {
+                let mut g = self
+                    .count
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *g += 1;
+                if *g >= self.max {
+                    self.handle.stop();
+                }
+            }
+        }
+
+        let (mut runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
+            Err(e) => {
+                println!("skipping: {e}");
+                return;
+            }
+        };
+
+        let count = Arc::new(Mutex::new(0usize));
+        runner.set_sink(Box::new(CountSink {
+            count: Arc::clone(&count),
+            max: 20,
+            handle: handle.clone(),
+        }));
+        let _ = runner.run();
+
+        let frames = *count
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let position_updates: Vec<_> = std::iter::from_fn(|| handle.poll_event())
+            .filter(|e| matches!(e, PlayerEvent::PositionUpdate(_)))
+            .collect();
+
+        assert!(
+            !position_updates.is_empty(),
+            "at least one PositionUpdate event must be emitted; frames delivered={frames}"
+        );
+        assert!(
+            position_updates.len() <= frames,
+            "PositionUpdate count ({}) must not exceed frame count ({frames})",
+            position_updates.len()
+        );
     }
 }
