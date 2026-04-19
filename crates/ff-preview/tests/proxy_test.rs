@@ -9,11 +9,10 @@
 //! H.264+AAC, 60 s synthetic video).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ff_preview::{FrameSink, PreviewPlayer, ProxyGenerator, ProxyResolution};
+use ff_preview::{FrameSink, PlayerHandle, PreviewPlayer, ProxyGenerator, ProxyResolution};
 
 // ── Asset path ────────────────────────────────────────────────────────────────
 
@@ -24,11 +23,11 @@ fn bench_video_path() -> PathBuf {
 // ── DimSink ───────────────────────────────────────────────────────────────────
 
 /// Records `(width, height)` per delivered frame; stops the player after
-/// `max_frames` frames via the shared stop flag.
+/// `max_frames` frames via the shared handle.
 struct DimSink {
     dims: Arc<Mutex<Vec<(u32, u32)>>>,
     max_frames: usize,
-    stop: Arc<AtomicBool>,
+    handle: PlayerHandle,
 }
 
 impl FrameSink for DimSink {
@@ -39,7 +38,7 @@ impl FrameSink for DimSink {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.push((width, height));
         if guard.len() >= self.max_frames {
-            self.stop.store(true, Ordering::Release);
+            self.handle.stop();
         }
     }
 }
@@ -76,7 +75,6 @@ fn proxy_quarter_resolution_should_produce_480x270_output() {
         }
     };
 
-    // Probe the generated proxy to verify dimensions.
     let info = match ff_probe::open(&proxy_path) {
         Ok(i) => i,
         Err(e) => {
@@ -113,7 +111,6 @@ fn proxy_substitution_should_deliver_frames_at_proxy_dimensions() {
 
     let tmp = std::env::temp_dir();
 
-    // Generate a half-resolution proxy (960×540).
     let proxy_path = match ProxyGenerator::new(&input) {
         Ok(g) => match g
             .resolution(ProxyResolution::Half)
@@ -132,9 +129,8 @@ fn proxy_substitution_should_deliver_frames_at_proxy_dimensions() {
         }
     };
 
-    // Open the player for the original (1920×1080) file.
-    let mut player = match PreviewPlayer::open(&input) {
-        Ok(p) => p,
+    let (mut runner, handle) = match PreviewPlayer::open(&input) {
+        Ok(p) => p.split(),
         Err(e) => {
             let _ = std::fs::remove_file(&proxy_path);
             println!("skipping: {e}");
@@ -142,24 +138,20 @@ fn proxy_substitution_should_deliver_frames_at_proxy_dimensions() {
         }
     };
 
-    // Activate the proxy before playback begins.
-    let activated = player.use_proxy_if_available(&tmp);
+    let activated = runner.use_proxy_if_available(&tmp);
     assert!(
         activated,
         "use_proxy_if_available must return true when a half proxy exists in the temp dir"
     );
 
-    // Run with a sink that records frame dimensions and stops after 20 frames.
     let dims = Arc::new(Mutex::new(Vec::<(u32, u32)>::new()));
-    let stop = player.stop_handle();
 
-    player.set_sink(Box::new(DimSink {
+    runner.set_sink(Box::new(DimSink {
         dims: Arc::clone(&dims),
         max_frames: 20,
-        stop,
+        handle: handle.clone(),
     }));
-    player.play();
-    let _ = player.run();
+    let _ = runner.run();
 
     let _ = std::fs::remove_file(&proxy_path);
 

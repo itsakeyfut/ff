@@ -27,15 +27,17 @@
 #![warn(clippy::pedantic)]
 
 pub mod error;
+pub mod event;
 pub mod playback;
 
 #[cfg(feature = "proxy")]
 pub mod proxy;
 
 pub use error::PreviewError;
+pub use event::PlayerEvent;
 pub use playback::{
-    DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink, PlaybackClock, PreviewPlayer,
-    RgbaFrame, RgbaSink, SeekEvent,
+    DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink, PlaybackClock, PlayerCommand,
+    PlayerHandle, PlayerRunner, PreviewPlayer, RgbaFrame, RgbaSink, SeekEvent,
 };
 
 #[cfg(feature = "tokio")]

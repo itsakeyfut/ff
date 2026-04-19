@@ -1,342 +1,266 @@
-//! `PreviewPlayer` — main playback driver for ff-preview.
+//! Actor-model playback types for ff-preview.
 //!
-//! All safe Rust logic lives here. Unsafe `FFmpeg` calls are isolated in
-//! `playback_inner`.
+//! # Overview
+//!
+//! [`PreviewPlayer`] opens a media file and is a thin builder.  Call
+//! [`PreviewPlayer::split`] to obtain a ([`PlayerRunner`], [`PlayerHandle`]) pair:
+//!
+//! - **[`PlayerRunner`]** — owns the decode buffers, audio thread, and
+//!   presentation clock. Move it to a dedicated thread and call
+//!   [`PlayerRunner::run`]. The method runs until EOF or a [`PlayerCommand::Stop`]
+//!   command arrives.
+//! - **[`PlayerHandle`]** — `Clone + Send + Sync`. Holds a command sender and
+//!   read-only state atomics. All control methods use `try_send` — they never
+//!   block. If the command channel (capacity 64) is full the send is silently
+//!   dropped.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use ff_decode::{AudioDecoder, SeekMode};
+use ff_decode::{AudioDecoder, HardwareAccel, SeekMode};
 use ff_format::SampleFormat;
 
 use super::clock::MasterClock;
-use super::decode_buffer::{DecodeBuffer, FrameResult, SeekEvent};
+use super::decode_buffer::{DecodeBuffer, FrameResult};
 use super::sink::FrameSink;
 use crate::error::PreviewError;
+use crate::event::PlayerEvent;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/// Maximum number of interleaved stereo `f32` samples to buffer for audio
-/// playback (2 s × 48 kHz × 2 channels = 96 000).
 const AUDIO_MAX_BUF: usize = 96_000;
+const CHANNEL_CAP: usize = 64;
 
-// ── PreviewPlayer ─────────────────────────────────────────────────────────────
+// ── PlayerCommand ─────────────────────────────────────────────────────────────
 
-/// Drives real-time playback of a single media file.
-///
-/// `PreviewPlayer` decodes a video/audio file, synchronises video frame
-/// presentation to an audio master clock, and delivers frames to a
-/// registered [`FrameSink`].
-///
-/// # Usage
-///
-/// ```ignore
-/// let mut player = PreviewPlayer::open(Path::new("clip.mp4"))?;
-/// player.set_sink(Box::new(MySink::new()));
-/// player.play();
-/// player.run()?;
-/// ```
-pub struct PreviewPlayer {
-    /// Path to the media file; retained so the audio decode thread can be
-    /// restarted from a new position after a seek.
-    path: PathBuf,
-    /// Pre-decoded frame buffer driven by a background thread.
-    /// `None` for audio-only files that have no video stream.
-    decode_buf: Option<DecodeBuffer>,
-    /// Video frame rate; used to compute the frame period for A/V sync.
-    fps: f64,
-    /// Frame sink registered via [`set_sink`](Self::set_sink). Optional;
-    /// frames are discarded silently if no sink is set.
-    sink: Option<Box<dyn FrameSink>>,
-    /// Set to `true` while the presentation loop is paused.
-    paused: Arc<AtomicBool>,
-    /// Set to `true` to signal [`run`](Self::run) to stop after the current frame.
-    stopped: Arc<AtomicBool>,
-    /// Master clock for A/V sync: audio samples counter or `Instant` wall clock.
-    clock: MasterClock,
-    /// A/V offset correction in milliseconds (default: 0).
-    ///
-    /// Positive: video is delayed (video PTS adjusted down).
-    /// Negative: audio is delayed (video PTS adjusted up).
-    av_offset_ms: Arc<AtomicI64>,
-    /// Decoded audio samples (interleaved f32 stereo at 48 kHz).
-    /// `None` when the media file has no audio track.
-    audio_buf: Option<Arc<Mutex<VecDeque<f32>>>>,
-    /// Cancel flag for the background audio decode thread.
-    /// `None` when the media file has no audio track.
-    audio_cancel: Option<Arc<AtomicBool>>,
-    /// Handle for the background audio decode thread.
-    audio_handle: Option<JoinHandle<()>>,
-    /// Lazy `sws_scale` converter that converts each frame to packed RGBA.
-    /// Re-creates the `SwsContext` automatically when frame geometry changes.
-    sws: super::playback_inner::SwsRgbaConverter,
-    /// Scratch buffer reused by `present_frame` for the RGBA output of `sws.convert()`.
-    rgba_buf: Vec<u8>,
-    /// The path currently being decoded — either the original or an activated proxy.
-    /// Starts as a clone of `path`; updated by `use_proxy_if_available`.
-    active_path: PathBuf,
-    /// Set to `true` by `play()` to prevent `use_proxy_if_available` from being
-    /// called after playback has started.
-    started: AtomicBool,
-    /// PTS of the most recently presented frame, in milliseconds.
-    /// Updated atomically inside `present_frame()`; readable from any thread.
-    current_pts_millis: AtomicU64,
-    /// Container-reported duration in milliseconds.
-    /// `u64::MAX` when the container does not report a duration (live/streaming sources).
-    duration_millis: u64,
-    /// Playback rate stored as `f64` bits in an atomic (default: `1.0`).
-    /// Read once per frame in `run()` to scale the frame-pacing sleep duration.
-    /// Use `rate_handle()` to share this across threads.
-    rate_bits: Arc<AtomicU64>,
+/// Commands sent from [`PlayerHandle`] to [`PlayerRunner`] via a
+/// bounded sync channel (capacity 64).
+pub enum PlayerCommand {
+    /// Resume playback (clear the paused flag).
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Stop the presentation loop; [`PlayerRunner::run`] returns after the
+    /// current frame.
+    Stop,
+    /// Seek to `pts`. Consecutive seeks are coalesced — only the last one
+    /// executes.
+    Seek(Duration),
+    /// Set the playback rate. Values ≤ 0.0 are ignored.
+    SetRate(f64),
+    /// Set the A/V offset in milliseconds. Clamped to ±5 000 ms.
+    SetAvOffset(i64),
 }
 
-impl PreviewPlayer {
-    /// Open a media file and prepare for playback.
-    ///
-    /// Probes the file to detect audio/video streams, then opens a
-    /// [`DecodeBuffer`] for the video stream (when present). Returns
-    /// [`PreviewError`] if the file is missing, unreadable, or contains
-    /// neither a video nor an audio stream.
-    ///
-    /// Audio-only files (MP3, AAC, WAV, FLAC, …) are fully supported:
-    /// `run()` will pace itself via the audio master clock and deliver no
-    /// video frames. Callers should drain samples via
-    /// [`pop_audio_samples`](Self::pop_audio_samples).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreviewError`] if the file cannot be probed or decoded.
-    pub fn open(path: &Path) -> Result<Self, PreviewError> {
-        let info = ff_probe::open(path)?;
+// ── PlayerHandle ─────────────────────────────────────────────────────────────
 
-        if !info.has_video() && !info.has_audio() {
-            return Err(PreviewError::Ffmpeg {
-                code: -1,
-                message: "file has neither a video nor an audio stream".into(),
-            });
-        }
+/// Shared, cloneable handle to a running [`PlayerRunner`].
+///
+/// All methods are non-blocking. Commands that cannot be queued immediately
+/// (channel full) are silently dropped.
+///
+/// # Thread safety
+///
+/// `PlayerHandle` is `Clone + Send + Sync` and can be shared freely across
+/// threads without locking.
+#[derive(Clone)]
+pub struct PlayerHandle {
+    cmd_tx: mpsc::SyncSender<PlayerCommand>,
+    event_rx: Arc<Mutex<mpsc::Receiver<PlayerEvent>>>,
+    /// Current PTS in microseconds. Written by [`PlayerRunner`] on each frame.
+    current_pts: Arc<AtomicU64>,
+    audio_buf: Option<Arc<Mutex<VecDeque<f32>>>>,
+    /// Advances the audio master clock when `pop_audio_samples` drains samples.
+    samples_consumed: Option<Arc<AtomicU64>>,
+    /// Mirrors the runner's paused state; updated immediately by `play`/`pause`.
+    paused: Arc<AtomicBool>,
+    /// Mirrors the runner's stopped state; updated immediately by `stop`.
+    stopped: Arc<AtomicBool>,
+    duration_millis: u64,
+}
 
-        let fps = info.frame_rate().unwrap_or(30.0).max(1.0);
-
-        // Duration::ZERO means the container does not report a duration (live/streaming).
-        let d = info.duration();
-        let duration_millis = if d.is_zero() {
-            u64::MAX
-        } else {
-            u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
-        };
-
-        let clock = if info.has_audio() {
-            let sample_rate = info.sample_rate().unwrap_or(48_000);
-            MasterClock::Audio {
-                samples_consumed: Arc::new(AtomicU64::new(0)),
-                sample_rate,
-            }
-        } else {
-            log::debug!(
-                "using system clock fallback path={} no_audio=true",
-                path.display()
-            );
-            MasterClock::System {
-                started_at: Instant::now(),
-                base_pts: Duration::ZERO,
-            }
-        };
-
-        // Open the video decode buffer only when a video stream is present.
-        // Audio-only files skip this step and use audio-clock pacing in run().
-        let decode_buf = if info.has_video() {
-            Some(DecodeBuffer::open(path).build()?)
-        } else {
-            log::debug!(
-                "audio-only file; skipping video decode buffer path={}",
-                path.display()
-            );
-            None
-        };
-
-        // Spawn a background audio decode thread when an audio track is present.
-        let (audio_buf, audio_cancel, audio_handle) = if let MasterClock::Audio { .. } = &clock {
-            let buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
-            let cancel = Arc::new(AtomicBool::new(false));
-            let handle = spawn_audio_thread(
-                path.to_path_buf(),
-                Duration::ZERO,
-                Arc::clone(&buf),
-                Arc::clone(&cancel),
-            );
-            (Some(buf), Some(cancel), Some(handle))
-        } else {
-            (None, None, None)
-        };
-
-        Ok(PreviewPlayer {
-            path: path.to_path_buf(),
-            decode_buf,
-            fps,
-            sink: None,
-            paused: Arc::new(AtomicBool::new(false)),
-            stopped: Arc::new(AtomicBool::new(false)),
-            clock,
-            av_offset_ms: Arc::new(AtomicI64::new(0)),
-            audio_buf,
-            audio_cancel,
-            audio_handle,
-            sws: super::playback_inner::SwsRgbaConverter::new(),
-            rgba_buf: Vec::new(),
-            active_path: path.to_path_buf(),
-            started: AtomicBool::new(false),
-            current_pts_millis: AtomicU64::new(0),
-            duration_millis,
-            rate_bits: Arc::new(AtomicU64::new(1.0_f64.to_bits())),
-        })
+impl PlayerHandle {
+    /// Resume playback.
+    pub fn play(&self) {
+        self.stopped.store(false, Ordering::Release);
+        self.paused.store(false, Ordering::Release);
+        let _ = self.cmd_tx.try_send(PlayerCommand::Play);
     }
 
-    /// Register the frame sink. Must be called before [`run`](Self::run).
+    /// Pause playback.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Release);
+        let _ = self.cmd_tx.try_send(PlayerCommand::Pause);
+    }
+
+    /// Stop the presentation loop.
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        let _ = self.cmd_tx.try_send(PlayerCommand::Stop);
+    }
+
+    /// Seek to `pts`.
+    ///
+    /// Consecutive calls before the runner processes them are coalesced —
+    /// only the most recent `pts` executes.
+    pub fn seek(&self, pts: Duration) {
+        let _ = self.cmd_tx.try_send(PlayerCommand::Seek(pts));
+    }
+
+    /// Set the playback rate.
+    ///
+    /// Values ≤ 0.0 are silently ignored by the runner.
+    pub fn set_rate(&self, rate: f64) {
+        let _ = self.cmd_tx.try_send(PlayerCommand::SetRate(rate));
+    }
+
+    /// Set the A/V offset correction in milliseconds.
+    ///
+    /// Positive: video PTS is shifted down relative to audio (video appears
+    /// delayed). Negative: video PTS is shifted up (audio appears delayed).
+    pub fn set_av_offset(&self, ms: i64) {
+        let _ = self.cmd_tx.try_send(PlayerCommand::SetAvOffset(ms));
+    }
+
+    /// PTS of the most recently presented frame.
+    ///
+    /// Returns [`Duration::ZERO`] before the first frame is presented.
+    #[must_use]
+    pub fn current_pts(&self) -> Duration {
+        Duration::from_micros(self.current_pts.load(Ordering::Relaxed))
+    }
+
+    /// Container-reported duration, or `None` for live / streaming sources.
+    #[must_use]
+    pub fn duration(&self) -> Option<Duration> {
+        if self.duration_millis == u64::MAX {
+            None
+        } else {
+            Some(Duration::from_millis(self.duration_millis))
+        }
+    }
+
+    /// Pull up to `n` interleaved stereo `f32` PCM samples at 48 kHz.
+    ///
+    /// Returns an empty `Vec` when:
+    /// - playback is paused or stopped,
+    /// - `n` is 0,
+    /// - there is no audio track, or
+    /// - the ring buffer is empty (underrun — caller should output silence).
+    ///
+    /// Advances the audio master clock by `samples.len() / 2` stereo frames.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn pop_audio_samples(&self, n: usize) -> Vec<f32> {
+        if self.paused.load(Ordering::Relaxed) || self.stopped.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
+        if n == 0 {
+            return Vec::new();
+        }
+        let Some(buf) = &self.audio_buf else {
+            return Vec::new();
+        };
+        let mut guard = buf
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let take = n.min(guard.len());
+        if take == 0 {
+            return Vec::new();
+        }
+        let samples: Vec<f32> = guard.drain(..take).collect();
+        if let Some(sc) = &self.samples_consumed {
+            sc.fetch_add((take / 2) as u64, Ordering::Relaxed);
+        }
+        samples
+    }
+
+    /// Poll for the next [`PlayerEvent`] without blocking.
+    ///
+    /// Returns `None` when no events are pending.
+    #[must_use]
+    pub fn poll_event(&self) -> Option<PlayerEvent> {
+        self.event_rx.lock().ok()?.try_recv().ok()
+    }
+
+    /// Block until the next [`PlayerEvent`] arrives or the channel closes.
+    ///
+    /// Returns `None` when the runner has exited and all events have been
+    /// drained. Intended for use inside `spawn_blocking`.
+    #[must_use]
+    pub fn recv_event(&self) -> Option<PlayerEvent> {
+        self.event_rx.lock().ok()?.recv().ok()
+    }
+}
+
+// ── PlayerRunner ─────────────────────────────────────────────────────────────
+
+/// Exclusive owner of the decode pipeline. Move to a background thread and
+/// call [`run`](Self::run).
+///
+/// Configure with [`set_sink`](Self::set_sink),
+/// [`use_proxy_if_available`](Self::use_proxy_if_available), and
+/// [`set_hardware_accel`](Self::set_hardware_accel) **before** calling `run`.
+pub struct PlayerRunner {
+    path: PathBuf,
+    cmd_rx: mpsc::Receiver<PlayerCommand>,
+    event_tx: mpsc::SyncSender<PlayerEvent>,
+    decode_buf: Option<DecodeBuffer>,
+    fps: f64,
+    sink: Option<Box<dyn FrameSink>>,
+    clock: MasterClock,
+    audio_buf: Option<Arc<Mutex<VecDeque<f32>>>>,
+    audio_cancel: Option<Arc<AtomicBool>>,
+    audio_handle: Option<JoinHandle<()>>,
+    sws: super::playback_inner::SwsRgbaConverter,
+    rgba_buf: Vec<u8>,
+    active_path: PathBuf,
+    current_pts: Arc<AtomicU64>,
+    paused: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    av_offset_ms: i64,
+    rate: f64,
+    duration_millis: u64,
+}
+
+impl PlayerRunner {
+    /// Register the frame sink. Call before [`run`](Self::run).
     pub fn set_sink(&mut self, sink: Box<dyn FrameSink>) {
         self.sink = Some(sink);
     }
 
-    /// Start (or resume) playback.
+    /// Configure hardware acceleration.
     ///
-    /// Clears the `paused` and `stopped` flags. Must be called before
-    /// [`run`](Self::run).
-    pub fn play(&self) {
-        self.started.store(true, Ordering::Release);
-        self.paused.store(false, Ordering::Release);
-        self.stopped.store(false, Ordering::Release);
+    /// Currently a no-op stub — hardware acceleration is applied when the
+    /// decode buffer is next rebuilt (e.g., after proxy activation).
+    pub fn set_hardware_accel(&mut self, _accel: HardwareAccel) {}
+
+    /// Returns the path currently being decoded (original or active proxy).
+    #[must_use]
+    pub fn active_source(&self) -> &Path {
+        &self.active_path
     }
 
-    /// Pause playback. [`run`](Self::run) will spin-sleep until
-    /// [`play`](Self::play) is called again.
-    pub fn pause(&self) {
-        self.paused.store(true, Ordering::Release);
-    }
-
-    /// Stop playback.
-    ///
-    /// [`run`](Self::run) returns after the current frame completes.
-    pub fn stop(&mut self) {
-        self.stopped.store(true, Ordering::Release);
-    }
-
-    /// Returns a cloneable handle to the stop signal.
-    ///
-    /// Storing `true` into the returned [`Arc<AtomicBool>`] has the same effect
-    /// as calling [`stop`](Self::stop) and is safe to call from any context,
-    /// including from within a [`FrameSink::push_frame`] callback.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let stop = player.stop_handle();
-    /// player.set_sink(Box::new(MySink { stop, max_frames: 10 }));
-    /// player.play();
-    /// player.run()?;
-    /// ```
-    pub fn stop_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.stopped)
-    }
-
-    /// Returns a cloneable handle to the pause flag.
-    ///
-    /// Storing `true` pauses [`run`](Self::run); storing `false` resumes it.
-    /// Safe to call from any context, including from a UI thread running
-    /// concurrently with [`run`](Self::run).
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let pause = player.pause_handle();
-    /// let stop  = player.stop_handle();
-    ///
-    /// std::thread::spawn(move || { player.play(); let _ = player.run(); });
-    ///
-    /// pause.store(true, Ordering::Release);   // pause from UI thread
-    /// pause.store(false, Ordering::Release);  // resume
-    /// stop.store(true, Ordering::Release);    // stop
-    /// ```
-    pub fn pause_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.paused)
-    }
-
-    /// Pop the next decoded video frame.
-    ///
-    /// Delegates to [`DecodeBuffer::pop_frame`]. Blocks until a frame is available.
-    /// Returns [`FrameResult::Eof`] at end of file or for audio-only files.
-    pub fn pop_frame(&mut self) -> FrameResult {
-        match self.decode_buf.as_mut() {
-            Some(buf) => buf.pop_frame(),
-            None => FrameResult::Eof,
+    /// Container-reported duration, or `None` for live / streaming sources.
+    #[must_use]
+    pub fn duration(&self) -> Option<Duration> {
+        if self.duration_millis == u64::MAX {
+            None
+        } else {
+            Some(Duration::from_millis(self.duration_millis))
         }
     }
 
-    /// Frame-accurate seek to `target_pts`.
+    /// Activate a lower-resolution proxy if one exists in `proxy_dir`.
     ///
-    /// Delegates to [`DecodeBuffer::seek`]. Returns `Ok(())` immediately for
-    /// audio-only files (no video stream to seek).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreviewError`] if the seek fails.
-    pub fn seek(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
-        match self.decode_buf.as_mut() {
-            Some(buf) => buf.seek(target_pts),
-            None => Ok(()),
-        }
-    }
-
-    /// Coarse seek to the nearest I-frame at or before `target_pts`.
-    ///
-    /// Delegates to [`DecodeBuffer::seek_coarse`]. Faster than
-    /// [`seek`](Self::seek) because it skips the forward-decode discard phase.
-    /// The first frame after this call will be at the nearest preceding I-frame,
-    /// which may be up to ±½ GOP from `target_pts` (typically ±1–2 s for H.264
-    /// at default settings).
-    ///
-    /// **Typical use:** call repeatedly while a scrub bar is being dragged;
-    /// call [`seek`](Self::seek) on drag release for frame accuracy.
-    ///
-    /// ```ignore
-    /// // Scrub-bar drag handler:
-    /// player.seek_coarse(drag_pts)?;  // fast, called many times
-    ///
-    /// // Drag released:
-    /// player.seek(release_pts)?;      // exact, called once
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreviewError`] if the seek fails.
-    pub fn seek_coarse(&mut self, target_pts: Duration) -> Result<(), PreviewError> {
-        match self.decode_buf.as_mut() {
-            Some(buf) => buf.seek_coarse(target_pts),
-            None => Ok(()),
-        }
-    }
-
-    /// If a proxy file for this media exists in `proxy_dir`, use it transparently.
-    ///
-    /// Must be called before [`play`](Self::play). Returns `true` if a proxy was
-    /// found and activated; returns `false` if no proxy exists (original file
-    /// continues to be used).
+    /// Must be called before [`run`](Self::run). Returns `true` if a proxy was
+    /// found and activated; `false` if no proxy exists or activation failed.
     ///
     /// Proxy lookup order: `half` → `quarter` → `eighth`; first match wins.
-    ///
-    /// When a proxy is active, [`FrameSink::push_frame`] delivers frames at the
-    /// proxy's native resolution. Callers should not assume a fixed resolution.
-    ///
-    /// If called after [`play`](Self::play), logs a warning and returns `false`.
     pub fn use_proxy_if_available(&mut self, proxy_dir: &Path) -> bool {
-        if self.started.load(Ordering::Acquire) {
-            log::warn!("use_proxy_if_available called after play; ignored");
-            return false;
-        }
         let stem = self
             .path
             .file_stem()
@@ -364,20 +288,199 @@ impl PreviewPlayer {
         false
     }
 
-    /// Returns the path currently being decoded — either the original file or
-    /// the activated proxy.
-    pub fn active_source(&self) -> &Path {
-        &self.active_path
+    /// A/V sync presentation loop.
+    ///
+    /// Blocks until a [`PlayerCommand::Stop`] is received, the end of file is
+    /// reached, or an unrecoverable decode error occurs.
+    ///
+    /// At the top of each frame, all pending commands are drained from the
+    /// channel. Consecutive [`PlayerCommand::Seek`] commands are coalesced —
+    /// only the last one executes.
+    ///
+    /// Emits [`PlayerEvent::SeekCompleted`] after each successful seek and
+    /// [`PlayerEvent::Eof`] before returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] if a seek fails.
+    #[allow(clippy::too_many_lines)]
+    pub fn run(mut self) -> Result<(), PreviewError> {
+        let fps = self.fps.max(1.0);
+        let frame_period = Duration::from_secs_f64(1.0 / fps);
+
+        self.clock.reset(Duration::ZERO);
+
+        loop {
+            // ── Drain commands ────────────────────────────────────────────────
+            let mut pending_seek: Option<Duration> = None;
+            while let Ok(cmd) = self.cmd_rx.try_recv() {
+                match cmd {
+                    PlayerCommand::Seek(pts) => pending_seek = Some(pts),
+                    PlayerCommand::Play => {
+                        self.stopped.store(false, Ordering::Release);
+                        self.paused.store(false, Ordering::Release);
+                    }
+                    PlayerCommand::Pause => {
+                        self.paused.store(true, Ordering::Release);
+                    }
+                    PlayerCommand::Stop => {
+                        self.stopped.store(true, Ordering::Release);
+                    }
+                    PlayerCommand::SetRate(r) => {
+                        if r > 0.0 {
+                            self.rate = r;
+                        }
+                    }
+                    PlayerCommand::SetAvOffset(ms) => {
+                        const MAX_OFFSET_MS: i64 = 5_000;
+                        self.av_offset_ms = ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS);
+                    }
+                }
+            }
+
+            // ── Apply pending seek ────────────────────────────────────────────
+            if let Some(pts) = pending_seek {
+                if let Some(buf) = self.decode_buf.as_mut() {
+                    buf.seek(pts)?;
+                }
+                self.clock.reset(pts);
+                self.restart_audio_from(pts);
+                let _ = self.event_tx.try_send(PlayerEvent::SeekCompleted(pts));
+            }
+
+            if self.stopped.load(Ordering::Acquire) {
+                break;
+            }
+            if self.paused.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+
+            // ── Audio-only path ───────────────────────────────────────────────
+            if self.decode_buf.is_none() {
+                thread::sleep(Duration::from_millis(10));
+                if let Some(audio_buf) = &self.audio_buf {
+                    let empty = audio_buf
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_empty();
+                    if empty
+                        && self
+                            .audio_handle
+                            .as_ref()
+                            .is_none_or(JoinHandle::is_finished)
+                    {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+                continue;
+            }
+
+            // ── Video decode path ─────────────────────────────────────────────
+            let pop_result = if let Some(buf) = self.decode_buf.as_mut() {
+                buf.pop_frame()
+            } else {
+                FrameResult::Eof
+            };
+
+            match pop_result {
+                FrameResult::Eof => break,
+                FrameResult::Seeking(last) => {
+                    if let Some(ref f) = last {
+                        self.present_frame(f);
+                    }
+                }
+                FrameResult::Frame(frame) => {
+                    if self.clock.should_sync() {
+                        let video_pts = if frame.timestamp().is_valid() {
+                            frame.timestamp().as_duration()
+                        } else {
+                            Duration::ZERO
+                        };
+
+                        let offset_ms = self.av_offset_ms;
+                        let offset = Duration::from_millis(offset_ms.unsigned_abs());
+                        let adjusted_video_pts = if offset_ms >= 0 {
+                            video_pts.saturating_sub(offset)
+                        } else {
+                            video_pts + offset
+                        };
+
+                        let clock_pts = self.clock.current_pts();
+                        let diff = adjusted_video_pts.as_secs_f64() - clock_pts.as_secs_f64();
+                        let fp = frame_period.as_secs_f64();
+
+                        if diff > fp {
+                            let sleep_secs =
+                                (diff - fp / 2.0).max(0.0) / self.rate.max(f64::MIN_POSITIVE);
+                            thread::sleep(Duration::from_secs_f64(sleep_secs));
+                        } else if diff < -fp {
+                            log::debug!(
+                                "dropped late frame video_pts={video_pts:?} \
+                                 clock_pts={clock_pts:?}"
+                            );
+                            continue;
+                        }
+                    }
+
+                    self.present_frame(&frame);
+                }
+            }
+        }
+
+        let _ = self.event_tx.try_send(PlayerEvent::Eof);
+        if let Some(sink) = self.sink.as_mut() {
+            sink.flush();
+        }
+        Ok(())
     }
 
-    /// Replace the internal decode buffer and audio thread with those backed by
-    /// `proxy_path`. Called exclusively from `use_proxy_if_available`.
+    fn present_frame(&mut self, frame: &ff_format::VideoFrame) {
+        let pts = frame.timestamp().as_duration();
+        self.current_pts.store(
+            u64::try_from(pts.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        let Some(sink) = self.sink.as_mut() else {
+            return;
+        };
+        let width = frame.width();
+        let height = frame.height();
+        if self.sws.convert(frame, &mut self.rgba_buf) {
+            sink.push_frame(&self.rgba_buf, width, height, pts);
+        }
+    }
+
+    fn restart_audio_from(&mut self, pts: Duration) {
+        if let Some(buf) = &self.audio_buf {
+            buf.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        if let Some(cancel) = &self.audio_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        drop(self.audio_handle.take());
+        if let Some(buf) = &self.audio_buf {
+            let new_cancel = Arc::new(AtomicBool::new(false));
+            let handle = spawn_audio_thread(
+                self.active_path.clone(),
+                pts,
+                Arc::clone(buf),
+                Arc::clone(&new_cancel),
+            );
+            self.audio_cancel = Some(new_cancel);
+            self.audio_handle = Some(handle);
+        }
+    }
+
     fn activate_proxy(&mut self, proxy_path: &Path) -> Result<(), PreviewError> {
         let info = ff_probe::open(proxy_path)?;
         let fps = info.frame_rate().unwrap_or(30.0).max(1.0);
         let decode_buf = DecodeBuffer::open(proxy_path).build()?;
 
-        // Cancel existing audio thread; clear stale samples.
         if let Some(cancel) = &self.audio_cancel {
             cancel.store(true, Ordering::Release);
         }
@@ -386,7 +489,6 @@ impl PreviewPlayer {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear();
         }
-        // Detach — the old thread exits on its own when cancel fires.
         drop(self.audio_handle.take());
 
         let (clock, audio_buf, audio_cancel, audio_handle) = if info.has_audio() {
@@ -425,404 +527,212 @@ impl PreviewPlayer {
         self.audio_handle = audio_handle;
         Ok(())
     }
+}
 
-    /// Set the A/V offset correction in milliseconds.
-    ///
-    /// - **Positive** value: video is delayed by `ms` ms relative to the audio
-    ///   clock (video PTS is shifted down in the sync comparison).
-    /// - **Negative** value: audio is delayed by `ms` ms relative to video
-    ///   (video PTS is shifted up in the sync comparison).
-    ///
-    /// Values outside ±5 000 ms are clamped and a warning is logged.
-    /// Safe to call from any thread while [`run`](Self::run) is executing.
-    pub fn set_av_offset(&self, ms: i64) {
-        const MAX_OFFSET_MS: i64 = 5_000;
-        let clamped = if ms.abs() > MAX_OFFSET_MS {
-            log::warn!("av_offset clamped value={ms}");
-            ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS)
-        } else {
-            ms
-        };
-        self.av_offset_ms.store(clamped, Ordering::Relaxed);
-    }
-
-    /// Returns the current A/V offset in milliseconds (default: `0`).
-    ///
-    /// Safe to call from any thread while [`run`](Self::run) is executing.
-    pub fn av_offset(&self) -> i64 {
-        self.av_offset_ms.load(Ordering::Relaxed)
-    }
-
-    /// Returns a cloneable handle to the A/V offset atomic.
-    ///
-    /// Writing a value into the returned [`Arc<AtomicI64>`] has the same effect
-    /// as calling [`set_av_offset`](Self::set_av_offset) and is safe to do from
-    /// any thread while [`run`](Self::run) is executing.
-    ///
-    /// Note: the handle stores the raw millisecond value without clamping.
-    /// Values outside ±5 000 ms written directly to the handle will be applied
-    /// as-is by `run()`; prefer [`set_av_offset`](Self::set_av_offset) when
-    /// clamping is desired.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let av_handle   = player.av_offset_handle();
-    /// let stop_handle = player.stop_handle();
-    ///
-    /// std::thread::spawn(move || { player.play(); let _ = player.run(); });
-    ///
-    /// // Adjust A/V sync from the UI thread without stopping playback.
-    /// av_handle.store(200, std::sync::atomic::Ordering::Relaxed);
-    /// stop_handle.store(true, std::sync::atomic::Ordering::Release);
-    /// ```
-    pub fn av_offset_handle(&self) -> Arc<AtomicI64> {
-        Arc::clone(&self.av_offset_ms)
-    }
-
-    /// Set the playback rate.
-    ///
-    /// Values ≤ 0.0 are silently ignored — the rate remains unchanged.
-    ///
-    /// The new rate takes effect on the next frame's sleep calculation inside
-    /// [`run`](Self::run). Safe to call from any thread while `run()` is
-    /// executing (same contract as [`set_av_offset`](Self::set_av_offset)).
-    ///
-    /// - `1.0` — real-time (default)
-    /// - `2.0` — twice real-time (sleep halved)
-    /// - `0.5` — half real-time (sleep doubled)
-    pub fn set_rate(&self, rate: f64) {
-        if rate > 0.0 {
-            self.rate_bits.store(rate.to_bits(), Ordering::Relaxed);
-        }
-    }
-
-    /// Returns a cloneable handle to the rate atomic.
-    ///
-    /// Writing `new_rate.to_bits()` into the returned [`Arc<AtomicU64>`] has
-    /// the same effect as calling [`set_rate`](Self::set_rate) and is safe to
-    /// do from any thread while [`run`](Self::run) is executing.
-    ///
-    /// Note: the handle does **not** validate the value; storing bits that
-    /// correspond to `≤ 0.0` or `NaN` will produce undefined sleep behaviour.
-    /// Prefer [`set_rate`](Self::set_rate) when the validation guard is desired.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let rate   = player.rate_handle();
-    /// let stop   = player.stop_handle();
-    ///
-    /// std::thread::spawn(move || { player.play(); let _ = player.run(); });
-    ///
-    /// // Double speed from the UI thread without stopping playback.
-    /// rate.store(2.0_f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
-    /// stop.store(true, std::sync::atomic::Ordering::Release);
-    /// ```
-    pub fn rate_handle(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.rate_bits)
-    }
-
-    /// Returns the PTS of the most recently presented frame.
-    ///
-    /// Returns [`Duration::ZERO`] before the first frame has been presented.
-    /// Safe to call from any thread while [`run`](Self::run) is executing.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let pts_handle = Arc::new(Mutex::new(Duration::ZERO));
-    /// let pts_clone  = Arc::clone(&pts_handle);
-    ///
-    /// std::thread::spawn(move || {
-    ///     player.play();
-    ///     let _ = player.run();
-    /// });
-    ///
-    /// // UI thread: poll current position to drive a seek bar.
-    /// loop {
-    ///     let pos = player.current_pts();
-    ///     update_seek_bar(pos);
-    ///     std::thread::sleep(std::time::Duration::from_millis(16));
-    /// }
-    /// ```
-    pub fn current_pts(&self) -> Duration {
-        Duration::from_millis(self.current_pts_millis.load(Ordering::Relaxed))
-    }
-
-    /// Returns the container-reported duration of the media file, if known.
-    ///
-    /// Returns `None` for live or streaming sources where the container does
-    /// not report a duration. Use the returned value to size a seek bar range:
-    ///
-    /// ```ignore
-    /// if let Some(total) = player.duration() {
-    ///     let progress = player.current_pts().as_secs_f64() / total.as_secs_f64();
-    ///     seek_bar.set_fraction(progress);
-    /// }
-    /// ```
-    pub fn duration(&self) -> Option<Duration> {
-        if self.duration_millis == u64::MAX {
-            None
-        } else {
-            Some(Duration::from_millis(self.duration_millis))
-        }
-    }
-
-    /// Pull up to `n_samples` interleaved stereo `f32` PCM samples at 48 kHz.
-    ///
-    /// Intended for use inside an audio output callback:
-    /// ```ignore
-    /// let samples = player.pop_audio_samples(buffer_size);
-    /// output_buffer[..samples.len()].copy_from_slice(&samples);
-    /// // fill remainder with silence when samples.len() < buffer_size (underrun)
-    /// ```
-    ///
-    /// Advances the audio master clock by the number of stereo frames consumed
-    /// (`samples.len() / 2`).
-    ///
-    /// Returns an empty `Vec` when:
-    /// - the file has no audio track,
-    /// - `n_samples` is `0`,
-    /// - playback is paused or stopped, or
-    /// - the ring buffer is empty (underrun — caller should output silence).
-    pub fn pop_audio_samples(&self, n_samples: usize) -> Vec<f32> {
-        if self.paused.load(Ordering::Relaxed) || self.stopped.load(Ordering::Relaxed) {
-            return Vec::new();
-        }
-        let MasterClock::Audio {
-            samples_consumed, ..
-        } = &self.clock
-        else {
-            return Vec::new();
-        };
-        if n_samples == 0 {
-            return Vec::new();
-        }
-        let Some(buf) = &self.audio_buf else {
-            return Vec::new();
-        };
-        let mut guard = buf
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let take = n_samples.min(guard.len());
-        if take == 0 {
-            return Vec::new();
-        }
-        let samples: Vec<f32> = guard.drain(..take).collect();
-        // Stereo: 2 interleaved samples per frame.
-        // Divide by 2 to get mono-equivalent frame count for the audio clock.
-        samples_consumed.fetch_add((take / 2) as u64, Ordering::Relaxed);
-        samples
-    }
-
-    /// A/V sync presentation loop.
-    ///
-    /// Blocks until [`stop`](Self::stop) is called or the end of file is
-    /// reached. Must be called from the presentation thread.
-    ///
-    /// Video PTS is compared against the master clock:
-    /// - **Early frames** (video PTS > clock + 1 frame period): sleep.
-    /// - **Late frames** (video PTS < clock − 1 frame period): dropped.
-    ///
-    /// For video-only files the `System` clock (`Instant`) drives real-time
-    /// pacing. For files with audio the `Audio` clock drives sync once
-    /// [`pop_audio_samples`](Self::pop_audio_samples) has been called at least
-    /// once; before that, frames are presented immediately.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreviewError`] if a frame cannot be presented to the sink.
-    pub fn run(&mut self) -> Result<(), PreviewError> {
-        let fps = self.fps.max(1.0);
-        let frame_period = Duration::from_secs_f64(1.0 / fps);
-
-        // Start the system clock from position 0.
-        // Seek events update base_pts during playback.
-        self.clock.reset(Duration::ZERO);
-
-        loop {
-            if self.stopped.load(Ordering::Acquire) {
-                break;
-            }
-            if self.paused.load(Ordering::Acquire) {
-                thread::sleep(Duration::from_millis(5));
-                continue;
-            }
-
-            // ── Audio-only path ───────────────────────────────────────────────
-            // When there is no video stream, pace via a short sleep and exit
-            // once the audio thread has finished and the ring buffer is empty
-            // (meaning all samples have been consumed by the caller).
-            if self.decode_buf.is_none() {
-                thread::sleep(Duration::from_millis(10));
-                if let Some(audio_buf) = &self.audio_buf {
-                    let empty = audio_buf
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .is_empty();
-                    if empty
-                        && self
-                            .audio_handle
-                            .as_ref()
-                            .is_none_or(JoinHandle::is_finished)
-                    {
-                        break;
-                    }
-                } else {
-                    // No audio either — nothing to do.
-                    break;
-                }
-                continue;
-            }
-
-            // ── Video decode path ─────────────────────────────────────────────
-            // decode_buf is Some (verified by is_none() check above).
-            let pop_result = if let Some(buf) = self.decode_buf.as_mut() {
-                buf.pop_frame()
-            } else {
-                FrameResult::Eof // unreachable: handled by is_none() above
-            };
-            match pop_result {
-                FrameResult::Eof => break,
-                FrameResult::Seeking(last) => {
-                    if let Some(ref f) = last {
-                        self.present_frame(f);
-                    }
-                    // Non-blocking — loop immediately to check stopped/paused.
-                }
-                FrameResult::Frame(frame) => {
-                    // Drain all pending seek-completion events. Collect pts
-                    // values first so the borrow on decode_buf ends before
-                    // restart_audio_from() takes &mut self.
-                    let seek_pts: Vec<Duration> = match self.decode_buf.as_ref() {
-                        Some(buf) => {
-                            let mut v = Vec::new();
-                            while let Ok(SeekEvent::Completed { pts }) =
-                                buf.seek_events().try_recv()
-                            {
-                                v.push(pts);
-                            }
-                            v
-                        }
-                        None => Vec::new(),
-                    };
-                    for pts in seek_pts {
-                        self.clock.reset(pts);
-                        // Flush stale audio and restart the audio thread from
-                        // the seek position so audio and video stay aligned.
-                        self.restart_audio_from(pts);
-                    }
-
-                    if self.clock.should_sync() {
-                        let video_pts = if frame.timestamp().is_valid() {
-                            frame.timestamp().as_duration()
-                        } else {
-                            Duration::ZERO
-                        };
-
-                        // Apply A/V offset correction.
-                        let offset_ms = self.av_offset_ms.load(Ordering::Relaxed);
-                        let offset = Duration::from_millis(offset_ms.unsigned_abs());
-                        let adjusted_video_pts = if offset_ms >= 0 {
-                            // Positive: video delayed — subtract offset so the
-                            // frame appears "earlier" relative to the clock.
-                            video_pts.saturating_sub(offset)
-                        } else {
-                            // Negative: audio delayed — add offset so the frame
-                            // appears "later" relative to the clock.
-                            video_pts + offset
-                        };
-
-                        let clock_pts = self.clock.current_pts();
-                        let diff = adjusted_video_pts.as_secs_f64() - clock_pts.as_secs_f64();
-                        let fp = frame_period.as_secs_f64();
-
-                        if diff > fp {
-                            // Frame is early — sleep until it aligns with the clock.
-                            // Divide by rate so higher rates shorten the sleep proportionally.
-                            let rate = f64::from_bits(self.rate_bits.load(Ordering::Relaxed));
-                            let sleep_secs =
-                                (diff - fp / 2.0).max(0.0) / rate.max(f64::MIN_POSITIVE);
-                            thread::sleep(Duration::from_secs_f64(sleep_secs));
-                        } else if diff < -fp {
-                            // Frame is more than one period late — drop silently.
-                            log::debug!(
-                                "dropped late frame video_pts={video_pts:?} \
-                                 clock_pts={clock_pts:?}"
-                            );
-                            continue;
-                        }
-                    }
-
-                    self.present_frame(&frame);
-                }
-            }
-        }
-        if let Some(sink) = self.sink.as_mut() {
-            sink.flush();
-        }
-        Ok(())
-    }
-
-    /// Convert `frame` to RGBA and pass it to the registered sink, if any.
-    fn present_frame(&mut self, frame: &ff_format::VideoFrame) {
-        let Some(sink) = self.sink.as_mut() else {
-            return;
-        };
-        let width = frame.width();
-        let height = frame.height();
-        let pts = frame.timestamp().as_duration();
-        // Store PTS so current_pts() can be read from any thread.
-        // Saturate at u64::MAX for videos longer than ~585 million years.
-        self.current_pts_millis.store(
-            u64::try_from(pts.as_millis()).unwrap_or(u64::MAX),
-            Ordering::Relaxed,
-        );
-        if self.sws.convert(frame, &mut self.rgba_buf) {
-            sink.push_frame(&self.rgba_buf, width, height, pts);
-        }
-    }
-
-    /// Flush the audio ring buffer and restart the background audio decode
-    /// thread from `pts`.
-    ///
-    /// Called after a video seek completes so that audio samples stay aligned
-    /// with the video timeline. The old thread's cancel flag is set; it exits
-    /// at its next cancel check and is detached.
-    fn restart_audio_from(&mut self, pts: Duration) {
-        // Flush stale samples so the new thread fills only fresh audio.
-        if let Some(buf) = &self.audio_buf {
-            buf.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clear();
-        }
-        // Signal the running audio thread to stop.
+impl Drop for PlayerRunner {
+    fn drop(&mut self) {
         if let Some(cancel) = &self.audio_cancel {
             cancel.store(true, Ordering::Release);
         }
-        // Detach the old handle — the thread exits on its own when cancel fires.
-        drop(self.audio_handle.take());
-        // Spawn a fresh thread that decodes from the seek position.
-        if let Some(buf) = &self.audio_buf {
-            let new_cancel = Arc::new(AtomicBool::new(false));
-            let handle = spawn_audio_thread(
-                self.active_path.clone(),
-                pts,
-                Arc::clone(buf),
-                Arc::clone(&new_cancel),
-            );
-            self.audio_cancel = Some(new_cancel);
-            self.audio_handle = Some(handle);
+        if let Some(h) = self.audio_handle.take() {
+            let _ = h.join();
         }
+    }
+}
+
+// ── PreviewPlayer (thin builder) ──────────────────────────────────────────────
+
+/// Thin builder for a ([`PlayerRunner`], [`PlayerHandle`]) pair.
+///
+/// # Usage
+///
+/// ```ignore
+/// let (mut runner, handle) = PreviewPlayer::open("clip.mp4")?.split();
+///
+/// runner.set_sink(Box::new(MySink::new()));
+///
+/// let handle_audio = handle.clone();
+///
+/// std::thread::spawn(move || { let _ = runner.run(); });
+///
+/// handle.seek(Duration::from_secs(30));
+/// handle.play();
+///
+/// // cpal audio callback:
+/// device.build_output_stream(&cfg, move |buf: &mut [f32], _| {
+///     let s = handle_audio.pop_audio_samples(buf.len());
+///     buf[..s.len()].copy_from_slice(&s);
+/// }, ...);
+/// ```
+pub struct PreviewPlayer {
+    path: PathBuf,
+    /// `None` after `split()` consumes it.
+    decode_buf: Option<DecodeBuffer>,
+    fps: f64,
+    /// `None` after `split()` consumes it.
+    clock: Option<MasterClock>,
+    audio_buf: Option<Arc<Mutex<VecDeque<f32>>>>,
+    audio_cancel: Option<Arc<AtomicBool>>,
+    audio_handle: Option<JoinHandle<()>>,
+    duration_millis: u64,
+    active_path: PathBuf,
+}
+
+impl PreviewPlayer {
+    /// Open a media file and prepare for playback.
+    ///
+    /// Probes the file to detect audio/video streams, opens a
+    /// [`DecodeBuffer`] for the video stream (when present), and spawns a
+    /// background audio decode thread (when present). Returns
+    /// [`PreviewError`] if the file is missing or contains neither stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewError`] if the file cannot be probed or decoded.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, PreviewError> {
+        let path = path.as_ref();
+        let info = ff_probe::open(path)?;
+
+        if !info.has_video() && !info.has_audio() {
+            return Err(PreviewError::Ffmpeg {
+                code: -1,
+                message: "file has neither a video nor an audio stream".into(),
+            });
+        }
+
+        let fps = info.frame_rate().unwrap_or(30.0).max(1.0);
+
+        let d = info.duration();
+        let duration_millis = if d.is_zero() {
+            u64::MAX
+        } else {
+            u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+        };
+
+        let clock = if info.has_audio() {
+            let sample_rate = info.sample_rate().unwrap_or(48_000);
+            MasterClock::Audio {
+                samples_consumed: Arc::new(AtomicU64::new(0)),
+                sample_rate,
+            }
+        } else {
+            log::debug!(
+                "using system clock fallback path={} no_audio=true",
+                path.display()
+            );
+            MasterClock::System {
+                started_at: Instant::now(),
+                base_pts: Duration::ZERO,
+            }
+        };
+
+        let decode_buf = if info.has_video() {
+            Some(DecodeBuffer::open(path).build()?)
+        } else {
+            log::debug!(
+                "audio-only file; skipping video decode buffer path={}",
+                path.display()
+            );
+            None
+        };
+
+        let (audio_buf, audio_cancel, audio_handle) = if let MasterClock::Audio { .. } = &clock {
+            let buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let handle = spawn_audio_thread(
+                path.to_path_buf(),
+                Duration::ZERO,
+                Arc::clone(&buf),
+                Arc::clone(&cancel),
+            );
+            (Some(buf), Some(cancel), Some(handle))
+        } else {
+            (None, None, None)
+        };
+
+        Ok(PreviewPlayer {
+            path: path.to_path_buf(),
+            decode_buf,
+            fps,
+            clock: Some(clock),
+            audio_buf,
+            audio_cancel,
+            audio_handle,
+            duration_millis,
+            active_path: path.to_path_buf(),
+        })
+    }
+
+    /// Consume `self` and return an exclusive [`PlayerRunner`] and a shared
+    /// [`PlayerHandle`].
+    ///
+    /// The runner owns the decode pipeline; move it to a background thread
+    /// and call [`PlayerRunner::run`].
+    /// The handle is `Clone + Send + Sync` and can be shared freely.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice — the internal clock is always `Some` when
+    /// `split` is first called.
+    #[must_use]
+    #[allow(clippy::expect_used)]
+    pub fn split(mut self) -> (PlayerRunner, PlayerHandle) {
+        let current_pts = Arc::new(AtomicU64::new(0));
+        let paused = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (cmd_tx, cmd_rx) = mpsc::sync_channel(CHANNEL_CAP);
+        let (event_tx, event_rx) = mpsc::sync_channel(CHANNEL_CAP);
+
+        let clock = self.clock.take().expect("clock consumed before split");
+        let samples_consumed = match &clock {
+            MasterClock::Audio {
+                samples_consumed, ..
+            } => Some(Arc::clone(samples_consumed)),
+            MasterClock::System { .. } => None,
+        };
+
+        let audio_buf_for_handle = self.audio_buf.clone();
+        let duration_millis = self.duration_millis;
+
+        let runner = PlayerRunner {
+            path: self.path.clone(),
+            cmd_rx,
+            event_tx,
+            decode_buf: self.decode_buf.take(),
+            fps: self.fps,
+            sink: None,
+            clock,
+            audio_buf: self.audio_buf.take(),
+            audio_cancel: self.audio_cancel.take(),
+            audio_handle: self.audio_handle.take(),
+            sws: super::playback_inner::SwsRgbaConverter::new(),
+            rgba_buf: Vec::new(),
+            active_path: self.active_path.clone(),
+            current_pts: Arc::clone(&current_pts),
+            paused: Arc::clone(&paused),
+            stopped: Arc::clone(&stopped),
+            av_offset_ms: 0,
+            rate: 1.0,
+            duration_millis,
+        };
+
+        let handle = PlayerHandle {
+            cmd_tx,
+            event_rx: Arc::new(Mutex::new(event_rx)),
+            current_pts,
+            audio_buf: audio_buf_for_handle,
+            samples_consumed,
+            paused,
+            stopped,
+            duration_millis,
+        };
+
+        (runner, handle)
     }
 }
 
 impl Drop for PreviewPlayer {
     fn drop(&mut self) {
-        // Cancel the audio background thread before dropping so it does not
-        // outlive the player (the Arc<Mutex<VecDeque>> it holds would stay
-        // alive until the thread exits otherwise).
         if let Some(cancel) = &self.audio_cancel {
             cancel.store(true, Ordering::Release);
         }
@@ -834,12 +744,6 @@ impl Drop for PreviewPlayer {
 
 // ── spawn_audio_thread ────────────────────────────────────────────────────────
 
-/// Open an [`AudioDecoder`] configured for stereo f32 at 48 kHz, optionally
-/// seek to `start_pts`, and push decoded samples into `buf` until the cancel
-/// flag is set or EOF is reached.
-///
-/// The buffer is capped at [`AUDIO_MAX_BUF`] samples; the thread sleeps 1 ms
-/// when the buffer is full to avoid busy-waiting.
 fn spawn_audio_thread(
     path: PathBuf,
     start_pts: Duration,
@@ -891,7 +795,7 @@ fn spawn_audio_thread(
                         guard.extend(samples.into_iter().take(space));
                     }
                 }
-                Ok(None) => break, // EOF
+                Ok(None) => break,
                 Err(e) => {
                     log::warn!("audio decode error error={e}");
                     break;
@@ -906,61 +810,60 @@ fn spawn_audio_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
-    fn test_video_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/video/gameplay.mp4")
+    fn test_video_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/video/gameplay.mp4")
     }
 
-    fn test_audio_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/audio/konekonoosanpo.mp3")
+    fn test_audio_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/audio/konekonoosanpo.mp3")
     }
 
-    // ── PreviewPlayer tests ───────────────────────────────────────────────────
+    // ── open ──────────────────────────────────────────────────────────────────
 
     #[test]
     fn preview_player_open_should_fail_for_nonexistent_file() {
-        let result = PreviewPlayer::open(Path::new("nonexistent_preview.mp4"));
+        let result = PreviewPlayer::open("nonexistent_preview.mp4");
         assert!(
             result.is_err(),
             "open() must return Err for a non-existent file"
         );
     }
 
+    // ── play / pause / stop via handle ───────────────────────────────────────
+
     #[test]
-    fn preview_player_play_pause_stop_should_update_state() {
+    fn player_handle_play_pause_should_update_paused_flag_immediately() {
         let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
 
-        // Initial state: not paused, not stopped.
-        assert!(!player.paused.load(Ordering::Relaxed));
-        assert!(!player.stopped.load(Ordering::Relaxed));
+        assert!(!handle.paused.load(Ordering::Relaxed));
+        assert!(!handle.stopped.load(Ordering::Relaxed));
 
-        player.pause();
-        assert!(player.paused.load(Ordering::Relaxed));
+        handle.pause();
+        assert!(handle.paused.load(Ordering::Relaxed));
 
-        player.play();
-        assert!(!player.paused.load(Ordering::Relaxed));
-        assert!(!player.stopped.load(Ordering::Relaxed));
+        handle.play();
+        assert!(!handle.paused.load(Ordering::Relaxed));
+        assert!(!handle.stopped.load(Ordering::Relaxed));
 
-        player.stop();
-        assert!(player.stopped.load(Ordering::Relaxed));
+        handle.stop();
+        assert!(handle.stopped.load(Ordering::Relaxed));
     }
 
-    #[test]
-    fn preview_player_run_should_deliver_frames_to_sink() {
-        use std::sync::{Arc, Mutex};
+    // ── run with sink ─────────────────────────────────────────────────────────
 
-        struct CountingSink(Arc<Mutex<usize>>);
-        impl FrameSink for CountingSink {
-            fn push_frame(&mut self, _rgba: &[u8], _width: u32, _height: u32, _pts: Duration) {
+    #[test]
+    fn player_runner_run_should_deliver_frames_to_sink() {
+        struct CountSink(Arc<Mutex<usize>>);
+        impl FrameSink for CountSink {
+            fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, _pts: Duration) {
                 *self
                     .0
                     .lock()
@@ -969,8 +872,8 @@ mod tests {
         }
 
         let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (mut runner, _handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
@@ -978,11 +881,9 @@ mod tests {
         };
 
         let count = Arc::new(Mutex::new(0usize));
-        player.set_sink(Box::new(CountingSink(Arc::clone(&count))));
-        player.play();
+        runner.set_sink(Box::new(CountSink(Arc::clone(&count))));
 
-        // run() blocks until EOF; short test file finishes quickly.
-        match player.run() {
+        match runner.run() {
             Ok(()) => {}
             Err(e) => {
                 println!("skipping: run() error: {e}");
@@ -999,20 +900,20 @@ mod tests {
         );
     }
 
-    // ── pop_audio_samples tests ───────────────────────────────────────────────
+    // ── pop_audio_samples ────────────────────────────────────────────────────
 
     #[test]
     fn pop_audio_samples_should_return_empty_when_paused() {
         let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
-        player.pause();
-        let samples = player.pop_audio_samples(1024);
+        handle.pause();
+        let samples = handle.pop_audio_samples(1024);
         assert!(
             samples.is_empty(),
             "pop_audio_samples() must return empty while paused"
@@ -1022,15 +923,15 @@ mod tests {
     #[test]
     fn pop_audio_samples_should_return_empty_when_stopped() {
         let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
-        player.stop();
-        let samples = player.pop_audio_samples(1024);
+        handle.stop();
+        let samples = handle.pop_audio_samples(1024);
         assert!(
             samples.is_empty(),
             "pop_audio_samples() must return empty while stopped"
@@ -1040,15 +941,15 @@ mod tests {
     #[test]
     fn pop_audio_samples_should_return_empty_for_zero_n_samples() {
         let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
-        player.play();
-        let samples = player.pop_audio_samples(0);
+        handle.play();
+        let samples = handle.pop_audio_samples(0);
         assert!(
             samples.is_empty(),
             "pop_audio_samples(0) must always return empty"
@@ -1056,93 +957,27 @@ mod tests {
     }
 
     #[test]
-    fn pause_handle_should_control_paused_flag_from_shared_reference() {
+    fn pop_audio_samples_should_be_callable_via_cloned_handle() {
         let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
-        let handle = player.pause_handle();
-
-        handle.store(true, Ordering::Release);
-        assert!(
-            player.paused.load(Ordering::Acquire),
-            "handle must set paused flag"
-        );
-
-        handle.store(false, Ordering::Release);
-        assert!(
-            !player.paused.load(Ordering::Acquire),
-            "handle must clear paused flag"
-        );
-
-        // Arc clone proves the thread-sharing pattern compiles.
-        let cloned = Arc::clone(&handle);
-        cloned.store(true, Ordering::Release);
-        assert!(
-            player.paused.load(Ordering::Acquire),
-            "cloned handle must set paused flag"
-        );
-    }
-
-    #[test]
-    fn play_and_pause_should_be_callable_via_shared_reference() {
-        // No `mut` binding — only possible with &self receivers.
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        player.pause();
-        assert!(
-            player.paused.load(Ordering::Relaxed),
-            "pause() via &self must set paused flag"
-        );
-        player.play();
-        assert!(
-            !player.paused.load(Ordering::Relaxed),
-            "play() via &self must clear paused flag"
-        );
-    }
-
-    #[test]
-    fn pop_audio_samples_should_be_callable_via_shared_reference() {
-        // With &self receiver: works through an immutable binding and Arc<T>.
-        // This is the compile-time proof that enables cpal-callback usage.
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        // No `mut` binding — only possible with a &self receiver.
-        let samples = player.pop_audio_samples(0);
-        assert!(samples.is_empty(), "pop_audio_samples(0) must return empty");
-
-        // Via Arc — the canonical pattern for sharing with an audio callback.
-        let shared = std::sync::Arc::new(player);
+        let shared = handle.clone();
         let _samples = shared.pop_audio_samples(0);
     }
 
     #[test]
     fn pop_audio_samples_clock_increment_should_equal_half_sample_count() {
-        // Verify the stereo-frame → clock-tick formula: n_samples / 2.
-        // 9600 stereo samples at 48 kHz stereo = 4800 frames = 100 ms.
         let stereo_samples: usize = 9_600;
         let expected_frames: u64 = (stereo_samples / 2) as u64;
         assert_eq!(
             expected_frames, 4_800,
             "9600 stereo samples must yield 4800 clock frames"
         );
-        // At 48 kHz, 4800 frames = 0.1 s.
         let pts = Duration::from_secs_f64(f64::from(48_000u32).recip() * expected_frames as f64);
         assert!(
             (pts.as_secs_f64() - 0.1).abs() < 1e-6,
@@ -1150,20 +985,20 @@ mod tests {
         );
     }
 
-    // ── current_pts / duration tests ─────────────────────────────────────────
+    // ── current_pts / duration ───────────────────────────────────────────────
 
     #[test]
     fn current_pts_should_return_zero_before_first_frame() {
         let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
         assert_eq!(
-            player.current_pts(),
+            handle.current_pts(),
             Duration::ZERO,
             "current_pts() must be ZERO before any frame is presented"
         );
@@ -1172,18 +1007,18 @@ mod tests {
     #[test]
     fn duration_should_return_some_for_file_with_known_duration() {
         let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
         assert!(
-            player.duration().is_some(),
+            handle.duration().is_some(),
             "duration() must return Some for a file with a known container duration"
         );
-        let d = player.duration().unwrap();
+        let d = handle.duration().unwrap();
         assert!(
             d > Duration::ZERO,
             "duration() must be positive for a valid media file; got {d:?}"
@@ -1192,9 +1027,6 @@ mod tests {
 
     #[test]
     fn duration_should_return_none_when_duration_millis_is_sentinel() {
-        // Verify the sentinel logic: u64::MAX → None.
-        // We cannot easily get a live stream in a unit test, so we test the
-        // conversion formula directly.
         let sentinel = u64::MAX;
         let result: Option<Duration> = if sentinel == u64::MAX {
             None
@@ -1203,8 +1035,7 @@ mod tests {
         };
         assert!(result.is_none(), "sentinel u64::MAX must map to None");
 
-        // A valid value maps to Some.
-        let valid = 5_000u64; // 5 seconds
+        let valid = 5_000u64;
         let result: Option<Duration> = if valid == u64::MAX {
             None
         } else {
@@ -1215,22 +1046,19 @@ mod tests {
 
     #[test]
     fn current_pts_should_advance_after_frames_are_presented() {
-        use std::sync::{Arc, Mutex};
-
         struct PtsSink(Arc<Mutex<Option<Duration>>>);
         impl FrameSink for PtsSink {
-            fn push_frame(&mut self, _rgba: &[u8], _width: u32, _height: u32, pts: Duration) {
-                let mut g = self
+            fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, pts: Duration) {
+                *self
                     .0
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                *g = Some(pts);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pts);
             }
         }
 
         let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (mut runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
@@ -1238,23 +1066,15 @@ mod tests {
         };
 
         let last_pts = Arc::new(Mutex::new(None::<Duration>));
-        player.set_sink(Box::new(PtsSink(Arc::clone(&last_pts))));
-        player.play();
-        let _ = player.run();
+        runner.set_sink(Box::new(PtsSink(Arc::clone(&last_pts))));
+        let _ = runner.run();
 
-        // After run() returns, current_pts() must be within 1 ms of the PTS
-        // delivered to the sink. current_pts() stores millisecond precision, so
-        // sub-millisecond differences between the stored and sink values are expected.
         let sink_pts = last_pts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .unwrap_or(Duration::ZERO);
-        let player_pts = player.current_pts();
-        let diff = if player_pts >= sink_pts {
-            player_pts - sink_pts
-        } else {
-            sink_pts - player_pts
-        };
+        let player_pts = handle.current_pts();
+        let diff = sink_pts.abs_diff(player_pts);
         assert!(
             diff <= Duration::from_millis(1),
             "current_pts() must be within 1 ms of the last sink PTS; \
@@ -1262,166 +1082,101 @@ mod tests {
         );
     }
 
-    // ── seek_coarse tests ─────────────────────────────────────────────────────
+    // ── seek ──────────────────────────────────────────────────────────────────
 
     #[test]
     fn seek_coarse_should_delegate_to_decode_buffer() {
         let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
-        // Consume a few frames so the decoder has advanced past the start.
-        for _ in 0..3 {
-            if matches!(player.pop_frame(), FrameResult::Eof) {
-                println!("skipping: EOF before seek target");
-                return;
-            }
-        }
+
         let target = Duration::from_secs(1);
-        match player.seek_coarse(target) {
+        handle.seek(target);
+
+        // Stop after a short time so the test doesn't block for the full file.
+        let handle_thread = handle.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            handle_thread.stop();
+        });
+
+        match runner.run() {
             Ok(()) => {}
             Err(e) => {
-                println!("skipping: seek_coarse not supported or failed: {e}");
-                return;
+                println!("skipping: run() error: {e}");
             }
         }
-        // After a coarse seek the next frame must be available (not EOF).
-        match player.pop_frame() {
-            FrameResult::Frame(_) | FrameResult::Seeking(_) => {}
-            FrameResult::Eof => panic!("pop_frame() returned Eof immediately after seek_coarse"),
-        }
     }
 
-    #[test]
-    fn seek_coarse_should_be_faster_than_seek_for_same_target() {
-        // Structural test: both methods must return Ok for the same target.
-        // Timing comparison is environment-dependent and marked #[ignore].
-        let path = test_video_path();
-        let mut player_exact = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        let mut player_coarse = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-
-        let target = Duration::from_secs(1);
-        let exact_ok = player_exact.seek(target).is_ok();
-        let coarse_ok = player_coarse.seek_coarse(target).is_ok();
-
-        // Both must either succeed or fail (seek support depends on the codec).
-        assert_eq!(
-            exact_ok, coarse_ok,
-            "seek() and seek_coarse() must both succeed or both fail for the same file"
-        );
-    }
-
-    // ── av_offset_handle tests ────────────────────────────────────────────────
+    // ── proxy ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn av_offset_handle_should_control_offset_from_shared_reference() {
+    fn use_proxy_if_available_should_return_false_when_no_proxy_in_dir() {
         let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (mut runner, _handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
-        let handle = player.av_offset_handle();
-
-        handle.store(300, Ordering::Relaxed);
-        assert_eq!(
-            player.av_offset(),
-            300,
-            "handle must update av_offset visible through av_offset()"
-        );
-
-        handle.store(-150, Ordering::Relaxed);
-        assert_eq!(player.av_offset(), -150);
-
-        // Arc clone proves the thread-sharing pattern compiles.
-        let cloned = Arc::clone(&handle);
-        cloned.store(500, Ordering::Relaxed);
-        assert_eq!(
-            player.av_offset(),
-            500,
-            "cloned handle must update av_offset"
+        let tmp = std::env::temp_dir().join("ff_preview_no_proxy_dir_test");
+        let _ = std::fs::create_dir_all(&tmp);
+        let found = runner.use_proxy_if_available(&tmp);
+        assert!(
+            !found,
+            "must return false when no proxy files exist in the directory"
         );
     }
 
     #[test]
-    fn av_offset_handle_should_have_same_signature_as_stop_handle() {
-        // Structural test: both methods must be callable on an immutable binding.
-        // No `mut` — proves both return &self handles.
+    fn active_source_should_return_original_path_before_proxy_activation() {
         let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (runner, _handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: video file not available: {e}");
                 return;
             }
         };
-        let _av: Arc<AtomicI64> = player.av_offset_handle();
-        let _stop: Arc<AtomicBool> = player.stop_handle();
+        assert_eq!(
+            runner.active_source(),
+            path.as_path(),
+            "active_source() must equal the original path before any proxy activation"
+        );
     }
 
-    // ── A/V offset tests ──────────────────────────────────────────────────────
+    // ── set_rate / set_av_offset ──────────────────────────────────────────────
 
     #[test]
-    fn av_offset_default_should_be_zero() {
+    fn set_rate_should_accept_positive_value() {
+        let path = test_video_path();
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+        // Verify that calling set_rate with a valid value does not panic.
+        handle.set_rate(2.0);
+        handle.set_rate(0.5);
+    }
+
+    #[test]
+    fn set_av_offset_default_should_be_zero() {
         use std::sync::atomic::{AtomicI64, Ordering};
-        // AtomicI64 default matches the expected API default of 0 ms.
         let offset = AtomicI64::new(0);
         assert_eq!(offset.load(Ordering::Relaxed), 0);
     }
 
     #[test]
-    fn set_av_offset_should_clamp_large_positive_value() {
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        player.set_av_offset(10_000);
-        assert_eq!(player.av_offset(), 5_000, "offset must be clamped to +5000");
-    }
-
-    #[test]
-    fn set_av_offset_should_clamp_large_negative_value() {
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        player.set_av_offset(-10_000);
-        assert_eq!(
-            player.av_offset(),
-            -5_000,
-            "offset must be clamped to -5000"
-        );
-    }
-
-    #[test]
     fn positive_av_offset_should_reduce_adjusted_video_pts() {
-        // Simulate the offset adjustment: positive offset subtracts from video_pts.
         let video_pts = Duration::from_millis(1_000);
         let offset_ms: i64 = 200;
         let adjusted = if offset_ms >= 0 {
@@ -1468,183 +1223,23 @@ mod tests {
         );
     }
 
-    // ── use_proxy_if_available / active_source tests ──────────────────────────
-
-    #[test]
-    fn use_proxy_if_available_should_return_false_when_no_proxy_in_dir() {
-        let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        let tmp = std::env::temp_dir().join("ff_preview_no_proxy_dir_test");
-        let _ = std::fs::create_dir_all(&tmp);
-        let found = player.use_proxy_if_available(&tmp);
-        assert!(
-            !found,
-            "must return false when no proxy files exist in the directory"
-        );
-    }
-
-    #[test]
-    fn use_proxy_if_available_should_return_false_after_play() {
-        let path = test_video_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        player.play();
-        let found = player.use_proxy_if_available(Path::new("."));
-        assert!(!found, "must return false when called after play()");
-    }
-
-    #[test]
-    fn active_source_should_return_original_path_before_proxy_activation() {
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        assert_eq!(
-            player.active_source(),
-            path.as_path(),
-            "active_source() must equal the original path before any proxy activation"
-        );
-    }
-
-    // ── set_rate / rate_handle tests ──────────────────────────────────────────
-
-    #[test]
-    fn set_rate_should_update_rate_bits() {
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        // Default rate is 1.0.
-        let default_rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
-        assert!(
-            (default_rate - 1.0).abs() < f64::EPSILON,
-            "default rate must be 1.0; got {default_rate}"
-        );
-
-        player.set_rate(2.0);
-        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
-        assert!(
-            (rate - 2.0).abs() < f64::EPSILON,
-            "set_rate(2.0) must store 2.0; got {rate}"
-        );
-
-        player.set_rate(0.5);
-        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
-        assert!(
-            (rate - 0.5).abs() < f64::EPSILON,
-            "set_rate(0.5) must store 0.5; got {rate}"
-        );
-    }
-
-    #[test]
-    fn set_rate_should_ignore_non_positive_values() {
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        player.set_rate(2.0);
-
-        // 0.0 must be a no-op.
-        player.set_rate(0.0);
-        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
-        assert!(
-            (rate - 2.0).abs() < f64::EPSILON,
-            "set_rate(0.0) must be a no-op; rate must remain 2.0, got {rate}"
-        );
-
-        // Negative must also be a no-op.
-        player.set_rate(-1.0);
-        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
-        assert!(
-            (rate - 2.0).abs() < f64::EPSILON,
-            "set_rate(-1.0) must be a no-op; rate must remain 2.0, got {rate}"
-        );
-    }
-
-    #[test]
-    fn rate_handle_should_return_shared_reference_to_rate_bits() {
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        let handle = player.rate_handle();
-
-        handle.store(3.0_f64.to_bits(), Ordering::Relaxed);
-        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
-        assert!(
-            (rate - 3.0).abs() < f64::EPSILON,
-            "rate_handle() write must be visible through rate_bits; got {rate}"
-        );
-
-        // Arc clone proves the thread-sharing pattern compiles.
-        let cloned = Arc::clone(&handle);
-        cloned.store(0.25_f64.to_bits(), Ordering::Relaxed);
-        let rate = f64::from_bits(player.rate_bits.load(Ordering::Relaxed));
-        assert!(
-            (rate - 0.25).abs() < f64::EPSILON,
-            "cloned rate_handle write must be visible; got {rate}"
-        );
-    }
-
-    #[test]
-    fn set_rate_should_be_callable_via_shared_reference() {
-        // No `mut` binding — proves &self receiver.
-        let path = test_video_path();
-        let player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: video file not available: {e}");
-                return;
-            }
-        };
-        player.set_rate(2.0);
-        let rate_handle: Arc<AtomicU64> = player.rate_handle();
-        let _ = rate_handle;
-    }
-
-    // ── audio-only tests ──────────────────────────────────────────────────────
+    // ── audio-only ────────────────────────────────────────────────────────────
 
     #[test]
     fn audio_only_open_should_succeed() {
         let path = test_audio_path();
         match PreviewPlayer::open(&path) {
             Ok(player) => {
-                // Opened successfully; verify the player has no video decode buffer.
+                let (runner, handle) = player.split();
+                // Audio-only: runner has no decode buffer.
                 assert!(
-                    player.decode_buf.is_none(),
-                    "audio-only player must have no video decode buffer"
+                    runner.decode_buf.is_none(),
+                    "audio-only runner must have no video decode buffer"
                 );
-                // Audio buffer should be present.
+                // Handle has an audio buffer.
                 assert!(
-                    player.audio_buf.is_some(),
-                    "audio-only player must have an audio ring buffer"
+                    handle.audio_buf.is_some(),
+                    "audio-only handle must have an audio ring buffer"
                 );
             }
             Err(e) => {
@@ -1654,86 +1249,114 @@ mod tests {
     }
 
     #[test]
-    fn audio_only_pop_frame_should_return_eof() {
-        let path = test_audio_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("skipping: audio file not available: {e}");
-                return;
-            }
-        };
-        // For an audio-only player, pop_frame() must return Eof immediately.
-        assert!(
-            matches!(player.pop_frame(), FrameResult::Eof),
-            "pop_frame() on an audio-only player must return Eof"
-        );
-    }
-
-    #[test]
     fn audio_only_run_should_return_ok_without_video_frames() {
         let path = test_audio_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (mut runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: audio file not available: {e}");
                 return;
             }
         };
 
-        // Count frames delivered to the sink — must remain zero for audio-only.
         struct CountingSink(usize);
         impl FrameSink for CountingSink {
             fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, _pts: Duration) {
                 self.0 += 1;
             }
         }
-        player.set_sink(Box::new(CountingSink(0)));
+        runner.set_sink(Box::new(CountingSink(0)));
 
-        // Stop after 150 ms so the test doesn't block for the full audio duration.
-        let stop = player.stop_handle();
-        let _ = thread::spawn(move || {
+        let handle_thread = handle.clone();
+        thread::spawn(move || {
             thread::sleep(Duration::from_millis(150));
-            stop.store(true, Ordering::Release);
+            handle_thread.stop();
         });
 
-        player.play();
-        let result = player.run();
+        let result = runner.run();
         assert!(
             result.is_ok(),
             "run() on an audio-only player must return Ok; got {result:?}"
         );
-        // The sink should have received zero video frames.
-        if let Some(sink) = player.sink.as_ref() {
-            // Access the frame count via downcast is not available here, so we
-            // verify indirectly: current_pts() stays at zero (no frames presented).
-            let _ = sink;
-        }
         assert_eq!(
-            player.current_pts(),
+            handle.current_pts(),
             Duration::ZERO,
             "current_pts() must remain ZERO for audio-only playback (no video frames)"
         );
     }
 
     #[test]
-    fn audio_only_seek_should_return_ok() {
+    fn audio_only_seek_should_not_fail_for_valid_target() {
         let path = test_audio_path();
-        let mut player = match PreviewPlayer::open(&path) {
-            Ok(p) => p,
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
             Err(e) => {
                 println!("skipping: audio file not available: {e}");
                 return;
             }
         };
-        // seek() and seek_coarse() must return Ok(()) for audio-only files.
-        assert!(
-            player.seek(Duration::from_secs(1)).is_ok(),
-            "seek() on audio-only player must return Ok"
-        );
-        assert!(
-            player.seek_coarse(Duration::from_secs(1)).is_ok(),
-            "seek_coarse() on audio-only player must return Ok"
-        );
+        // seek() on audio-only player sends a command without errors.
+        handle.seek(Duration::from_secs(1));
+    }
+
+    // ── seek event delivery (integration) ────────────────────────────────────
+
+    #[test]
+    #[ignore = "requires assets/video/gameplay.mp4; run with -- --include-ignored"]
+    fn seek_should_deliver_seek_completed_event_via_poll_event() {
+        let path = test_video_path();
+        if !path.exists() {
+            println!("skipping: video file not found at {}", path.display());
+            return;
+        }
+
+        let (runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
+            Err(e) => {
+                println!("skipping: open failed: {e}");
+                return;
+            }
+        };
+
+        let handle_bg = handle.clone();
+        let bg = thread::spawn(move || {
+            let _ = runner.run();
+        });
+
+        // Give the runner one frame period to start, then seek.
+        thread::sleep(Duration::from_millis(50));
+        let target = Duration::from_secs(1);
+        handle.seek(target);
+
+        // Wait up to 2 seconds for SeekCompleted.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let event = loop {
+            if let Some(e) = handle.poll_event() {
+                break Some(e);
+            }
+            if Instant::now() > deadline {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        handle_bg.stop();
+        let _ = bg.join();
+
+        match event {
+            Some(PlayerEvent::SeekCompleted(pts)) => {
+                assert!(
+                    pts >= target.saturating_sub(Duration::from_millis(100)),
+                    "SeekCompleted pts must be near the requested target; \
+                     target={target:?} pts={pts:?}"
+                );
+            }
+            Some(PlayerEvent::Eof) => {
+                panic!("received Eof before SeekCompleted — file may be too short");
+            }
+            None => {
+                panic!("no PlayerEvent::SeekCompleted received within 2 seconds");
+            }
+        }
     }
 }

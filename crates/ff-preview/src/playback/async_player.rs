@@ -1,223 +1,133 @@
-//! Async wrapper around [`PreviewPlayer`].
+//! Async wrapper around [`PlayerHandle`].
 //!
 //! This module is only compiled when the `tokio` feature is enabled.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicI64, AtomicU64};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::decode_buffer::FrameResult;
-use super::player::PreviewPlayer;
-use super::sink::FrameSink;
+use super::player::{PlayerHandle, PreviewPlayer};
 use crate::error::PreviewError;
+use crate::event::PlayerEvent;
 
 // ── AsyncPreviewPlayer ────────────────────────────────────────────────────────
 
-/// Async wrapper around [`PreviewPlayer`]. Cloneable, `Send`, and `Sync`.
+/// Async wrapper around [`PlayerHandle`].
 ///
-/// All potentially-blocking methods delegate to the underlying
-/// [`PreviewPlayer`] via [`tokio::task::spawn_blocking`] so that `FFmpeg`
-/// calls do not block the async executor.
+/// On creation, a `spawn_blocking` thread opens the file, splits the player,
+/// and starts the runner. All control methods delegate directly to the
+/// underlying [`PlayerHandle`] — no inner `Mutex`.
 ///
 /// # Usage
 ///
 /// ```ignore
-/// let player = AsyncPreviewPlayer::open(Path::new("clip.mp4")).await?;
-/// player.set_sink(Box::new(MySink::new()));
-/// player.play().await;
-/// while let FrameResult::Frame(_) = player.pop_frame().await { /* … */ }
+/// use ff_preview::AsyncPreviewPlayer;
+/// use std::time::Duration;
+///
+/// let player = AsyncPreviewPlayer::open("clip.mp4").await?;
+/// player.play();
+/// player.seek(Duration::from_secs(30));
+/// while let Some(event) = player.next_event().await { ... }
 /// ```
 #[derive(Clone)]
 pub struct AsyncPreviewPlayer {
-    inner: Arc<Mutex<PreviewPlayer>>,
+    handle: PlayerHandle,
 }
 
 impl AsyncPreviewPlayer {
     /// Open a media file asynchronously.
     ///
+    /// File I/O and codec initialisation run on a `spawn_blocking` thread.
+    /// The runner is also started on a dedicated blocking thread and runs until
+    /// [`stop`](Self::stop) is called or EOF is reached.
+    ///
     /// # Errors
     ///
-    /// Returns [`PreviewError`] if the file cannot be opened or the blocking
-    /// thread panics.
-    pub async fn open(path: &Path) -> Result<Self, PreviewError> {
-        let path = path.to_path_buf();
-        let player = tokio::task::spawn_blocking(move || PreviewPlayer::open(&path))
-            .await
-            .map_err(|e| PreviewError::Ffmpeg {
-                code: 0,
-                message: format!("tokio task join error: {e}"),
-            })??;
-        Ok(Self {
-            inner: Arc::new(Mutex::new(player)),
-        })
+    /// Returns [`PreviewError`] if the file is missing, unreadable, or contains
+    /// neither a video nor an audio stream.
+    pub async fn open(path: impl AsRef<Path> + Send + 'static) -> Result<Self, PreviewError> {
+        let path = path.as_ref().to_path_buf();
+        let task = tokio::task::spawn_blocking(move || {
+            PreviewPlayer::open(&path).map(PreviewPlayer::split)
+        });
+        let (runner, handle) = task.await.map_err(|e| PreviewError::Ffmpeg {
+            code: 0,
+            message: format!("tokio task join error: {e}"),
+        })??;
+
+        tokio::task::spawn_blocking(move || {
+            let _ = runner.run();
+        });
+
+        Ok(Self { handle })
     }
 
-    /// Register the frame sink. Not async — only stores the box.
-    pub fn set_sink(&self, sink: Box<dyn FrameSink>) {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .set_sink(sink);
-    }
-
-    /// Start (or resume) playback.
-    pub async fn play(&self) {
-        let inner = Arc::clone(&self.inner);
-        let _ = tokio::task::spawn_blocking(move || {
-            inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .play();
-        })
-        .await;
+    /// Resume playback.
+    pub fn play(&self) {
+        self.handle.play();
     }
 
     /// Pause playback.
-    pub async fn pause(&self) {
-        let inner = Arc::clone(&self.inner);
-        let _ = tokio::task::spawn_blocking(move || {
-            inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pause();
-        })
-        .await;
+    pub fn pause(&self) {
+        self.handle.pause();
     }
 
-    /// Stop playback.
-    pub async fn stop(&self) {
-        let inner = Arc::clone(&self.inner);
-        let _ = tokio::task::spawn_blocking(move || {
-            inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .stop();
-        })
-        .await;
+    /// Stop the presentation loop.
+    pub fn stop(&self) {
+        self.handle.stop();
     }
 
-    /// Frame-accurate seek to `pts`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreviewError`] if the seek fails or the blocking thread panics.
-    pub async fn seek(&self, pts: Duration) -> Result<(), PreviewError> {
-        let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
-            inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .seek(pts)
-        })
-        .await
-        .map_err(|e| PreviewError::Ffmpeg {
-            code: 0,
-            message: format!("tokio task join error: {e}"),
-        })?
+    /// Seek to `pts`.
+    pub fn seek(&self, pts: Duration) {
+        self.handle.seek(pts);
     }
 
-    /// Coarse seek to the nearest I-frame at or before `pts`.
-    ///
-    /// See [`PreviewPlayer::seek_coarse`] for full semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreviewError`] if the seek fails or the blocking thread panics.
-    pub async fn seek_coarse(&self, pts: Duration) -> Result<(), PreviewError> {
-        let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
-            inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .seek_coarse(pts)
-        })
-        .await
-        .map_err(|e| PreviewError::Ffmpeg {
-            code: 0,
-            message: format!("tokio task join error: {e}"),
-        })?
-    }
-
-    /// Pop the next decoded video frame.
-    ///
-    /// Runs on a blocking thread until a frame is available.
-    /// Returns [`FrameResult::Eof`] at end of file or on thread panic.
-    pub async fn pop_frame(&self) -> FrameResult {
-        let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
-            inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pop_frame()
-        })
-        .await
-        .unwrap_or(FrameResult::Eof)
-    }
-
-    /// Returns a cloneable handle to the A/V offset atomic.
-    ///
-    /// See [`PreviewPlayer::av_offset_handle`] for full semantics.
-    pub fn av_offset_handle(&self) -> Arc<AtomicI64> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .av_offset_handle()
-    }
-
-    /// Set the playback rate. Not async — only writes to the atomic.
-    ///
-    /// See [`PreviewPlayer::set_rate`] for full semantics.
+    /// Set the playback rate.
     pub fn set_rate(&self, rate: f64) {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .set_rate(rate);
+        self.handle.set_rate(rate);
     }
 
-    /// Returns a cloneable handle to the rate atomic.
-    ///
-    /// See [`PreviewPlayer::rate_handle`] for full semantics.
-    pub fn rate_handle(&self) -> Arc<AtomicU64> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .rate_handle()
-    }
-
-    /// Returns the PTS of the most recently presented frame.
-    ///
-    /// See [`PreviewPlayer::current_pts`] for full semantics.
+    /// PTS of the most recently presented frame.
+    #[must_use]
     pub fn current_pts(&self) -> Duration {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .current_pts()
+        self.handle.current_pts()
     }
 
-    /// Returns the container-reported duration, if known.
-    ///
-    /// See [`PreviewPlayer::duration`] for full semantics.
+    /// Container-reported duration, or `None` for live / streaming sources.
+    #[must_use]
     pub fn duration(&self) -> Option<Duration> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .duration()
+        self.handle.duration()
     }
 
     /// Pull up to `n` interleaved stereo `f32` PCM samples at 48 kHz.
+    #[must_use]
+    pub fn pop_audio_samples(&self, n: usize) -> Vec<f32> {
+        self.handle.pop_audio_samples(n)
+    }
+
+    /// Poll for the next [`PlayerEvent`] without blocking.
     ///
-    /// See [`PreviewPlayer::pop_audio_samples`] for full semantics.
-    pub async fn pop_audio_samples(&self, n: usize) -> Vec<f32> {
-        let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
-            inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pop_audio_samples(n)
-        })
-        .await
-        .unwrap_or_default()
+    /// Returns `None` when no events are pending.
+    #[must_use]
+    pub fn poll_event(&self) -> Option<PlayerEvent> {
+        self.handle.poll_event()
+    }
+
+    /// Await the next [`PlayerEvent`].
+    ///
+    /// Blocks in a `spawn_blocking` thread until an event arrives or the
+    /// channel is closed. Returns `None` when the runner has exited.
+    pub async fn next_event(&self) -> Option<PlayerEvent> {
+        let handle = self.handle.clone();
+        tokio::task::spawn_blocking(move || handle.recv_event())
+            .await
+            .ok()
+            .flatten()
+    }
+}
+
+impl Drop for AsyncPreviewPlayer {
+    fn drop(&mut self) {
+        self.handle.stop();
     }
 }
 
@@ -232,23 +142,30 @@ mod tests {
     }
 
     #[test]
+    fn async_preview_player_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<AsyncPreviewPlayer>();
+    }
+
+    #[test]
     #[ignore = "requires FFmpeg and assets/video/gameplay.mp4; run with -- --include-ignored"]
-    fn async_preview_player_should_open_and_pop_frame() {
+    fn async_preview_player_should_open_and_report_nonzero_duration() {
         let path = test_video_path();
-        match tokio::runtime::Builder::new_current_thread().build() {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
             Ok(rt) => rt.block_on(async {
-                let player = match AsyncPreviewPlayer::open(&path).await {
+                let player = match AsyncPreviewPlayer::open(path.clone()).await {
                     Ok(p) => p,
                     Err(e) => {
                         println!("skipping: open failed: {e}");
                         return;
                     }
                 };
-                player.play().await;
-                let frame = player.pop_frame().await;
                 assert!(
-                    matches!(frame, FrameResult::Frame(_) | FrameResult::Seeking(_)),
-                    "pop_frame() must return Frame or Seeking"
+                    player.duration().is_some_and(|d| d > Duration::ZERO),
+                    "duration must be positive for a valid media file"
                 );
             }),
             Err(e) => println!("skipping: failed to build tokio runtime: {e}"),

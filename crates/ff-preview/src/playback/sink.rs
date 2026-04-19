@@ -11,13 +11,13 @@ use std::time::Duration;
 
 /// A sink that receives decoded video frames as contiguous RGBA bytes.
 ///
-/// Implementations must be `Send` — [`PreviewPlayer`](super::PreviewPlayer) calls
+/// Implementations must be `Send` — [`PlayerRunner`](super::PlayerRunner) calls
 /// `push_frame` from a dedicated presentation thread.
 ///
 /// # Threading
 ///
-/// `push_frame` is called exclusively from [`PreviewPlayer::run`](super::PreviewPlayer::run).
-/// Do **not** call back into [`PreviewPlayer`](super::PreviewPlayer) from inside
+/// `push_frame` is called exclusively from [`PlayerRunner::run`](super::PlayerRunner::run).
+/// Do **not** call back into [`PlayerRunner`](super::PlayerRunner) from inside
 /// `push_frame` — this will deadlock.
 pub trait FrameSink: Send {
     /// Receive a video frame at its presentation time.
@@ -28,7 +28,7 @@ pub trait FrameSink: Send {
     /// - Row stride: `width * 4` bytes (no padding)
     fn push_frame(&mut self, rgba: &[u8], width: u32, height: u32, pts: Duration);
 
-    /// Called when playback ends (EOF or [`stop`](super::PreviewPlayer::stop)). Default: no-op.
+    /// Called when playback ends (EOF or [`PlayerHandle::stop`](super::PlayerHandle::stop)). Default: no-op.
     ///
     /// Implementations should flush any pending output here.
     fn flush(&mut self) {}
