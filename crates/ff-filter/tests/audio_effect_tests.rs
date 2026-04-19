@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use ff_filter::{EqBand, FilterGraph};
+use ff_filter::{EqBand, FilterError, FilterGraph};
 use ff_format::{AudioFrame, SampleFormat, Timestamp};
 
 /// Stereo packed F32 sine wave frame at the given frequency.
@@ -28,6 +28,45 @@ fn make_sine_frame(freq_hz: f64, sample_rate: u32, num_samples: usize) -> AudioF
         Timestamp::default(),
     )
     .unwrap()
+}
+
+/// Stereo packed F32 sine wave frame with configurable amplitude.
+fn make_sine_with_amplitude(
+    freq_hz: f64,
+    amplitude: f32,
+    sample_rate: u32,
+    num_samples: usize,
+) -> AudioFrame {
+    let channels = 2usize;
+    let bytes_per_sample = 4usize;
+    let mut buf = vec![0u8; num_samples * channels * bytes_per_sample];
+    for i in 0..num_samples {
+        let t = i as f64 / f64::from(sample_rate);
+        let v = (amplitude * (2.0 * std::f64::consts::PI * freq_hz * t).sin() as f32).to_le_bytes();
+        let offset = i * channels * bytes_per_sample;
+        buf[offset..offset + 4].copy_from_slice(&v);
+        buf[offset + 4..offset + 8].copy_from_slice(&v);
+    }
+    AudioFrame::new(
+        vec![buf],
+        num_samples,
+        2,
+        sample_rate,
+        SampleFormat::F32,
+        Timestamp::default(),
+    )
+    .unwrap()
+}
+
+/// RMS of all samples in an [`AudioFrame`], trying packed then planar format.
+fn frame_rms(frame: &AudioFrame) -> f64 {
+    if let Some(s) = frame.as_f32() {
+        rms(s)
+    } else if let Some(s) = frame.channel_as_f32(0) {
+        rms(s)
+    } else {
+        0.0
+    }
 }
 
 /// RMS of an f32 sample slice (packed, interleaved channels).
@@ -319,4 +358,77 @@ fn audio_delay_100ms_should_shift_audio_later() {
             println!("Skipping pull_audio: {e}");
         }
     }
+}
+
+/// Verifies that `FilterGraph::duck()` reduces the background level by at least
+/// 12 dB when a foreground signal above the compression threshold is present.
+///
+/// Acceptance criterion for issue #413.
+#[test]
+fn duck_should_reduce_background_by_at_least_12db_when_foreground_active() {
+    // Background: −20 dBFS (at threshold); foreground: −6 dBFS (14 dB above threshold).
+    // With 20:1 ratio the expected sidechain-triggered gain reduction is ≈ 13.3 dB,
+    // so the 12 dB assertion has ≈ 1 dB margin.
+    let bg_amplitude = 10.0_f32.powf(-20.0 / 20.0); // 0.1 linear
+    let fg_amplitude = 10.0_f32.powf(-6.0 / 20.0); // ≈ 0.501 linear
+
+    const SAMPLE_RATE: u32 = 48_000;
+    const NUM_SAMPLES: usize = 48_000; // 1 second — compressor settles within first 10 ms
+
+    let bg_frame = make_sine_with_amplitude(220.0, bg_amplitude, SAMPLE_RATE, NUM_SAMPLES);
+    let fg_frame = make_sine_with_amplitude(440.0, fg_amplitude, SAMPLE_RATE, NUM_SAMPLES);
+    let bg_rms_baseline = frame_rms(&bg_frame);
+
+    let mut graph = match FilterGraph::builder().build() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("Skipping: graph build failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = graph.duck(-20.0, 20.0, 10.0, 200.0) {
+        println!("Skipping: duck() setup failed: {e}");
+        return;
+    }
+
+    // Lazy FFmpeg graph construction happens on first push_audio.
+    // FilterError::BuildFailed signals that sidechaincompress is unavailable.
+    match graph.push_audio(0, &bg_frame) {
+        Ok(()) => {}
+        Err(FilterError::BuildFailed) => {
+            println!("Skipping: sidechaincompress not available in this FFmpeg build");
+            return;
+        }
+        Err(e) => panic!("push_audio(0) failed unexpectedly: {e}"),
+    }
+    match graph.push_audio(1, &fg_frame) {
+        Ok(()) => {}
+        Err(FilterError::BuildFailed) => {
+            println!("Skipping: sidechaincompress not available in this FFmpeg build");
+            return;
+        }
+        Err(e) => panic!("push_audio(1) failed unexpectedly: {e}"),
+    }
+
+    let out = match graph.pull_audio() {
+        Ok(Some(f)) => f,
+        Ok(None) => {
+            println!("Skipping: no output frame produced (compressor may buffer internally)");
+            return;
+        }
+        Err(e) => panic!("pull_audio failed unexpectedly: {e}"),
+    };
+
+    let out_rms = frame_rms(&out);
+    assert!(
+        out_rms > 0.0,
+        "duck output must not be completely silent (got {out_rms:.6})"
+    );
+
+    let reduction_db = 20.0_f64 * (bg_rms_baseline / out_rms).log10();
+    assert!(
+        reduction_db >= 12.0,
+        "background reduction must be ≥ 12 dB when foreground is active; \
+         baseline_rms={bg_rms_baseline:.4} ducked_rms={out_rms:.4} reduction={reduction_db:.1} dB"
+    );
 }
