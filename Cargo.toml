@@ -21,8 +21,9 @@ ff-encode   = { path = "crates/ff-encode",   version = "0.13.1" }
 ff-filter   = { path = "crates/ff-filter",   version = "0.13.1" }
 ff-pipeline = { path = "crates/ff-pipeline", version = "0.13.1" }
 ff-stream   = { path = "crates/ff-stream",   version = "0.13.1" }
-ff-preview  = { path = "crates/ff-preview", version = "0.13.1" }
-avio        = { path = "crates/avio",        version = "0.13.1" }
+ff-preview  = { path = "crates/ff-preview",  version = "0.13.1" }
+ff-render   = { path = "crates/ff-render",   version = "0.13.1" }
+avio        = { path = "crates/avio",         version = "0.13.1" }
 
 # Error handling
 thiserror = "2.0.17"

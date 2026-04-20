@@ -1,0 +1,31 @@
+[package]
+name = "ff-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "GPU compositing pipeline for real-time preview (wgpu-based)"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+keywords = ["video", "gpu", "wgpu", "compositing", "rendering"]
+categories = ["multimedia::video"]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+wgpu    = ["dep:wgpu"]
+
+[dependencies]
+ff-preview = { workspace = true }
+ff-format  = { workspace = true }
+log        = { workspace = true }
+thiserror  = { workspace = true }
+
+[dependencies.wgpu]
+version  = "29.0.1"
+optional = true
+
+[lints]
+workspace = true

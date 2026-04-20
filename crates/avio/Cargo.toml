@@ -20,6 +20,8 @@ pipeline = ["dep:ff-pipeline", "filter"]
 stream   = ["dep:ff-stream", "pipeline"]
 preview       = ["dep:ff-preview"]
 preview-proxy = ["preview", "ff-preview/proxy"]
+render        = ["dep:ff-render", "preview"]
+render-gpu    = ["render", "ff-render/wgpu"]
 tokio         = ["decode", "encode", "ff-decode/tokio", "ff-encode/tokio", "ff-preview/tokio"]
 gpl      = ["ff-encode/gpl"]
 hwaccel  = ["ff-encode/hwaccel"]
@@ -39,6 +41,7 @@ ff-filter   = { workspace = true, optional = true }
 ff-pipeline = { workspace = true, optional = true }
 ff-stream   = { workspace = true, optional = true }
 ff-preview  = { workspace = true, optional = true }
+ff-render   = { workspace = true, optional = true }
 
 [[example]]
 name = "probe_info"
