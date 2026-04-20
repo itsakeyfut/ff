@@ -2,7 +2,7 @@
 //!
 //! GPU compositing pipeline for real-time video preview, built on [wgpu].
 //!
-//! `ff-render` sits above [`ff-preview`] in the crate stack and implements
+//! `ff-render` sits above `ff-preview` in the crate stack and implements
 //! [`ff_preview::FrameSink`] so it integrates directly with
 //! [`ff_preview::PlayerRunner`].
 //!
