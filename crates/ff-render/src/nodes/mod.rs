@@ -2,11 +2,13 @@ pub mod color_grade;
 pub mod crossfade;
 pub mod overlay;
 pub mod scale;
+pub mod upload;
 
 pub use color_grade::ColorGradeNode;
 pub use crossfade::CrossfadeNode;
 pub use overlay::OverlayNode;
 pub use scale::{ScaleAlgorithm, ScaleNode};
+pub use upload::{YuvFormat, YuvUploadNode};
 
 // ── RenderNodeCpu ─────────────────────────────────────────────────────────────
 

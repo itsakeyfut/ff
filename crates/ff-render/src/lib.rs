@@ -70,6 +70,7 @@ pub use error::RenderError;
 pub use graph::RenderGraph;
 pub use nodes::{
     ColorGradeNode, CrossfadeNode, OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode,
+    YuvFormat, YuvUploadNode,
 };
 pub use sink::GpuFrameSink;
 
