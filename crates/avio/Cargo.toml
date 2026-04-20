@@ -503,6 +503,21 @@ name = "timeline_render"
 path = "examples/transcode/timeline_render.rs"
 required-features = ["filter", "pipeline", "encode"]
 
+[[example]]
+name = "scope_analyzer"
+path = "examples/analysis/scope_analyzer.rs"
+required-features = ["decode"]
+
+[[example]]
+name = "advanced_video_effects"
+path = "examples/filter/advanced_video_effects.rs"
+required-features = ["decode", "encode", "filter"]
+
+[[example]]
+name = "advanced_audio_effects"
+path = "examples/filter/advanced_audio_effects.rs"
+required-features = ["decode", "encode", "filter"]
+
 [dev-dependencies]
 futures = { workspace = true }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
