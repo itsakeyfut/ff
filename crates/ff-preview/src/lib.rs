@@ -26,6 +26,7 @@
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 
+pub(crate) mod cache;
 pub mod error;
 pub mod event;
 pub mod playback;

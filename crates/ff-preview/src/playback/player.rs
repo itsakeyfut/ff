@@ -27,6 +27,7 @@ use ff_format::SampleFormat;
 use super::clock::MasterClock;
 use super::decode_buffer::{DecodeBuffer, FrameResult};
 use super::sink::FrameSink;
+use crate::cache::FrameCache;
 use crate::error::PreviewError;
 use crate::event::PlayerEvent;
 
@@ -249,6 +250,7 @@ pub struct PlayerRunner {
     av_offset_ms: i64,
     rate: f64,
     duration_millis: u64,
+    frame_cache: Option<FrameCache>,
 }
 
 impl PlayerRunner {
@@ -267,6 +269,20 @@ impl PlayerRunner {
     #[must_use]
     pub fn active_source(&self) -> &Path {
         &self.active_path
+    }
+
+    /// Enable an in-memory RGBA frame cache with the given byte budget.
+    ///
+    /// When the budget is set, frames decoded during playback are stored
+    /// and served on cache hit without re-decoding, enabling instant scrubbing.
+    /// The cache is invalidated automatically whenever a seek targets a PTS
+    /// outside the currently cached range.
+    ///
+    /// Example: `runner.with_frame_cache_budget(512 * 1024 * 1024)` for 512 MB.
+    #[must_use]
+    pub fn with_frame_cache_budget(mut self, bytes: usize) -> Self {
+        self.frame_cache = Some(FrameCache::new(bytes));
+        self
     }
 
     /// Container-reported duration, or `None` for live / streaming sources.
@@ -367,6 +383,15 @@ impl PlayerRunner {
 
             // ── Apply pending seek ────────────────────────────────────────────
             if let Some(pts) = pending_seek {
+                // Invalidate the frame cache when seeking outside its range.
+                if let Some(cache) = &mut self.frame_cache {
+                    let in_range = cache
+                        .pts_range()
+                        .is_some_and(|(lo, hi)| pts >= lo && pts <= hi);
+                    if !in_range {
+                        cache.invalidate();
+                    }
+                }
                 if let Some(buf) = self.decode_buf.as_mut() {
                     buf.seek(pts)?;
                 }
@@ -409,6 +434,25 @@ impl PlayerRunner {
                 } else {
                     break;
                 }
+                continue;
+            }
+
+            // ── Frame cache hit ───────────────────────────────────────────────
+            let current = self.clock.current_pts();
+            let cache_hit = self
+                .frame_cache
+                .as_ref()
+                .and_then(|c| c.get(current))
+                .map(|f| (f.rgba.clone(), f.width, f.height));
+            if let Some((rgba, width, height)) = cache_hit {
+                if let Some(sink) = self.sink.as_mut() {
+                    sink.push_frame(&rgba, width, height, current);
+                }
+                self.current_pts.store(
+                    u64::try_from(current.as_micros()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                let _ = self.event_tx.try_send(PlayerEvent::PositionUpdate(current));
                 continue;
             }
 
@@ -462,6 +506,13 @@ impl PlayerRunner {
                     self.present_frame(&frame);
                     let pts = frame.timestamp().as_duration();
                     let _ = self.event_tx.try_send(PlayerEvent::PositionUpdate(pts));
+
+                    // Populate cache after conversion (rgba_buf holds the converted frame).
+                    if let Some(cache) = &mut self.frame_cache
+                        && !self.rgba_buf.is_empty()
+                    {
+                        cache.insert(pts, self.rgba_buf.clone(), frame.width(), frame.height());
+                    }
                 }
             }
         }
@@ -750,6 +801,7 @@ impl PreviewPlayer {
             av_offset_ms: 0,
             rate: 1.0,
             duration_millis,
+            frame_cache: None,
         };
 
         let handle = PlayerHandle {
