@@ -16,4 +16,15 @@ pub enum PlayerEvent {
 
     /// The media file has been fully decoded; `run()` is about to return.
     Eof,
+
+    /// Current playback position; emitted once per decoded and presented video frame.
+    ///
+    /// Not emitted during seeking (while [`FrameResult::Seeking`](crate::playback::FrameResult)
+    /// is being returned) — only for fully decoded frames.
+    PositionUpdate(Duration),
+
+    /// A non-fatal decode error encountered by the background decode thread.
+    ///
+    /// Playback continues until EOF; [`PlayerEvent::Eof`] follows shortly after.
+    Error(String),
 }

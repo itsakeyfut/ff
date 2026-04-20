@@ -104,12 +104,20 @@ impl DecodeBufferBuilder {
         let buffered_thread = Arc::clone(&buffered);
         let cancel_thread = Arc::clone(&cancel);
 
+        let (seek_tx, seek_rx) = channel::<SeekEvent>();
+        let (error_tx, error_rx) = channel::<String>();
+
+        let error_tx_thread = error_tx.clone();
         let handle = thread::spawn(move || -> VideoDecoder {
-            decode_loop(&mut decoder, &tx, &buffered_thread, &cancel_thread);
+            decode_loop(
+                &mut decoder,
+                &tx,
+                &buffered_thread,
+                &cancel_thread,
+                &error_tx_thread,
+            );
             decoder
         });
-
-        let (seek_tx, seek_rx) = channel::<SeekEvent>();
 
         Ok(DecodeBuffer {
             rx: Some(rx),
@@ -121,6 +129,8 @@ impl DecodeBufferBuilder {
             last_good_frame: None,
             seek_tx,
             seek_rx,
+            error_tx,
+            error_rx,
         })
     }
 }
@@ -175,6 +185,10 @@ pub struct DecodeBuffer {
     seek_tx: Sender<SeekEvent>,
     /// Receiver for seek completion events; exposed via `seek_events()`.
     seek_rx: Receiver<SeekEvent>,
+    /// Sender side of the decode error channel; cloned into each decode thread.
+    error_tx: Sender<String>,
+    /// Receiver for non-fatal decode error messages; exposed via `error_events()`.
+    error_rx: Receiver<String>,
 }
 
 impl DecodeBuffer {
@@ -238,6 +252,17 @@ impl DecodeBuffer {
         &self.seek_rx
     }
 
+    /// Returns the receiver for non-fatal decode error messages.
+    ///
+    /// Poll with `try_recv()` in the presentation loop. Each message
+    /// corresponds to one failed `decode_one()` call in the background thread.
+    /// The background thread exits after sending the error, so
+    /// [`pop_frame`](Self::pop_frame) will return `Eof` shortly after.
+    #[must_use]
+    pub fn error_events(&self) -> &Receiver<String> {
+        &self.error_rx
+    }
+
     /// Frame-accurate seek to `target_pts`.
     ///
     /// Stops the background decode thread, seeks the underlying decoder to the
@@ -256,6 +281,7 @@ impl DecodeBuffer {
         let (mut decoder, tx) = self.stop_and_seek(target_pts)?;
         let buffered_thread = Arc::clone(&self.buffered);
         let cancel_thread = Arc::clone(&self.cancel);
+        let error_tx_thread = self.error_tx.clone();
 
         self.handle = Some(thread::spawn(move || -> VideoDecoder {
             // Forward-decode discard: drop frames whose PTS is before target_pts.
@@ -283,13 +309,20 @@ impl DecodeBuffer {
                     Ok(None) => return decoder, // EOF before target
                     Err(e) => {
                         log::warn!("decode error during seek discard error={e}");
+                        let _ = error_tx_thread.send(e.to_string());
                         return decoder;
                     }
                 }
             }
 
             // Normal decode loop after the discard phase.
-            decode_loop(&mut decoder, &tx, &buffered_thread, &cancel_thread);
+            decode_loop(
+                &mut decoder,
+                &tx,
+                &buffered_thread,
+                &cancel_thread,
+                &error_tx_thread,
+            );
             decoder
         }));
 
@@ -315,10 +348,17 @@ impl DecodeBuffer {
         let (mut decoder, tx) = self.stop_and_seek(target_pts)?;
         let buffered_thread = Arc::clone(&self.buffered);
         let cancel_thread = Arc::clone(&self.cancel);
+        let error_tx_thread = self.error_tx.clone();
 
         // No discard loop — start the normal decode loop directly from the I-frame.
         self.handle = Some(thread::spawn(move || -> VideoDecoder {
-            decode_loop(&mut decoder, &tx, &buffered_thread, &cancel_thread);
+            decode_loop(
+                &mut decoder,
+                &tx,
+                &buffered_thread,
+                &cancel_thread,
+                &error_tx_thread,
+            );
             decoder
         }));
 
@@ -365,6 +405,7 @@ impl DecodeBuffer {
         let cancel = Arc::clone(&self.cancel);
         let seeking = Arc::clone(&self.seeking);
         let seek_event_tx = self.seek_tx.clone();
+        let error_tx_async = self.error_tx.clone();
 
         let worker = thread::spawn(move || -> VideoDecoder {
             // Recover the decoder from the old thread. In normal operation the
@@ -427,12 +468,13 @@ impl DecodeBuffer {
                     Ok(None) => return decoder, // EOF before target
                     Err(e) => {
                         log::warn!("seek_async discard error error={e}");
+                        let _ = error_tx_async.send(e.to_string());
                         return decoder;
                     }
                 }
             }
 
-            decode_loop(&mut decoder, &new_tx, &buffered, &cancel);
+            decode_loop(&mut decoder, &new_tx, &buffered, &cancel, &error_tx_async);
             decoder
         });
 
@@ -515,6 +557,7 @@ pub(super) fn decode_loop(
     tx: &SyncSender<VideoFrame>,
     buffered: &AtomicUsize,
     cancel: &AtomicBool,
+    error_tx: &Sender<String>,
 ) {
     loop {
         if cancel.load(Ordering::Acquire) {
@@ -532,6 +575,7 @@ pub(super) fn decode_loop(
             Ok(None) => break, // EOF
             Err(e) => {
                 log::warn!("decode error in background thread error={e}");
+                let _ = error_tx.send(e.to_string());
                 break;
             }
         }
