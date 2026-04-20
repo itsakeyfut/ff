@@ -199,6 +199,7 @@ impl PlayerHandle {
     ///
     /// Audio fields are set to `None`; the handle's
     /// [`pop_audio_samples`](Self::pop_audio_samples) always returns an empty `Vec`.
+    #[cfg(feature = "timeline")]
     pub(crate) fn for_timeline(
         cmd_tx: mpsc::SyncSender<PlayerCommand>,
         event_rx: Arc<Mutex<mpsc::Receiver<PlayerEvent>>>,

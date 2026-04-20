@@ -14,6 +14,7 @@
 
 mod playback_inner;
 
+#[cfg(feature = "timeline")]
 pub(crate) use playback_inner::SwsRgbaConverter;
 
 pub(crate) mod clock;
