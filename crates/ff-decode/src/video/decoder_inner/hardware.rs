@@ -57,12 +57,18 @@ impl VideoDecoderInner {
                 // Try hardware accelerators in priority order
                 for &hw_type in Self::hw_accel_auto_priority() {
                     // SAFETY: Caller ensures codec_ctx is valid and not yet configured with hardware
-                    if let Ok((Some(ctx), active)) =
-                        unsafe { Self::try_init_hw_device(codec_ctx, hw_type) }
-                    {
-                        return Ok((Some(ctx), active));
+                    match unsafe { Self::try_init_hw_device(codec_ctx, hw_type) } {
+                        Ok((Some(ctx), active)) => {
+                            log::info!("hwaccel selected backend={}", active.name());
+                            return Ok((Some(ctx), active));
+                        }
+                        _ => {
+                            log::debug!(
+                                "hwaccel probe failed backend={} trying next",
+                                hw_type.name()
+                            );
+                        }
                     }
-                    // Ignore errors in Auto mode and try the next one
                 }
                 // All hardware accelerators failed, fall back to software
                 Ok((None, HardwareAccel::None))

@@ -41,6 +41,7 @@ pub mod timeline;
 pub use audio::{AudioMixer, AudioTrackHandle};
 pub use error::PreviewError;
 pub use event::PlayerEvent;
+pub use ff_decode::HardwareAccel;
 pub use playback::{
     DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink, PlaybackClock, PlayerCommand,
     PlayerHandle, PlayerRunner, PreviewPlayer, RgbaFrame, RgbaSink, SeekEvent,
