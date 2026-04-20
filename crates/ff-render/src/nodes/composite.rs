@@ -1361,7 +1361,7 @@ mod tests {
 // ── GPU helpers (shared) ──────────────────────────────────────────────────────
 
 #[cfg(feature = "wgpu")]
-fn linear_sampler(device: &wgpu::Device, label: &str) -> wgpu::Sampler {
+pub(crate) fn linear_sampler(device: &wgpu::Device, label: &str) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some(&format!("{label} sampler")),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1374,7 +1374,10 @@ fn linear_sampler(device: &wgpu::Device, label: &str) -> wgpu::Sampler {
 
 /// Build a BGL with one texture + one sampler + one uniform buffer.
 #[cfg(feature = "wgpu")]
-fn one_tex_sampler_uniform_bgl(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
+pub(crate) fn one_tex_sampler_uniform_bgl(
+    device: &wgpu::Device,
+    label: &str,
+) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(&format!("{label} BGL")),
         entries: &[
@@ -1410,7 +1413,10 @@ fn one_tex_sampler_uniform_bgl(device: &wgpu::Device, label: &str) -> wgpu::Bind
 
 /// Build a BGL with two textures + one sampler + one uniform buffer.
 #[cfg(feature = "wgpu")]
-fn two_tex_sampler_uniform_bgl(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
+pub(crate) fn two_tex_sampler_uniform_bgl(
+    device: &wgpu::Device,
+    label: &str,
+) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(&format!("{label} BGL")),
         entries: &[
@@ -1455,7 +1461,7 @@ fn two_tex_sampler_uniform_bgl(device: &wgpu::Device, label: &str) -> wgpu::Bind
 }
 
 #[cfg(feature = "wgpu")]
-fn fullscreen_pipeline(
+pub(crate) fn fullscreen_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     label: &str,
@@ -1494,7 +1500,7 @@ fn fullscreen_pipeline(
 }
 
 #[cfg(feature = "wgpu")]
-fn upload_rgba_texture(
+pub(crate) fn upload_rgba_texture(
     ctx: &crate::context::RenderContext,
     data: &[u8],
     width: u32,
@@ -1538,7 +1544,7 @@ fn upload_rgba_texture(
 }
 
 #[cfg(feature = "wgpu")]
-fn submit_render_pass(
+pub(crate) fn submit_render_pass(
     ctx: &crate::context::RenderContext,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
