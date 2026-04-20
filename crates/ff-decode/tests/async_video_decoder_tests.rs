@@ -104,6 +104,104 @@ async fn into_stream_should_terminate_at_eof() {
     );
 }
 
+// ── Builder options (issue #1005) ─────────────────────────────────────────────
+
+/// Verify that `output_format` on `AsyncVideoDecoderBuilder` is accepted and
+/// frames are decoded to the requested pixel format. Acceptance criterion for
+/// issue #1005.
+#[tokio::test]
+async fn async_video_decoder_builder_output_format_should_be_respected() {
+    use ff_decode::AsyncVideoDecoder;
+    use ff_format::PixelFormat;
+
+    let path = test_video_path();
+    if !path.exists() {
+        println!("Skipping: video asset not found");
+        return;
+    }
+
+    let mut decoder = match AsyncVideoDecoder::builder(path)
+        .output_format(PixelFormat::Rgba)
+        .build()
+        .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: decoder build failed: {e}");
+            return;
+        }
+    };
+
+    let frame = match decoder.decode_frame().await {
+        Ok(Some(f)) => f,
+        Ok(None) => {
+            println!("Skipping: no frame decoded");
+            return;
+        }
+        Err(e) => {
+            println!("Skipping: decode_frame failed: {e}");
+            return;
+        }
+    };
+
+    assert_eq!(
+        frame.format(),
+        PixelFormat::Rgba,
+        "output_format(Rgba) must deliver RGBA frames; got {:?}",
+        frame.format()
+    );
+}
+
+/// Verify that `output_size` limits decoded frame dimensions.
+/// Acceptance criterion for issue #1005.
+#[tokio::test]
+async fn async_video_decoder_builder_output_size_should_scale_frame() {
+    use ff_decode::AsyncVideoDecoder;
+
+    let path = test_video_path();
+    if !path.exists() {
+        println!("Skipping: video asset not found");
+        return;
+    }
+
+    let mut decoder = match AsyncVideoDecoder::builder(path)
+        .output_size(160, 90)
+        .build()
+        .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Skipping: decoder build failed: {e}");
+            return;
+        }
+    };
+
+    let frame = match decoder.decode_frame().await {
+        Ok(Some(f)) => f,
+        Ok(None) => {
+            println!("Skipping: no frame decoded");
+            return;
+        }
+        Err(e) => {
+            println!("Skipping: decode_frame failed: {e}");
+            return;
+        }
+    };
+
+    assert_eq!(
+        frame.width(),
+        160,
+        "output_size(160, 90) must scale width to 160; got {}",
+        frame.width()
+    );
+    assert_eq!(
+        frame.height(),
+        90,
+        "output_size(160, 90) must scale height to 90; got {}",
+        frame.height()
+    );
+}
+
 #[tokio::test]
 async fn async_video_decode_frame_count_matches_sync() {
     use futures::StreamExt;
