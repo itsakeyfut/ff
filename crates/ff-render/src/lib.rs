@@ -69,8 +69,9 @@ pub mod context;
 pub use error::RenderError;
 pub use graph::RenderGraph;
 pub use nodes::{
-    ColorGradeNode, CrossfadeNode, OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode,
-    YuvFormat, YuvUploadNode,
+    AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, ColorGradeNode, CrossfadeNode,
+    LumaMaskNode, OverlayNode, RenderNodeCpu, ScaleAlgorithm, ScaleNode, ShapeMaskNode,
+    TransformNode, YuvFormat, YuvUploadNode,
 };
 pub use sink::GpuFrameSink;
 

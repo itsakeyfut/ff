@@ -1,10 +1,15 @@
 pub mod color_grade;
+pub mod composite;
 pub mod crossfade;
 pub mod overlay;
 pub mod scale;
 pub mod upload;
 
 pub use color_grade::ColorGradeNode;
+pub use composite::{
+    AlphaMatteNode, BlendMode, BlendModeNode, ChromaKeyNode, LumaMaskNode, ShapeMaskNode,
+    TransformNode,
+};
 pub use crossfade::CrossfadeNode;
 pub use overlay::OverlayNode;
 pub use scale::{ScaleAlgorithm, ScaleNode};
