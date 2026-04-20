@@ -265,6 +265,7 @@ pub struct PlayerRunner {
     rate: f64,
     duration_millis: u64,
     frame_cache: Option<FrameCache>,
+    hw_accel: HardwareAccel,
 }
 
 impl PlayerRunner {
@@ -273,11 +274,15 @@ impl PlayerRunner {
         self.sink = Some(sink);
     }
 
-    /// Configure hardware acceleration.
+    /// Configure hardware acceleration. Call before [`run`](Self::run).
     ///
-    /// Currently a no-op stub — hardware acceleration is applied when the
-    /// decode buffer is next rebuilt (e.g., after proxy activation).
-    pub fn set_hardware_accel(&mut self, _accel: HardwareAccel) {}
+    /// The setting takes effect at the start of `run()`. [`HardwareAccel::Auto`]
+    /// (the default) probes available backends and falls back to software.
+    /// [`HardwareAccel::None`] forces CPU-only decoding.
+    pub fn set_hardware_accel(&mut self, accel: HardwareAccel) -> &mut Self {
+        self.hw_accel = accel;
+        self
+    }
 
     /// Returns the path currently being decoded (original or active proxy).
     #[must_use]
@@ -364,6 +369,27 @@ impl PlayerRunner {
     pub fn run(mut self) -> Result<(), PreviewError> {
         let fps = self.fps.max(1.0);
         let frame_period = Duration::from_secs_f64(1.0 / fps);
+
+        // Rebuild the decode buffer when the caller has explicitly configured a
+        // hardware acceleration mode other than the default (Auto). The initial
+        // buffer is always built with Auto by PreviewPlayer::open(); rebuilding
+        // here ensures the user's explicit setting is respected.
+        if self.hw_accel != HardwareAccel::Auto && self.decode_buf.is_some() {
+            match DecodeBuffer::open(&self.active_path)
+                .hardware_accel(self.hw_accel)
+                .build()
+            {
+                Ok(buf) => {
+                    self.decode_buf = Some(buf);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "hwaccel decode buffer rebuild failed accel={} error={e}",
+                        self.hw_accel.name()
+                    );
+                }
+            }
+        }
 
         self.clock.reset(Duration::ZERO);
 
@@ -580,7 +606,9 @@ impl PlayerRunner {
     fn activate_proxy(&mut self, proxy_path: &Path) -> Result<(), PreviewError> {
         let info = ff_probe::open(proxy_path)?;
         let fps = info.frame_rate().unwrap_or(30.0).max(1.0);
-        let decode_buf = DecodeBuffer::open(proxy_path).build()?;
+        let decode_buf = DecodeBuffer::open(proxy_path)
+            .hardware_accel(self.hw_accel)
+            .build()?;
 
         if let Some(cancel) = &self.audio_cancel {
             cancel.store(true, Ordering::Release);
@@ -816,6 +844,7 @@ impl PreviewPlayer {
             rate: 1.0,
             duration_millis,
             frame_cache: None,
+            hw_accel: HardwareAccel::Auto,
         };
 
         let handle = PlayerHandle {
@@ -1558,6 +1587,94 @@ mod tests {
             position_updates.len() <= frames,
             "PositionUpdate count ({}) must not exceed frame count ({frames})",
             position_updates.len()
+        );
+    }
+
+    // ── HardwareAccel ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn hardware_accel_variants_should_be_accessible_on_player_runner() {
+        // Type-check / accessibility test — no asset required.
+        let _ = HardwareAccel::Auto;
+        let _ = HardwareAccel::None;
+        let _ = HardwareAccel::Nvdec;
+        let _ = HardwareAccel::Qsv;
+        let _ = HardwareAccel::Amf;
+        let _ = HardwareAccel::VideoToolbox;
+        let _ = HardwareAccel::Vaapi;
+    }
+
+    #[test]
+    fn set_hardware_accel_none_should_complete_without_error_on_audio_only_file() {
+        // Audio-only path has no video decode buffer; the hw_accel rebuild
+        // at run() start is skipped.  Verifies the setter is a no-op when
+        // no decode buffer exists, and run() still returns Ok.
+        let path = test_audio_path();
+        let (mut runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
+            Err(e) => {
+                println!("skipping: audio file not available: {e}");
+                return;
+            }
+        };
+
+        runner.set_hardware_accel(HardwareAccel::None);
+        assert_eq!(runner.hw_accel, HardwareAccel::None);
+
+        let handle_stop = handle.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            handle_stop.stop();
+        });
+
+        let result = runner.run();
+        assert!(
+            result.is_ok(),
+            "run() with HardwareAccel::None must return Ok; got {result:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires assets/video/gameplay.mp4 and hardware decoder; run with -- --include-ignored"]
+    fn hardware_accel_auto_should_deliver_frames_on_video_file() {
+        let path = test_video_path();
+        let (mut runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
+            Err(e) => {
+                println!("skipping: video file not available: {e}");
+                return;
+            }
+        };
+
+        runner.set_hardware_accel(HardwareAccel::Auto);
+
+        struct CountSink {
+            count: usize,
+            max: usize,
+            handle: PlayerHandle,
+        }
+        impl FrameSink for CountSink {
+            fn push_frame(&mut self, _rgba: &[u8], _w: u32, _h: u32, _pts: Duration) {
+                self.count += 1;
+                if self.count >= self.max {
+                    self.handle.stop();
+                }
+            }
+        }
+        runner.set_sink(Box::new(CountSink {
+            count: 0,
+            max: 5,
+            handle: handle.clone(),
+        }));
+
+        let result = runner.run();
+        assert!(
+            result.is_ok(),
+            "run() with HardwareAccel::Auto must return Ok; got {result:?}"
+        );
+        assert!(
+            handle.current_pts() > Duration::ZERO,
+            "at least one frame must have been presented"
         );
     }
 }

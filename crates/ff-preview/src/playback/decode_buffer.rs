@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use ff_decode::{SeekMode, VideoDecoder};
+use ff_decode::{HardwareAccel, SeekMode, VideoDecoder};
 use ff_format::VideoFrame;
 
 use crate::error::PreviewError;
@@ -67,6 +67,7 @@ pub enum SeekEvent {
 pub struct DecodeBufferBuilder {
     pub(super) path: PathBuf,
     pub(super) capacity: usize,
+    pub(super) hw_accel: HardwareAccel,
 }
 
 impl DecodeBufferBuilder {
@@ -78,6 +79,21 @@ impl DecodeBufferBuilder {
     pub fn capacity(self, n: usize) -> Self {
         Self {
             capacity: n,
+            ..self
+        }
+    }
+
+    /// Set the hardware acceleration mode. Default: [`HardwareAccel::Auto`].
+    ///
+    /// [`HardwareAccel::Auto`] probes available backends in priority order
+    /// (NVDEC → QSV → `VideoToolbox` → VAAPI → AMF) and falls back to software
+    /// decoding without error if none are available.
+    ///
+    /// [`HardwareAccel::None`] forces CPU-only decoding.
+    #[must_use]
+    pub fn hardware_accel(self, accel: HardwareAccel) -> Self {
+        Self {
+            hw_accel: accel,
             ..self
         }
     }
@@ -95,7 +111,9 @@ impl DecodeBufferBuilder {
     pub fn build(self) -> Result<DecodeBuffer, PreviewError> {
         // Open decoder on the calling thread for early validation.
         // Propagates FileNotFound / NoVideoStream / Ffmpeg errors immediately.
-        let mut decoder = VideoDecoder::open(&self.path).build()?;
+        let mut decoder = VideoDecoder::open(&self.path)
+            .hardware_accel(self.hw_accel)
+            .build()?;
 
         let (tx, rx) = sync_channel(self.capacity);
         let buffered = Arc::new(AtomicUsize::new(0));
@@ -201,6 +219,7 @@ impl DecodeBuffer {
         DecodeBufferBuilder {
             path: path.to_path_buf(),
             capacity: DEFAULT_DECODE_BUFFER_CAPACITY,
+            hw_accel: HardwareAccel::Auto,
         }
     }
 
