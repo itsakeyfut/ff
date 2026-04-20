@@ -10,20 +10,29 @@
 //! | [`TimelineRunner`] | Owns the decode pipelines; move to a thread and call [`run`](TimelineRunner::run) |
 //! | [`PlayerHandle`] | Shared, cloneable control handle |
 //!
-//! ## Limitations
+//! ## Audio
 //!
-//! - Only `video_tracks[0]` is played; additional tracks are ignored.
-//! - Audio is not supported; [`PlayerHandle::pop_audio_samples`] always returns an empty `Vec`.
+//! When any clip on the primary video track carries an audio stream,
+//! [`TimelinePlayer::open`] creates an [`AudioMixer`] with one track per
+//! audio-bearing clip.  A background [`AudioDecoder`] thread is started for
+//! the active clip and pushes mono samples via [`AudioTrackHandle`].  On clip
+//! transition or seek the old thread is cancelled and a new one is started.
+//! [`PlayerHandle::pop_audio_samples`] calls [`AudioMixer::mix`] and returns
+//! interleaved stereo `f32` output.
 
 mod timeline_inner;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use ff_decode::{AudioDecoder, SeekMode};
+use ff_format::SampleFormat;
 use ff_pipeline::timeline::Timeline;
 
+use crate::audio::{AudioMixer, AudioTrackHandle};
 use crate::error::PreviewError;
 use crate::event::PlayerEvent;
 use crate::playback::SwsRgbaConverter;
@@ -35,10 +44,14 @@ use crate::playback::sink::FrameSink;
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const CHANNEL_CAP: usize = 64;
+/// Back-pressure limit for the audio decode thread (mono samples).
+const AUDIO_MAX_BUF: usize = 96_000;
 
 // ── ClipState ─────────────────────────────────────────────────────────────────
 
 struct ClipState {
+    /// Source file path — needed to spawn audio threads on clip transition.
+    source: PathBuf,
     decode_buf: DecodeBuffer,
     /// Global timeline position where this clip starts.
     timeline_start: Duration,
@@ -51,6 +64,8 @@ struct ClipState {
     /// Duration of the crossfade from the previous clip into this one.
     /// `Duration::ZERO` = hard cut.
     transition_dur: Duration,
+    /// Audio track handle — `None` if the clip has no audio stream.
+    audio_track: Option<AudioTrackHandle>,
 }
 
 // ── TransitionState ───────────────────────────────────────────────────────────
@@ -69,8 +84,9 @@ struct TransitionState {
 /// Thin builder for a ([`TimelineRunner`], [`PlayerHandle`]) pair backed by a
 /// [`Timeline`].
 ///
-/// Playback is limited to the primary video track (`video_tracks[0]`). Audio
-/// is not currently supported.
+/// Playback is limited to the primary video track (`video_tracks[0]`). When
+/// any clip carries an audio stream, an [`AudioMixer`] is created and audio
+/// is mixed into the stereo output from [`PlayerHandle::pop_audio_samples`].
 ///
 /// # Example
 ///
@@ -97,9 +113,12 @@ pub struct TimelinePlayer;
 impl TimelinePlayer {
     /// Open `timeline` for real-time preview playback.
     ///
-    /// Probes every clip's source file to determine effective durations, opens
-    /// a [`DecodeBuffer`] for each clip on the primary video track, and seeks
-    /// each buffer to its configured `in_point`.
+    /// Probes every clip's source file to determine effective durations and
+    /// audio availability, opens a [`DecodeBuffer`] for each clip on the
+    /// primary video track, and seeks each buffer to its configured `in_point`.
+    ///
+    /// When any clip carries an audio stream an [`AudioMixer`] is created and
+    /// the first audio-bearing clip's decode thread is started immediately.
     ///
     /// # Errors
     ///
@@ -107,7 +126,18 @@ impl TimelinePlayer {
     /// - `timeline` has no video tracks or the primary track is empty,
     /// - a clip source file cannot be found or opened,
     /// - a clip cannot be probed for duration.
+    #[allow(clippy::too_many_lines)]
     pub fn open(timeline: &Timeline) -> Result<(TimelineRunner, PlayerHandle), PreviewError> {
+        struct ProbeResult {
+            source: PathBuf,
+            in_pt: Duration,
+            clip_dur: Duration,
+            timeline_offset: Duration,
+            out_point: Option<Duration>,
+            transition_dur: Duration,
+            has_audio: bool,
+        }
+
         let tracks = timeline.video_tracks();
         if tracks.is_empty() || tracks[0].is_empty() {
             return Err(PreviewError::Ffmpeg {
@@ -118,26 +148,21 @@ impl TimelinePlayer {
 
         let fps = timeline.frame_rate().max(1.0);
         let clip_list = &tracks[0];
-        let mut clip_states: Vec<ClipState> = Vec::with_capacity(clip_list.len());
+
+        // ── Phase 1: probe all clips ──────────────────────────────────────────
+
+        let mut probes: Vec<ProbeResult> = Vec::with_capacity(clip_list.len());
+        let mut has_any_audio = false;
 
         for clip in clip_list {
             let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
+            let info = ff_probe::open(&clip.source)?;
 
-            // Clip duration = out_point - in_point, or probe the file if out_point is absent.
             let clip_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point) {
                 op.saturating_sub(ip)
             } else {
-                let info = ff_probe::open(&clip.source)?;
                 info.duration().saturating_sub(in_pt)
             };
-
-            let timeline_start = clip.timeline_offset;
-            let timeline_end = timeline_start + clip_dur;
-
-            let mut decode_buf = DecodeBuffer::open(&clip.source).build()?;
-            if in_pt > Duration::ZERO {
-                decode_buf.seek(in_pt)?;
-            }
 
             let transition_dur = if clip.transition.is_some() {
                 clip.transition_duration
@@ -145,17 +170,68 @@ impl TimelinePlayer {
                 Duration::ZERO
             };
 
-            clip_states.push(ClipState {
-                decode_buf,
-                timeline_start,
-                timeline_end,
-                in_point: in_pt,
+            let has_audio = info.has_audio();
+            has_any_audio |= has_audio;
+
+            probes.push(ProbeResult {
+                source: clip.source.clone(),
+                in_pt,
+                clip_dur,
+                timeline_offset: clip.timeline_offset,
                 out_point: clip.out_point,
                 transition_dur,
+                has_audio,
             });
         }
 
-        // Compute total timeline duration from the last clip's end.
+        // ── Phase 2: build mixer and track handles (if audio present) ─────────
+
+        let (mixer_arc, audio_track_handles): (
+            Option<Arc<Mutex<AudioMixer>>>,
+            Vec<Option<AudioTrackHandle>>,
+        ) = if has_any_audio {
+            let mut mixer = AudioMixer::new(48_000);
+            let handles: Vec<Option<AudioTrackHandle>> = probes
+                .iter()
+                .map(|p| {
+                    if p.has_audio {
+                        Some(mixer.add_track())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            (Some(Arc::new(Mutex::new(mixer))), handles)
+        } else {
+            (None, probes.iter().map(|_| None).collect())
+        };
+
+        // ── Phase 3: build ClipState objects ──────────────────────────────────
+
+        let mut clip_states: Vec<ClipState> = Vec::with_capacity(probes.len());
+        for (i, p) in probes.iter().enumerate() {
+            let timeline_start = p.timeline_offset;
+            let timeline_end = timeline_start + p.clip_dur;
+
+            let mut decode_buf = DecodeBuffer::open(&p.source).build()?;
+            if p.in_pt > Duration::ZERO {
+                decode_buf.seek(p.in_pt)?;
+            }
+
+            clip_states.push(ClipState {
+                source: p.source.clone(),
+                decode_buf,
+                timeline_start,
+                timeline_end,
+                in_point: p.in_pt,
+                out_point: p.out_point,
+                transition_dur: p.transition_dur,
+                audio_track: audio_track_handles[i].clone(),
+            });
+        }
+
+        // ── Compute total duration ─────────────────────────────────────────────
+
         let total_dur = clip_states
             .iter()
             .map(|c| c.timeline_end)
@@ -163,11 +239,25 @@ impl TimelinePlayer {
             .unwrap_or(Duration::ZERO);
         let duration_millis = u64::try_from(total_dur.as_millis()).unwrap_or(u64::MAX);
 
+        // ── Build runner and handle ───────────────────────────────────────────
+
         let current_pts = Arc::new(AtomicU64::new(0));
         let paused = Arc::new(AtomicBool::new(false));
         let stopped = Arc::new(AtomicBool::new(false));
         let (cmd_tx, cmd_rx) = mpsc::sync_channel(CHANNEL_CAP);
         let (event_tx, event_rx) = mpsc::sync_channel::<PlayerEvent>(CHANNEL_CAP);
+
+        // Start audio for the first clip immediately.
+        let (initial_audio_cancel, initial_audio_thread) =
+            if let Some(handle) = clip_states.first().and_then(|c| c.audio_track.clone()) {
+                let source = clip_states[0].source.clone();
+                let in_pt = clip_states[0].in_point;
+                let cancel = Arc::new(AtomicBool::new(false));
+                let thread = spawn_audio_track_thread(source, in_pt, handle, Arc::clone(&cancel));
+                (Some(cancel), Some(thread))
+            } else {
+                (None, None)
+            };
 
         let runner = TimelineRunner {
             clips: clip_states,
@@ -190,6 +280,9 @@ impl TimelinePlayer {
             rgba_a: Vec::new(),
             rgba_b: Vec::new(),
             blend_buf: Vec::new(),
+            audio_mixer: mixer_arc.clone(),
+            active_audio_cancel: initial_audio_cancel,
+            active_audio_thread: initial_audio_thread,
         };
 
         let handle = PlayerHandle::for_timeline(
@@ -199,6 +292,7 @@ impl TimelinePlayer {
             paused,
             stopped,
             duration_millis,
+            mixer_arc,
         );
 
         Ok((runner, handle))
@@ -233,6 +327,12 @@ pub struct TimelineRunner {
     rgba_a: Vec<u8>,
     rgba_b: Vec<u8>,
     blend_buf: Vec<u8>,
+    /// Multi-track audio mixer — `None` when no clip has audio.
+    audio_mixer: Option<Arc<Mutex<AudioMixer>>>,
+    /// Cancel flag for the currently running audio decode thread.
+    active_audio_cancel: Option<Arc<AtomicBool>>,
+    /// Handle to the currently running audio decode thread.
+    active_audio_thread: Option<JoinHandle<()>>,
 }
 
 impl TimelineRunner {
@@ -287,7 +387,7 @@ impl TimelineRunner {
                             self.rate = r;
                         }
                     }
-                    PlayerCommand::SetAvOffset(_) => {} // audio not supported
+                    PlayerCommand::SetAvOffset(_) => {} // audio timing is system-clock driven
                 }
             }
 
@@ -327,12 +427,17 @@ impl TimelineRunner {
 
             match pop_result {
                 FrameResult::Eof => {
+                    let old_active = active;
                     if let Some(tp) = self.transition.take() {
                         self.active = tp.next_idx;
                     } else if active + 1 < self.clips.len() {
                         self.active += 1;
                     } else {
                         break;
+                    }
+                    if self.active != old_active {
+                        let in_pt = self.clips[self.active].in_point;
+                        self.restart_audio_at(self.active, in_pt);
                     }
                 }
 
@@ -372,12 +477,17 @@ impl TimelineRunner {
                     };
 
                     if past_out || past_end {
+                        let old_active = active;
                         if let Some(tp) = self.transition.take() {
                             self.active = tp.next_idx;
                         } else if active + 1 < self.clips.len() {
                             self.active += 1;
                         } else {
                             break;
+                        }
+                        if self.active != old_active {
+                            let in_pt = self.clips[self.active].in_point;
+                            self.restart_audio_at(self.active, in_pt);
                         }
                         continue;
                     }
@@ -403,8 +513,13 @@ impl TimelineRunner {
                                     duration: next.transition_dur,
                                 });
                             } else {
-                                // We jumped past the entire transition zone.
+                                // Jumped past the entire transition zone.
+                                let old_active = active;
                                 self.active = active + 1;
+                                if self.active != old_active {
+                                    let in_pt = self.clips[self.active].in_point;
+                                    self.restart_audio_at(self.active, in_pt);
+                                }
                                 continue;
                             }
                         }
@@ -475,8 +590,13 @@ impl TimelineRunner {
                         }
 
                         if timeline_pts >= trans_start + trans_dur {
+                            let old_active = self.active;
                             self.transition = None;
                             self.active = next_idx;
+                            if self.active != old_active {
+                                let in_pt = self.clips[self.active].in_point;
+                                self.restart_audio_at(self.active, in_pt);
+                            }
                         }
                     } else if a_ok && let Some(sink) = self.sink.as_mut() {
                         sink.push_frame(&self.rgba_a, w, h, timeline_pts);
@@ -515,8 +635,107 @@ impl TimelineRunner {
         self.active = clip_idx;
         self.transition = None;
 
+        // Discard stale audio and restart from the seek position.
+        if let Some(mixer_arc) = &self.audio_mixer {
+            mixer_arc
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .invalidate_all();
+        }
+        self.restart_audio_at(clip_idx, clip_local_pts);
+
         Ok(())
     }
+
+    /// Cancel the current audio decode thread (if any) and start a new one
+    /// for `clip_idx` beginning at `start_pts`.
+    fn restart_audio_at(&mut self, clip_idx: usize, start_pts: Duration) {
+        // Cancel and drop the previous thread.
+        if let Some(cancel) = &self.active_audio_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        drop(self.active_audio_thread.take());
+        self.active_audio_cancel = None;
+
+        let Some(handle) = self.clips.get(clip_idx).and_then(|c| c.audio_track.clone()) else {
+            return;
+        };
+        handle.clear(); // discard stale samples
+
+        let source = self.clips[clip_idx].source.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread = spawn_audio_track_thread(source, start_pts, handle, Arc::clone(&cancel));
+        self.active_audio_cancel = Some(cancel);
+        self.active_audio_thread = Some(thread);
+    }
+}
+
+impl Drop for TimelineRunner {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.active_audio_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(h) = self.active_audio_thread.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+// ── spawn_audio_track_thread ──────────────────────────────────────────────────
+
+fn spawn_audio_track_thread(
+    path: PathBuf,
+    start_pts: Duration,
+    track: AudioTrackHandle,
+    cancel: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut decoder = match AudioDecoder::open(&path)
+            .output_format(SampleFormat::F32)
+            .output_sample_rate(48_000)
+            .output_channels(1) // mono — the mixer applies panning
+            .build()
+        {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("timeline audio thread open failed error={e}");
+                return;
+            }
+        };
+
+        if start_pts > Duration::ZERO
+            && let Err(e) = decoder.seek(start_pts, SeekMode::Backward)
+        {
+            log::warn!("timeline audio seek failed pts={start_pts:?} error={e}");
+        }
+
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                break;
+            }
+
+            // Back-pressure: pause decoding when the buffer is full.
+            if track.buffered_samples() >= AUDIO_MAX_BUF {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+
+            match decoder.decode_one() {
+                Ok(Some(frame)) => {
+                    if let Some(samples) = frame.as_f32()
+                        && !samples.is_empty()
+                    {
+                        track.push_samples(samples);
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    log::warn!("timeline audio decode error error={e}");
+                    break;
+                }
+            }
+        }
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -545,13 +764,6 @@ mod tests {
 
     #[test]
     fn timeline_player_open_should_fail_when_no_video_tracks() {
-        // Build a Timeline with only an audio track (or just an empty video track).
-        // Timeline requires at least one track, so use video_track with a dummy clip
-        // but zero clips.
-        // Actually, Timeline::builder() errors on zero tracks.
-        // We test the guard inside TimelinePlayer::open() directly:
-        // We can't easily build a zero-track timeline (builder rejects it), so
-        // instead verify the error path via a type check.
         let _ = PreviewError::SeekOutOfRange {
             pts: Duration::from_secs(1),
         };

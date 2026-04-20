@@ -27,6 +27,7 @@ use ff_format::SampleFormat;
 use super::clock::MasterClock;
 use super::decode_buffer::{DecodeBuffer, FrameResult};
 use super::sink::FrameSink;
+use crate::audio::AudioMixer;
 use crate::cache::FrameCache;
 use crate::error::PreviewError;
 use crate::event::PlayerEvent;
@@ -82,6 +83,8 @@ pub struct PlayerHandle {
     /// Mirrors the runner's stopped state; updated immediately by `stop`.
     stopped: Arc<AtomicBool>,
     duration_millis: u64,
+    /// Multi-track mixer — present when the runner was created by `TimelinePlayer`.
+    audio_mixer: Option<Arc<Mutex<AudioMixer>>>,
 }
 
 impl PlayerHandle {
@@ -162,6 +165,15 @@ impl PlayerHandle {
         if n == 0 {
             return Vec::new();
         }
+        // Mixer path — used when the handle was created by TimelinePlayer.
+        // The timeline clock is System-based so samples_consumed is not advanced here.
+        if let Some(mixer) = &self.audio_mixer {
+            return mixer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .mix(n);
+        }
+        // Legacy ring-buffer path — used by PlayerRunner (single-track audio).
         let Some(buf) = &self.audio_buf else {
             return Vec::new();
         };
@@ -208,6 +220,7 @@ impl PlayerHandle {
         paused: Arc<AtomicBool>,
         stopped: Arc<AtomicBool>,
         duration_millis: u64,
+        audio_mixer: Option<Arc<Mutex<AudioMixer>>>,
     ) -> Self {
         Self {
             cmd_tx,
@@ -215,6 +228,7 @@ impl PlayerHandle {
             current_pts,
             audio_buf: None,
             samples_consumed: None,
+            audio_mixer,
             paused,
             stopped,
             duration_millis,
@@ -810,6 +824,7 @@ impl PreviewPlayer {
             current_pts,
             audio_buf: audio_buf_for_handle,
             samples_consumed,
+            audio_mixer: None,
             paused,
             stopped,
             duration_millis,
