@@ -57,6 +57,7 @@ impl AudioTrackHandle {
     /// Number of samples currently buffered.
     ///
     /// Used by background audio threads to implement back-pressure.
+    #[cfg(feature = "timeline")]
     pub(crate) fn buffered_samples(&self) -> usize {
         self.buf
             .lock()
@@ -67,6 +68,7 @@ impl AudioTrackHandle {
     /// Drain all buffered samples.
     ///
     /// Called on seek to discard audio that is no longer relevant.
+    #[cfg(feature = "timeline")]
     pub(crate) fn clear(&self) {
         self.buf
             .lock()
@@ -183,6 +185,7 @@ impl AudioMixer {
     /// Drain all track buffers.
     ///
     /// Called on seek to discard stale audio across all tracks.
+    #[cfg(feature = "timeline")]
     pub(crate) fn invalidate_all(&mut self) {
         for track in &self.tracks {
             track
@@ -334,6 +337,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "timeline")]
     #[test]
     fn audio_mixer_invalidate_all_should_clear_all_buffers() {
         let mut mixer = AudioMixer::new(48_000);
@@ -365,6 +369,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "timeline")]
     #[test]
     fn audio_track_handle_clear_should_drain_buffered_samples() {
         let mut mixer = AudioMixer::new(48_000);
