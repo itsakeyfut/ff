@@ -26,6 +26,7 @@
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 
+pub mod audio;
 pub(crate) mod cache;
 pub mod error;
 pub mod event;
@@ -37,6 +38,7 @@ pub mod proxy;
 #[cfg(feature = "timeline")]
 pub mod timeline;
 
+pub use audio::{AudioMixer, AudioTrackHandle};
 pub use error::PreviewError;
 pub use event::PlayerEvent;
 pub use playback::{
