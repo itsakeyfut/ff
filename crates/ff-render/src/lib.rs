@@ -62,10 +62,14 @@ pub mod nodes;
 pub mod sink;
 
 #[cfg(feature = "wgpu")]
+pub mod compositor;
+#[cfg(feature = "wgpu")]
 pub mod context;
 
 // ── Top-level re-exports ─────────────────────────────────────────────────────
 
+#[cfg(feature = "wgpu")]
+pub use compositor::{Compositor, FrameLayer, LayerTransform};
 pub use error::RenderError;
 pub use graph::RenderGraph;
 pub use nodes::{
