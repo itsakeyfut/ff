@@ -88,12 +88,12 @@ Add the crates you need to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ff-probe  = "0.13"
-ff-decode = "0.13"
-ff-encode = "0.13"
+ff-probe  = "0.14"
+ff-decode = "0.14"
+ff-encode = "0.14"
 
 # Or use the facade crate for everything
-avio = "0.13"
+avio = "0.14"
 ```
 
 ### Prerequisites
