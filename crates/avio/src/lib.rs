@@ -22,13 +22,13 @@
 //! ```toml
 //! # Default: probe + decode + encode
 //! [dependencies]
-//! avio = "0.13"
+//! avio = "0.14"
 //!
 //! # Add filtering
-//! avio = { version = "0.13", features = ["filter"] }
+//! avio = { version = "0.14", features = ["filter"] }
 //!
 //! # Full stack (implies filter + pipeline)
-//! avio = { version = "0.13", features = ["stream"] }
+//! avio = { version = "0.14", features = ["stream"] }
 //! ```
 //!
 //! # Quick Start
@@ -596,7 +596,7 @@ mod tests {
     #[cfg(feature = "preview")]
     #[test]
     fn preview_rgba_types_should_be_accessible() {
-        // RgbaSink and RgbaFrame are the concrete sink/frame types added in v0.13.0.
+        // RgbaSink and RgbaFrame are the concrete sink/frame types added in v0.14.0.
         let _: Option<RgbaSink> = None;
         let _: Option<RgbaFrame> = None;
     }

@@ -11,6 +11,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.0] - 2026-04-20
+
+### Added
+
+#### ff-render — new crate
+- New `ff-render` crate: GPU compositing pipeline for real-time video preview, built on [wgpu] ([#1085](https://github.com/itsakeyfut/avio/issues/1085))
+- `RenderContext`: headless wgpu device/queue initialisation (no window required) ([#1085](https://github.com/itsakeyfut/avio/issues/1085))
+- `RenderGraph`: linear chain of render nodes; CPU fallback path always available without `wgpu` feature ([#1085](https://github.com/itsakeyfut/avio/issues/1085))
+- `GpuFrameSink`: implements `ff_preview::FrameSink` for zero-copy wiring with `PlayerRunner` ([#1085](https://github.com/itsakeyfut/avio/issues/1085))
+- `ColorGradeNode`: brightness, saturation, contrast, hue shift, colour temperature ([#1085](https://github.com/itsakeyfut/avio/issues/1085))
+- `ScaleNode`: GPU-accelerated resize (Bilinear / Nearest); CPU path is passthrough ([#1085](https://github.com/itsakeyfut/avio/issues/1085))
+- `OverlayNode`, `CrossfadeNode`: static overlay composite and crossfade transition ([#1085](https://github.com/itsakeyfut/avio/issues/1085))
+- `YuvUploadNode`: native YUV plane upload (4:2:0 / 4:2:2 / 4:4:4) bypassing `sws_scale` ([#1086](https://github.com/itsakeyfut/avio/issues/1086))
+- `BlendModeNode`: 12 Photoshop-style blend modes (Multiply, Screen, Overlay, Darken, Lighten, ColorDodge, ColorBurn, HardLight, SoftLight, Difference, Exclusion, Normal) with per-node opacity ([#1087](https://github.com/itsakeyfut/avio/issues/1087))
+- `TransformNode`: UV-space translate / rotate / scale ([#1087](https://github.com/itsakeyfut/avio/issues/1087))
+- `ChromaKeyNode`: chroma key (green screen) with tolerance and softness ([#1087](https://github.com/itsakeyfut/avio/issues/1087))
+- `ShapeMaskNode`, `LumaMaskNode`, `AlphaMatteNode`: shape mask, luma-derived mask, and alpha-composite over background ([#1087](https://github.com/itsakeyfut/avio/issues/1087))
+- `Compositor`: stateful high-level multi-layer GPU compositor — sorts layers by `z_order`, applies per-layer transforms and blend modes, returns composited `wgpu::Texture` ([#1042](https://github.com/itsakeyfut/avio/issues/1042))
+- `FrameLayer` and `LayerTransform`: layer definition with transform, blend mode, opacity, and z-order ([#1042](https://github.com/itsakeyfut/avio/issues/1042))
+
+#### ff-preview
+- Split `PreviewPlayer` into `PlayerRunner` (owns the decode thread) and `PlayerHandle` (cross-thread control) for safe cross-thread use ([#1021](https://github.com/itsakeyfut/avio/issues/1021))
+- `PlayerEvent`: new `PositionUpdate` and `Error` variants for real-time status monitoring ([#1022](https://github.com/itsakeyfut/avio/issues/1022))
+- `TimelinePlayer`: real-time timeline-driven playback with per-clip ordering ([#1023](https://github.com/itsakeyfut/avio/issues/1023))
+- `FrameCache`: instant seek scrubbing via pre-decoded frame cache ([#1024](https://github.com/itsakeyfut/avio/issues/1024))
+- `AudioMixer` and `AudioTrackHandle`: multi-track audio mixing with per-track volume and mute control ([#1025](https://github.com/itsakeyfut/avio/issues/1025))
+- `HardwareAccel` integration in `PlayerRunner` and `DecodeBufferBuilder` ([#1026](https://github.com/itsakeyfut/avio/issues/1026))
+
+#### ff-decode
+- `ScopeAnalyzer::waveform()`: luminance waveform monitor — Y values per column, normalised `[0.0, 1.0]` ([#408](https://github.com/itsakeyfut/avio/issues/408))
+- `ScopeAnalyzer::vectorscope()`: Cb/Cr chroma scatter data for 4:2:0, 4:2:2, and 4:4:4 frames ([#409](https://github.com/itsakeyfut/avio/issues/409))
+- `ScopeAnalyzer::rgb_parade()`: per-channel RGB waveform (parade) — column-major normalised values ([#410](https://github.com/itsakeyfut/avio/issues/410))
+- `ScopeAnalyzer::histogram()`: 256-bin luminance and per-channel RGB histogram ([#411](https://github.com/itsakeyfut/avio/issues/411))
+- `AsyncVideoDecoderBuilder` and `AsyncAudioDecoderBuilder`: async builder API with `output_format`, `output_size`, `output_sample_rate`, and `output_channels` options ([#1005](https://github.com/itsakeyfut/avio/issues/1005))
+
+#### ff-filter
+- `Stabilizer::analyze()`: two-pass video stabilization — pass 1 via `vidstabdetect` ([#392](https://github.com/itsakeyfut/avio/issues/392))
+- `Stabilizer::transform()`: two-pass video stabilization — pass 2 via `vidstabtransform` ([#393](https://github.com/itsakeyfut/avio/issues/393))
+- `StabilizeOptions`: zoom, optzoom, and interpol builder methods ([#394](https://github.com/itsakeyfut/avio/issues/394))
+- `FilterGraph::motion_blur()`: motion blur via `tblend` shutter-angle simulation ([#395](https://github.com/itsakeyfut/avio/issues/395))
+- `FilterGraph::film_grain()`: per-frame random grain via `noise` filter with temporal seed ([#396](https://github.com/itsakeyfut/avio/issues/396))
+- `FilterGraph::lens_correction()`: radial lens distortion correction via `lenscorrection` ([#397](https://github.com/itsakeyfut/avio/issues/397))
+- `LensProfile` enum and `FilterGraph::lens_profile()`: preset and custom lens correction profiles ([#398](https://github.com/itsakeyfut/avio/issues/398))
+- `FilterGraph::fix_chromatic_aberration()`: lateral chromatic aberration correction via `rgbashift` ([#399](https://github.com/itsakeyfut/avio/issues/399))
+- `FilterGraph::glow()`: bloom / glow around bright areas via `split+curves+gblur+blend` chain ([#400](https://github.com/itsakeyfut/avio/issues/400))
+- `FilterGraph::reverb_ir()`: convolution reverb via `amovie+afir` impulse response ([#401](https://github.com/itsakeyfut/avio/issues/401))
+- `FilterGraph::reverb_echo()`: echo / reverb via `aecho` with configurable delay taps and decay ([#402](https://github.com/itsakeyfut/avio/issues/402))
+- `FilterGraph::pitch_shift()`: pitch shift in semitones via `asetrate+atempo` ([#403](https://github.com/itsakeyfut/avio/issues/403))
+- `FilterGraph::time_stretch()`: time stretch without pitch change via `atempo` chain ([#404](https://github.com/itsakeyfut/avio/issues/404))
+- `FilterGraph::speed_change()`: playback speed change via `asetrate` ([#405](https://github.com/itsakeyfut/avio/issues/405))
+- `FilterGraph::noise_reduce()` and `noise_reduce_profile()`: broadband noise reduction via `afftdn` ([#406](https://github.com/itsakeyfut/avio/issues/406))
+- `FilterGraph::duck()`: audio ducking via `sidechaincompress` ([#407](https://github.com/itsakeyfut/avio/issues/407))
+
+---
+
 ## [0.13.1] - 2026-04-16
 
 ### Added
