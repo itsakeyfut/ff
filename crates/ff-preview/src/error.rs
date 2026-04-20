@@ -59,4 +59,11 @@ pub enum PreviewError {
     /// An I/O error during file operations.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A seek target lies outside the valid range of the timeline.
+    #[error("seek out of range: pts={pts:?}")]
+    SeekOutOfRange {
+        /// The requested presentation timestamp that fell outside all clips.
+        pts: std::time::Duration,
+    },
 }

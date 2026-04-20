@@ -194,6 +194,30 @@ impl PlayerHandle {
     pub fn recv_event(&self) -> Option<PlayerEvent> {
         self.event_rx.lock().ok()?.recv().ok()
     }
+
+    /// Construct a handle for a non-`PlayerRunner` runner (e.g., `TimelineRunner`).
+    ///
+    /// Audio fields are set to `None`; the handle's
+    /// [`pop_audio_samples`](Self::pop_audio_samples) always returns an empty `Vec`.
+    pub(crate) fn for_timeline(
+        cmd_tx: mpsc::SyncSender<PlayerCommand>,
+        event_rx: Arc<Mutex<mpsc::Receiver<PlayerEvent>>>,
+        current_pts: Arc<AtomicU64>,
+        paused: Arc<AtomicBool>,
+        stopped: Arc<AtomicBool>,
+        duration_millis: u64,
+    ) -> Self {
+        Self {
+            cmd_tx,
+            event_rx,
+            current_pts,
+            audio_buf: None,
+            samples_consumed: None,
+            paused,
+            stopped,
+            duration_millis,
+        }
+    }
 }
 
 // ── PlayerRunner ─────────────────────────────────────────────────────────────

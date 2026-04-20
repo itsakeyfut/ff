@@ -33,6 +33,9 @@ pub mod playback;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 
+#[cfg(feature = "timeline")]
+pub mod timeline;
+
 pub use error::PreviewError;
 pub use event::PlayerEvent;
 pub use playback::{
@@ -45,3 +48,6 @@ pub use playback::AsyncPreviewPlayer;
 
 #[cfg(feature = "proxy")]
 pub use proxy::{ProxyGenerator, ProxyJob, ProxyResolution};
+
+#[cfg(feature = "timeline")]
+pub use timeline::{TimelinePlayer, TimelineRunner};
