@@ -24,7 +24,7 @@ log        = { workspace = true }
 thiserror  = { workspace = true }
 
 [dependencies.wgpu]
-version  = "22"
+version  = "29.0.1"
 optional = true
 
 [lints]

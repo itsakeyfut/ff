@@ -36,14 +36,14 @@ pub(super) fn run_gpu(
     });
 
     ctx.queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: &input_tex,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         rgba,
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(w * 4),
             rows_per_image: None,
@@ -97,15 +97,15 @@ pub(super) fn run_gpu(
             label: Some("ff-render readback"),
         });
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: &current_tex,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        wgpu::ImageCopyBuffer {
+        wgpu::TexelCopyBufferInfo {
             buffer: &staging_buf,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row_padded),
                 rows_per_image: None,
@@ -125,7 +125,7 @@ pub(super) fn run_gpu(
     staging_slice.map_async(wgpu::MapMode::Read, move |result| {
         sender.send(result).ok();
     });
-    ctx.device.poll(wgpu::Maintain::Wait);
+    ctx.device.poll(wgpu::PollType::wait_indefinitely()).ok();
 
     receiver
         .recv()

@@ -39,7 +39,10 @@ impl RenderContext {
     pub async fn init_with_backend(backends: wgpu::Backends) -> Result<Self, RenderError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
-            ..Default::default()
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
         });
 
         let adapter = instance
@@ -49,8 +52,8 @@ impl RenderContext {
                 compatible_surface: None,
             })
             .await
-            .ok_or_else(|| RenderError::DeviceCreation {
-                message: "no suitable GPU adapter found".to_string(),
+            .map_err(|e| RenderError::DeviceCreation {
+                message: e.to_string(),
             })?;
 
         log::info!(
@@ -60,13 +63,10 @@ impl RenderContext {
         );
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("ff-render"),
-                    ..Default::default()
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("ff-render"),
+                ..Default::default()
+            })
             .await
             .map_err(|e| RenderError::DeviceCreation {
                 message: e.to_string(),
