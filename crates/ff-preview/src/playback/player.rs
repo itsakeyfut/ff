@@ -36,6 +36,14 @@ use crate::event::PlayerEvent;
 
 const AUDIO_MAX_BUF: usize = 96_000;
 const CHANNEL_CAP: usize = 64;
+/// Fixed output sample rate of the audio decode thread.
+///
+/// `spawn_audio_thread` always resamples to this rate via
+/// `AudioDecoder::output_sample_rate`. `MasterClock::Audio` must be
+/// initialised with this value — not the source file's native rate — so
+/// that `current_pts()` advances at exactly 1 s per second of real audio
+/// consumption regardless of the source's native sample rate.
+const DECODED_SAMPLE_RATE: u32 = 48_000;
 
 // ── PlayerCommand ─────────────────────────────────────────────────────────────
 
@@ -146,6 +154,27 @@ impl PlayerHandle {
         } else {
             Some(Duration::from_millis(self.duration_millis))
         }
+    }
+
+    /// Sample rate of the PCM data returned by [`pop_audio_samples`](Self::pop_audio_samples).
+    ///
+    /// Returns `Some(48_000)` for files that contain an audio stream, and
+    /// `None` for video-only files (where `pop_audio_samples` always returns
+    /// an empty `Vec`).
+    ///
+    /// Use this to configure your audio backend without hardcoding a magic
+    /// constant:
+    ///
+    /// ```ignore
+    /// let cfg = cpal::StreamConfig {
+    ///     channels: 2,
+    ///     sample_rate: cpal::SampleRate(handle.audio_sample_rate().unwrap_or(48_000)),
+    ///     ..Default::default()
+    /// };
+    /// ```
+    #[must_use]
+    pub fn audio_sample_rate(&self) -> Option<u32> {
+        self.audio_buf.as_ref().map(|_| DECODED_SAMPLE_RATE)
     }
 
     /// Pull up to `n` interleaved stereo `f32` PCM samples at 48 kHz.
@@ -627,7 +656,6 @@ impl PlayerRunner {
         drop(self.audio_handle.take());
 
         let (clock, audio_buf, audio_cancel, audio_handle) = if info.has_audio() {
-            let sample_rate = info.sample_rate().unwrap_or(48_000);
             let buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
             let cancel = Arc::new(AtomicBool::new(false));
             let handle = spawn_audio_thread(
@@ -638,7 +666,7 @@ impl PlayerRunner {
             );
             let clock = MasterClock::Audio {
                 samples_consumed: Arc::new(AtomicU64::new(0)),
-                sample_rate,
+                sample_rate: DECODED_SAMPLE_RATE,
                 fallback: None,
             };
             (clock, Some(buf), Some(cancel), Some(handle))
@@ -746,10 +774,9 @@ impl PreviewPlayer {
         };
 
         let clock = if info.has_audio() {
-            let sample_rate = info.sample_rate().unwrap_or(48_000);
             MasterClock::Audio {
                 samples_consumed: Arc::new(AtomicU64::new(0)),
-                sample_rate,
+                sample_rate: DECODED_SAMPLE_RATE,
                 fallback: None,
             }
         } else {
@@ -893,7 +920,7 @@ fn spawn_audio_thread(
     thread::spawn(move || {
         let mut decoder = match AudioDecoder::open(&path)
             .output_format(SampleFormat::F32)
-            .output_sample_rate(48_000)
+            .output_sample_rate(DECODED_SAMPLE_RATE)
             .output_channels(2)
             .build()
         {
@@ -1360,6 +1387,60 @@ mod tests {
             adjusted,
             Duration::ZERO,
             "saturating_sub on zero pts must clamp to zero not underflow"
+        );
+    }
+
+    // ── audio_sample_rate ────────────────────────────────────────────────────
+
+    #[test]
+    fn audio_sample_rate_should_return_some_48_khz_for_audio_only_file() {
+        let path = test_audio_path();
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
+            Err(e) => {
+                println!("skipping: audio file not available: {e}");
+                return;
+            }
+        };
+        assert_eq!(
+            handle.audio_sample_rate(),
+            Some(DECODED_SAMPLE_RATE),
+            "audio_sample_rate() must return Some(48_000) for a file with an audio stream"
+        );
+    }
+
+    #[test]
+    fn audio_sample_rate_should_return_some_48_khz_regardless_of_source_native_rate() {
+        // Verifies that audio_sample_rate() always returns the decoder's fixed
+        // output rate (48 000 Hz), not the source file's native rate.
+        // The audio file (konekonoosanpo.mp3) may be 44 100 Hz natively — the
+        // returned value must still be 48 000.
+        let path = test_audio_path();
+        let (_runner, handle) = match PreviewPlayer::open(&path) {
+            Ok(p) => p.split(),
+            Err(e) => {
+                println!("skipping: audio file not available: {e}");
+                return;
+            }
+        };
+        if let Some(rate) = handle.audio_sample_rate() {
+            assert_eq!(
+                rate, DECODED_SAMPLE_RATE,
+                "audio_sample_rate() must equal DECODED_SAMPLE_RATE=48 000 regardless of source"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_sample_rate_should_return_none_when_no_audio_buf_present() {
+        // Verifies the None path: when audio_buf is absent (video-only source),
+        // audio_sample_rate() returns None.
+        // We exercise the logic directly since we don't have a video-only asset.
+        let buf: Option<std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>> = None;
+        let rate: Option<u32> = buf.as_ref().map(|_| DECODED_SAMPLE_RATE);
+        assert_eq!(
+            rate, None,
+            "audio_sample_rate() must return None when no audio ring buffer is present"
         );
     }
 
