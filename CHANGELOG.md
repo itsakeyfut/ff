@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.1] - 2026-04-21
+
+### Fixed
+
+- `MasterClock::Audio::should_sync()` returned `false` indefinitely when no audio consumer was connected, causing video to play at decoder speed instead of real time ([#1105](https://github.com/itsakeyfut/avio/issues/1105))
+- `avio` facade was missing re-exports for `PlayerCommand`, `HardwareAccel` (preview-only), `TimelinePlayer`, and `TimelineRunner` under the `preview` feature ([#1106](https://github.com/itsakeyfut/avio/issues/1106))
+
+---
+
 ## [0.14.0] - 2026-04-20
 
 ### Added
