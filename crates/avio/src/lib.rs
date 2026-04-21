@@ -301,8 +301,9 @@ pub use ff_stream::SrtOutput;
 // Enable `preview-proxy` to additionally access `ProxyGenerator`.
 #[cfg(feature = "preview")]
 pub use ff_preview::{
-    DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink, PlaybackClock, PreviewError,
-    PreviewPlayer, RgbaFrame, RgbaSink, SeekEvent,
+    AudioMixer, AudioTrackHandle, DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink,
+    PlaybackClock, PlayerEvent, PlayerHandle, PlayerRunner, PreviewError, PreviewPlayer, RgbaFrame,
+    RgbaSink, SeekEvent,
 };
 
 #[cfg(all(feature = "preview", feature = "tokio"))]
