@@ -547,6 +547,12 @@ impl PlayerRunner {
                     let pts = frame.timestamp().as_duration();
                     let _ = self.event_tx.try_send(PlayerEvent::PositionUpdate(pts));
 
+                    // Grace period: after the first frame, arm the wall-clock fallback
+                    // if no audio consumer has started consuming samples yet.
+                    // This ensures real-time pacing even when pop_audio_samples() is
+                    // never called (e.g. no cpal stream attached to the handle).
+                    self.clock.activate_fallback_if_no_audio(pts);
+
                     // Populate cache after conversion (rgba_buf holds the converted frame).
                     if let Some(cache) = &mut self.frame_cache
                         && !self.rgba_buf.is_empty()
@@ -633,6 +639,7 @@ impl PlayerRunner {
             let clock = MasterClock::Audio {
                 samples_consumed: Arc::new(AtomicU64::new(0)),
                 sample_rate,
+                fallback: None,
             };
             (clock, Some(buf), Some(cancel), Some(handle))
         } else {
@@ -743,6 +750,7 @@ impl PreviewPlayer {
             MasterClock::Audio {
                 samples_consumed: Arc::new(AtomicU64::new(0)),
                 sample_rate,
+                fallback: None,
             }
         } else {
             log::debug!(

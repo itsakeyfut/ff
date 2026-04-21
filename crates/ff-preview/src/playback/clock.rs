@@ -219,6 +219,15 @@ pub(crate) enum MasterClock {
     Audio {
         samples_consumed: Arc<AtomicU64>,
         sample_rate: u32,
+        /// Wall-clock fallback activated after the first presented frame when no
+        /// audio consumer has called `pop_audio_samples()`. Tuple: `(wall start, base PTS)`.
+        ///
+        /// When `Some`, `current_pts()` returns `base_pts + elapsed` instead of
+        /// `Duration::ZERO`, so video pacing runs at real time even without a cpal
+        /// consumer. If `samples_consumed` becomes non-zero later (a consumer
+        /// connects mid-playback), `current_pts()` automatically switches to the
+        /// audio-clock path with no additional coordination.
+        fallback: Option<(Instant, Duration)>,
     },
     System {
         started_at: Instant,
@@ -234,9 +243,18 @@ impl MasterClock {
             Self::Audio {
                 samples_consumed,
                 sample_rate,
+                fallback,
             } => {
                 let s = samples_consumed.load(Ordering::Relaxed);
-                Duration::from_secs_f64(s as f64 / f64::from(*sample_rate))
+                if s > 0 {
+                    // Normal path: audio-clock driven.
+                    Duration::from_secs_f64(s as f64 / f64::from(*sample_rate))
+                } else if let Some((started_at, base_pts)) = fallback {
+                    // Fallback path: wall-clock driven (no audio consumer connected).
+                    *base_pts + started_at.elapsed()
+                } else {
+                    Duration::ZERO
+                }
             }
             Self::System {
                 started_at,
@@ -248,29 +266,74 @@ impl MasterClock {
     /// Whether A/V sync should be applied for the current frame.
     ///
     /// - `System`: always `true` — wall clock drives FPS pacing.
-    /// - `Audio`: `true` only after the first [`PreviewPlayer::pop_audio_samples`]
-    ///   call so that the sync loop does not sleep indefinitely before audio
-    ///   starts.
+    /// - `Audio`: `true` once any of the following holds:
+    ///   - `samples_consumed > 0` (a cpal consumer has called `pop_audio_samples`), or
+    ///   - `fallback.is_some()` (the wall-clock fallback was armed after the first frame).
+    ///
+    ///   Returns `false` only in the brief window between `run()` starting and the
+    ///   first frame being presented — this prevents an indefinite sleep before any
+    ///   clock reference is available.
     pub(crate) fn should_sync(&self) -> bool {
         match self {
             Self::System { .. } => true,
             Self::Audio {
-                samples_consumed, ..
-            } => samples_consumed.load(Ordering::Relaxed) > 0,
+                samples_consumed,
+                fallback,
+                ..
+            } => samples_consumed.load(Ordering::Relaxed) > 0 || fallback.is_some(),
         }
     }
 
-    /// Reset the system clock to start ticking from `base` right now.
+    /// Activate the wall-clock fallback at `base_pts` if no audio samples have
+    /// been consumed yet and the fallback has not already been armed.
     ///
-    /// No-op for the `Audio` variant.
-    pub(crate) fn reset(&mut self, base: Duration) {
-        if let Self::System {
-            started_at,
-            base_pts,
+    /// Called by [`PlayerRunner::run`] immediately after the first
+    /// `present_frame()` call. Once armed, `should_sync()` returns `true` and
+    /// `current_pts()` advances in real time even when no cpal consumer is
+    /// connected.
+    ///
+    /// Idempotent: subsequent calls are no-ops.  If `samples_consumed` becomes
+    /// non-zero (a consumer connects mid-playback), `current_pts()` automatically
+    /// switches to the audio-clock path without any additional coordination.
+    ///
+    /// No-op for [`MasterClock::System`].
+    pub(crate) fn activate_fallback_if_no_audio(&mut self, base_pts: Duration) {
+        if let Self::Audio {
+            samples_consumed,
+            fallback,
+            ..
         } = self
+            && samples_consumed.load(Ordering::Relaxed) == 0
+            && fallback.is_none()
         {
-            *started_at = Instant::now();
-            *base_pts = base;
+            *fallback = Some((Instant::now(), base_pts));
+        }
+    }
+
+    /// Reset the clock to start ticking from `base` right now.
+    ///
+    /// For [`MasterClock::System`]: re-anchors `started_at` and sets `base_pts`.
+    ///
+    /// For [`MasterClock::Audio`]: if the wall-clock fallback is active (i.e. no
+    /// audio consumer is present), re-anchors the fallback at `(Instant::now(), base)`
+    /// so that post-seek pacing starts from the correct position. If the fallback
+    /// is not yet armed (pre-first-frame) or if `samples_consumed > 0` (audio
+    /// consumer active), this is a no-op — the seek position is reflected in the
+    /// audio buffer restart performed by `restart_audio_from`.
+    pub(crate) fn reset(&mut self, base: Duration) {
+        match self {
+            Self::System {
+                started_at,
+                base_pts,
+            } => {
+                *started_at = Instant::now();
+                *base_pts = base;
+            }
+            Self::Audio { fallback, .. } => {
+                if fallback.is_some() {
+                    *fallback = Some((Instant::now(), base));
+                }
+            }
         }
     }
 }
@@ -594,15 +657,16 @@ mod tests {
         let clock = MasterClock::Audio {
             samples_consumed: Arc::new(AtomicU64::new(0)),
             sample_rate: 48_000,
+            fallback: None,
         };
         assert!(
             !clock.should_sync(),
-            "audio clock must not sync before any samples are consumed"
+            "audio clock must not sync before any samples are consumed and before fallback is armed"
         );
         assert_eq!(
             clock.current_pts(),
             Duration::ZERO,
-            "audio clock PTS must be zero before any samples"
+            "audio clock PTS must be zero before any samples and before fallback is armed"
         );
     }
 
@@ -612,6 +676,7 @@ mod tests {
         let clock = MasterClock::Audio {
             samples_consumed: Arc::clone(&consumed),
             sample_rate: 48_000,
+            fallback: None,
         };
         assert!(
             clock.should_sync(),
@@ -621,6 +686,143 @@ mod tests {
             clock.current_pts(),
             Duration::from_secs(1),
             "48000 samples at 48000 Hz must equal 1 second"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_should_sync_after_fallback_activated() {
+        let mut clock = MasterClock::Audio {
+            samples_consumed: Arc::new(AtomicU64::new(0)),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        assert!(
+            !clock.should_sync(),
+            "must not sync before fallback is armed"
+        );
+        clock.activate_fallback_if_no_audio(Duration::from_secs(1));
+        assert!(
+            clock.should_sync(),
+            "must sync after fallback is activated even when samples_consumed == 0"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_fallback_current_pts_should_advance_from_base_pts() {
+        let mut clock = MasterClock::Audio {
+            samples_consumed: Arc::new(AtomicU64::new(0)),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        let base = Duration::from_secs(5);
+        clock.activate_fallback_if_no_audio(base);
+        let pts = clock.current_pts();
+        assert!(
+            pts >= base,
+            "fallback current_pts must be >= base_pts; got {pts:?}"
+        );
+        assert!(
+            pts < base + Duration::from_secs(1),
+            "fallback must not advance 1 s in a unit test; got {pts:?}"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_should_prefer_samples_over_fallback_when_consumer_starts() {
+        let consumed = Arc::new(AtomicU64::new(0));
+        let mut clock = MasterClock::Audio {
+            samples_consumed: Arc::clone(&consumed),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        clock.activate_fallback_if_no_audio(Duration::from_secs(2));
+        assert!(clock.should_sync(), "fallback must enable sync");
+        // Audio consumer starts.
+        consumed.store(48_000, Ordering::Relaxed);
+        // current_pts() must now use the sample-based path, not the fallback.
+        assert_eq!(
+            clock.current_pts(),
+            Duration::from_secs(1),
+            "48000 samples at 48 kHz must report 1 s even when fallback is also armed"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_activate_fallback_should_be_idempotent() {
+        let mut clock = MasterClock::Audio {
+            samples_consumed: Arc::new(AtomicU64::new(0)),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        clock.activate_fallback_if_no_audio(Duration::from_secs(1));
+        let pts1 = clock.current_pts();
+        thread::sleep(Duration::from_millis(5));
+        // Second call with a different base must be ignored.
+        clock.activate_fallback_if_no_audio(Duration::from_secs(100));
+        let pts2 = clock.current_pts();
+        assert!(
+            pts2 > pts1,
+            "clock must keep advancing from the first base after second activate; \
+             pts1={pts1:?} pts2={pts2:?}"
+        );
+        assert!(
+            pts2 < Duration::from_secs(5),
+            "second activate must not reset clock to base=100 s; pts2={pts2:?}"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_reset_should_update_fallback_base_pts() {
+        let mut clock = MasterClock::Audio {
+            samples_consumed: Arc::new(AtomicU64::new(0)),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        clock.activate_fallback_if_no_audio(Duration::from_secs(5));
+        // Simulate a seek to 10 s.
+        clock.reset(Duration::from_secs(10));
+        let pts = clock.current_pts();
+        assert!(
+            pts >= Duration::from_secs(10),
+            "after reset, fallback must advance from the new base_pts; got {pts:?}"
+        );
+        assert!(
+            pts < Duration::from_secs(11),
+            "fallback must not advance 1 s in a unit test after reset; got {pts:?}"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_reset_should_not_arm_fallback_if_not_yet_active() {
+        let mut clock = MasterClock::Audio {
+            samples_consumed: Arc::new(AtomicU64::new(0)),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        // reset() before the first frame must not arm the fallback.
+        clock.reset(Duration::ZERO);
+        assert!(
+            !clock.should_sync(),
+            "reset() before activate_fallback_if_no_audio must not arm the fallback"
+        );
+        assert_eq!(
+            clock.current_pts(),
+            Duration::ZERO,
+            "PTS must remain ZERO when fallback is not yet armed"
+        );
+    }
+
+    #[test]
+    fn master_clock_system_activate_fallback_should_be_noop() {
+        let mut clock = MasterClock::System {
+            started_at: Instant::now(),
+            base_pts: Duration::ZERO,
+        };
+        // Must not panic and must not change System behaviour.
+        clock.activate_fallback_if_no_audio(Duration::from_secs(99));
+        assert!(
+            clock.should_sync(),
+            "System clock must always sync regardless of activate_fallback_if_no_audio"
         );
     }
 }
