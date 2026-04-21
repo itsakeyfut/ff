@@ -7,15 +7,17 @@
 //!
 //! # Feature Flags
 //!
-//! | Feature    | Crate         | Default | Implies             |
-//! |------------|---------------|---------|---------------------|
-//! | `probe`    | `ff-probe`    | yes     | —                   |
-//! | `decode`   | `ff-decode`   | yes     | —                   |
-//! | `encode`   | `ff-encode`   | yes     | —                   |
-//! | `filter`   | `ff-filter`   | no      | —                   |
-//! | `pipeline` | `ff-pipeline` | no      | `filter`            |
-//! | `stream`   | `ff-stream`   | no      | `pipeline`          |
-//! | `tokio`    | ff-decode/encode | no   | `decode` + `encode` |
+//! | Feature          | Crate              | Default | Implies                |
+//! |------------------|--------------------|---------|------------------------|
+//! | `probe`          | `ff-probe`         | yes     | —                      |
+//! | `decode`         | `ff-decode`        | yes     | —                      |
+//! | `encode`         | `ff-encode`        | yes     | —                      |
+//! | `filter`         | `ff-filter`        | no      | —                      |
+//! | `pipeline`       | `ff-pipeline`      | no      | `filter`               |
+//! | `preview`        | `ff-preview`       | no      | —                      |
+//! | `preview-proxy`  | `ff-preview`       | no      | `preview`              |
+//! | `stream`         | `ff-stream`        | no      | `pipeline`             |
+//! | `tokio`          | ff-decode/encode   | no      | `decode` + `encode`    |
 //!
 //! # Usage
 //!
@@ -299,12 +301,28 @@ pub use ff_stream::SrtOutput;
 // Enable the `preview` feature to access `PreviewPlayer`, `PlaybackClock`,
 // and the `RgbaSink` / `RgbaFrame` helpers.
 // Enable `preview-proxy` to additionally access `ProxyGenerator`.
+// Enable both `preview` and `pipeline` to access `TimelinePlayer` /
+// `TimelineRunner` for multi-clip real-time preview.
 #[cfg(feature = "preview")]
 pub use ff_preview::{
     AudioMixer, AudioTrackHandle, DecodeBuffer, DecodeBufferBuilder, FrameResult, FrameSink,
-    PlaybackClock, PlayerEvent, PlayerHandle, PlayerRunner, PreviewError, PreviewPlayer, RgbaFrame,
-    RgbaSink, SeekEvent,
+    PlaybackClock, PlayerCommand, PlayerEvent, PlayerHandle, PlayerRunner, PreviewError,
+    PreviewPlayer, RgbaFrame, RgbaSink, SeekEvent,
 };
+
+// `HardwareAccel` is re-exported under the `decode` feature (from `ff_decode`).
+// When `preview` is enabled without `decode`, expose it here so that callers can
+// still call `PlayerRunner::set_hardware_accel()` without a direct `ff-preview`
+// dependency.  The `not(feature = "decode")` guard prevents a duplicate-name
+// error when both features are active.
+#[cfg(all(feature = "preview", not(feature = "decode")))]
+pub use ff_preview::HardwareAccel;
+
+// `TimelinePlayer` and `TimelineRunner` require both `ff-preview` and
+// `ff-pipeline`.  The `pipeline` feature in avio enables `ff-preview?/timeline`
+// (see Cargo.toml), which gates these types inside `ff-preview`.
+#[cfg(all(feature = "preview", feature = "pipeline"))]
+pub use ff_preview::{TimelinePlayer, TimelineRunner};
 
 #[cfg(all(feature = "preview", feature = "tokio"))]
 pub use ff_preview::AsyncPreviewPlayer;
@@ -600,6 +618,44 @@ mod tests {
         // RgbaSink and RgbaFrame are the concrete sink/frame types added in v0.14.0.
         let _: Option<RgbaSink> = None;
         let _: Option<RgbaFrame> = None;
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn preview_player_command_should_be_accessible() {
+        // PlayerCommand variants must be reachable via avio for callers that do
+        // not take a direct ff-preview dependency.
+        let _ = PlayerCommand::Play;
+        let _ = PlayerCommand::Pause;
+        let _ = PlayerCommand::Stop;
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn preview_audio_types_should_be_accessible() {
+        // AudioMixer and AudioTrackHandle must be in scope under the preview feature.
+        let _ = std::mem::size_of::<AudioMixer>();
+        let _ = std::mem::size_of::<AudioTrackHandle>();
+    }
+
+    // When `decode` is not enabled, HardwareAccel must still be reachable through
+    // the `preview` feature.  This test is compiled only when `decode` is absent
+    // so it does not collide with the `decode`-feature re-export.
+    #[cfg(all(feature = "preview", not(feature = "decode")))]
+    #[test]
+    fn preview_hardware_accel_without_decode_should_be_accessible() {
+        let _ = HardwareAccel::Auto;
+        let _ = HardwareAccel::None;
+    }
+
+    #[cfg(all(feature = "preview", feature = "pipeline"))]
+    #[test]
+    fn preview_timeline_types_should_be_accessible() {
+        // TimelinePlayer and TimelineRunner are available when both `preview` and
+        // `pipeline` features are enabled (avio wires ff-preview/timeline via
+        // `ff-preview?/timeline` in the `pipeline` feature definition).
+        let _ = std::mem::size_of::<TimelinePlayer>();
+        let _ = std::mem::size_of::<TimelineRunner>();
     }
 
     #[cfg(all(feature = "preview", feature = "tokio"))]
