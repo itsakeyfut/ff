@@ -813,6 +813,48 @@ mod tests {
     }
 
     #[test]
+    fn master_clock_audio_current_pts_should_advance_one_second_after_48k_frames() {
+        // After the fix, MasterClock::Audio is always constructed with
+        // sample_rate = DECODED_SAMPLE_RATE = 48_000 (the decoder output rate).
+        // 48 000 stereo frames consumed at 48 000 Hz must equal exactly 1 second.
+        let consumed = Arc::new(AtomicU64::new(48_000));
+        let clock = MasterClock::Audio {
+            samples_consumed: Arc::clone(&consumed),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        assert_eq!(
+            clock.current_pts(),
+            Duration::from_secs(1),
+            "48 000 consumed frames / 48 000 Hz must equal exactly 1.0 s"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_native_rate_mismatch_demonstrates_bug() {
+        // Documents the pre-fix behaviour: if the source file's native rate
+        // (e.g. 44 100 Hz) were used instead of the decoder's output rate,
+        // 48 000 consumed frames would yield 1.088 s — 8.8 % too fast.
+        // This test is deliberately left in to show what the wrong answer looks like.
+        let consumed = Arc::new(AtomicU64::new(48_000));
+        let clock_wrong = MasterClock::Audio {
+            samples_consumed: Arc::clone(&consumed),
+            sample_rate: 44_100, // wrong: source native rate, not decoder output rate
+            fallback: None,
+        };
+        let pts_wrong = clock_wrong.current_pts();
+        // 48 000 / 44 100 ≈ 1.0884 s — NOT 1.0 s
+        assert!(
+            pts_wrong > Duration::from_secs(1),
+            "using native rate produces a clock that runs too fast; got {pts_wrong:?}"
+        );
+        assert!(
+            pts_wrong < Duration::from_millis(1_100),
+            "drift must be bounded to ~8.8 %; got {pts_wrong:?}"
+        );
+    }
+
+    #[test]
     fn master_clock_system_activate_fallback_should_be_noop() {
         let mut clock = MasterClock::System {
             started_at: Instant::now(),
