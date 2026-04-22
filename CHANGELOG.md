@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.2] - 2026-04-22
+
+### Fixed
+
+- `MasterClock::Audio` used the file's native sample rate (e.g. 44,100 Hz) instead of the decoder's fixed output rate (48,000 Hz), causing audio to play at ~1.088× speed ([#1110](https://github.com/itsakeyfut/avio/issues/1110))
+- `MasterClock::Audio` froze when the audio track ended before the video track, stalling `PlayerRunner::run()` indefinitely; fixed via wall-clock fallback re-arm on stall detection ([#1112](https://github.com/itsakeyfut/avio/issues/1112))
+- `spawn_audio_thread` silently dropped samples when the ring buffer was full on Windows (where `sleep(1 ms)` ≈ 10 ms), causing audio to play at ~2.3× speed; fixed by retrying until all samples are pushed ([#1114](https://github.com/itsakeyfut/avio/issues/1114))
+
+---
+
 ## [0.14.1] - 2026-04-21
 
 ### Fixed
