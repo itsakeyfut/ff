@@ -274,6 +274,7 @@ impl TimelinePlayer {
             clock: MasterClock::System {
                 started_at: Instant::now(),
                 base_pts: Duration::ZERO,
+                rate: 1.0,
             },
             sws_a: SwsRgbaConverter::new(),
             sws_b: SwsRgbaConverter::new(),

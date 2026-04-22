@@ -219,6 +219,12 @@ pub(crate) enum MasterClock {
     Audio {
         samples_consumed: Arc<AtomicU64>,
         sample_rate: u32,
+        /// Playback rate multiplier. 1.0 = real-time.
+        rate: f64,
+        /// Snapshot of `samples_consumed` at the last rate-change or seek.
+        samples_base: u64,
+        /// Media PTS at the last rate-change or seek.
+        pts_base: Duration,
         /// Wall-clock fallback activated after the first presented frame when no
         /// audio consumer has called `pop_audio_samples()`. Tuple: `(wall start, base PTS)`.
         ///
@@ -232,6 +238,8 @@ pub(crate) enum MasterClock {
     System {
         started_at: Instant,
         base_pts: Duration,
+        /// Playback rate multiplier. 1.0 = real-time.
+        rate: f64,
     },
 }
 
@@ -250,17 +258,26 @@ impl MasterClock {
             Self::Audio {
                 samples_consumed,
                 sample_rate,
+                rate,
+                samples_base,
+                pts_base,
                 fallback,
             } => {
                 let s = samples_consumed.load(Ordering::Relaxed);
-                let sample_pts = if s > 0 {
-                    Some(Duration::from_secs_f64(s as f64 / f64::from(*sample_rate)))
+                let delta = s.saturating_sub(*samples_base);
+                let sample_pts = if delta > 0 || !pts_base.is_zero() {
+                    Some(
+                        *pts_base
+                            + Duration::from_secs_f64(
+                                delta as f64 / f64::from(*sample_rate) * *rate,
+                            ),
+                    )
                 } else {
-                    None
+                    None // before first sample consumed (no sync yet)
                 };
                 let fallback_pts = fallback
                     .as_ref()
-                    .map(|(started_at, base_pts)| *base_pts + started_at.elapsed());
+                    .map(|(started_at, base_pts)| *base_pts + started_at.elapsed().mul_f64(*rate));
                 match (sample_pts, fallback_pts) {
                     // Both present: use whichever is further ahead.
                     // - During normal playback the sample clock is ahead → sample wins.
@@ -275,7 +292,8 @@ impl MasterClock {
             Self::System {
                 started_at,
                 base_pts,
-            } => *base_pts + started_at.elapsed(),
+                rate,
+            } => *base_pts + started_at.elapsed().mul_f64(*rate),
         }
     }
 
@@ -294,9 +312,14 @@ impl MasterClock {
             Self::System { .. } => true,
             Self::Audio {
                 samples_consumed,
+                samples_base,
+                pts_base,
                 fallback,
                 ..
-            } => samples_consumed.load(Ordering::Relaxed) > 0 || fallback.is_some(),
+            } => {
+                let s = samples_consumed.load(Ordering::Relaxed);
+                s > *samples_base || !pts_base.is_zero() || fallback.is_some()
+            }
         }
     }
 
@@ -316,10 +339,11 @@ impl MasterClock {
     pub(crate) fn activate_fallback_if_no_audio(&mut self, base_pts: Duration) {
         if let Self::Audio {
             samples_consumed,
+            samples_base,
             fallback,
             ..
         } = self
-            && samples_consumed.load(Ordering::Relaxed) == 0
+            && samples_consumed.load(Ordering::Relaxed) == *samples_base
             && fallback.is_none()
         {
             *fallback = Some((Instant::now(), base_pts));
@@ -340,6 +364,50 @@ impl MasterClock {
     pub(crate) fn rearm_fallback_at(&mut self, base_pts: Duration) {
         if let Self::Audio { fallback, .. } = self {
             *fallback = Some((Instant::now(), base_pts));
+        }
+    }
+
+    /// Update the playback rate multiplier.
+    ///
+    /// Re-baselines the clock so that `current_pts()` does not jump at the
+    /// moment of the rate change.  Values ≤ 0.0 are ignored.
+    #[allow(clippy::cast_precision_loss)]
+    pub(crate) fn set_rate(&mut self, new_rate: f64) {
+        if new_rate <= 0.0 {
+            return;
+        }
+        match self {
+            Self::Audio {
+                samples_consumed,
+                sample_rate,
+                rate,
+                pts_base,
+                samples_base,
+                fallback,
+            } => {
+                // Re-baseline at current pts so the clock doesn't jump.
+                let s = samples_consumed.load(Ordering::Relaxed);
+                let delta = s.saturating_sub(*samples_base);
+                let current = *pts_base
+                    + Duration::from_secs_f64(delta as f64 / f64::from(*sample_rate) * *rate);
+                *samples_base = s;
+                *pts_base = current;
+                *rate = new_rate;
+                if let Some((started_at, base)) = fallback.as_mut() {
+                    *base = current;
+                    *started_at = Instant::now();
+                }
+            }
+            Self::System {
+                started_at,
+                base_pts,
+                rate,
+            } => {
+                let current = *base_pts + started_at.elapsed().mul_f64(*rate);
+                *base_pts = current;
+                *started_at = Instant::now();
+                *rate = new_rate;
+            }
         }
     }
 
@@ -374,11 +442,21 @@ impl MasterClock {
             Self::System {
                 started_at,
                 base_pts,
+                ..
             } => {
                 *started_at = Instant::now();
                 *base_pts = base;
             }
-            Self::Audio { fallback, .. } => {
+            Self::Audio {
+                samples_consumed,
+                samples_base,
+                pts_base,
+                fallback,
+                ..
+            } => {
+                let s = samples_consumed.load(Ordering::Relaxed);
+                *samples_base = s;
+                *pts_base = base;
                 if fallback.is_some() {
                     *fallback = Some((Instant::now(), base));
                 }
@@ -666,6 +744,7 @@ mod tests {
         let clock = MasterClock::System {
             started_at: Instant::now(),
             base_pts: Duration::from_secs(5),
+            rate: 1.0,
         };
         let pts = clock.current_pts();
         assert!(
@@ -684,6 +763,7 @@ mod tests {
         let mut clock = MasterClock::System {
             started_at: Instant::now() - Duration::from_secs(10),
             base_pts: Duration::ZERO,
+            rate: 1.0,
         };
         assert!(
             clock.current_pts() >= Duration::from_secs(9),
@@ -706,6 +786,9 @@ mod tests {
         let clock = MasterClock::Audio {
             samples_consumed: Arc::new(AtomicU64::new(0)),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         assert!(
@@ -725,6 +808,9 @@ mod tests {
         let clock = MasterClock::Audio {
             samples_consumed: Arc::clone(&consumed),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         assert!(
@@ -743,6 +829,9 @@ mod tests {
         let mut clock = MasterClock::Audio {
             samples_consumed: Arc::new(AtomicU64::new(0)),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         assert!(
@@ -761,6 +850,9 @@ mod tests {
         let mut clock = MasterClock::Audio {
             samples_consumed: Arc::new(AtomicU64::new(0)),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         let base = Duration::from_secs(5);
@@ -786,6 +878,9 @@ mod tests {
         let mut clock = MasterClock::Audio {
             samples_consumed: Arc::clone(&consumed),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         clock.activate_fallback_if_no_audio(Duration::from_secs(2));
@@ -809,6 +904,9 @@ mod tests {
         let mut clock = MasterClock::Audio {
             samples_consumed: Arc::new(AtomicU64::new(0)),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         clock.activate_fallback_if_no_audio(Duration::from_secs(1));
@@ -833,6 +931,9 @@ mod tests {
         let mut clock = MasterClock::Audio {
             samples_consumed: Arc::new(AtomicU64::new(0)),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         clock.activate_fallback_if_no_audio(Duration::from_secs(5));
@@ -854,6 +955,9 @@ mod tests {
         let mut clock = MasterClock::Audio {
             samples_consumed: Arc::new(AtomicU64::new(0)),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         // reset() before the first frame must not arm the fallback.
@@ -880,6 +984,9 @@ mod tests {
         let mut clock = MasterClock::Audio {
             samples_consumed: Arc::clone(&consumed),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         let frozen_pts = Duration::from_secs_f64(frozen_frames as f64 / 48_000.0);
@@ -910,6 +1017,7 @@ mod tests {
         let mut clock = MasterClock::System {
             started_at: Instant::now(),
             base_pts: Duration::ZERO,
+            rate: 1.0,
         };
         // Must not panic and System behaviour must be unchanged.
         clock.rearm_fallback_at(Duration::from_secs(99));
@@ -925,6 +1033,9 @@ mod tests {
         let clock = MasterClock::Audio {
             samples_consumed: Arc::clone(&consumed),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         assert_eq!(
@@ -939,6 +1050,7 @@ mod tests {
         let clock = MasterClock::System {
             started_at: Instant::now(),
             base_pts: Duration::ZERO,
+            rate: 1.0,
         };
         assert_eq!(
             clock.audio_samples_snapshot(),
@@ -956,6 +1068,9 @@ mod tests {
         let clock = MasterClock::Audio {
             samples_consumed: Arc::clone(&consumed),
             sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         assert_eq!(
@@ -975,6 +1090,9 @@ mod tests {
         let clock_wrong = MasterClock::Audio {
             samples_consumed: Arc::clone(&consumed),
             sample_rate: 44_100, // wrong: source native rate, not decoder output rate
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
             fallback: None,
         };
         let pts_wrong = clock_wrong.current_pts();
@@ -994,12 +1112,92 @@ mod tests {
         let mut clock = MasterClock::System {
             started_at: Instant::now(),
             base_pts: Duration::ZERO,
+            rate: 1.0,
         };
         // Must not panic and must not change System behaviour.
         clock.activate_fallback_if_no_audio(Duration::from_secs(99));
         assert!(
             clock.should_sync(),
             "System clock must always sync regardless of activate_fallback_if_no_audio"
+        );
+    }
+
+    #[test]
+    fn set_rate_should_scale_audio_clock_pts() {
+        // Step 1: 48 000 samples already consumed (1 s at 1×).
+        let consumed = Arc::new(AtomicU64::new(48_000));
+        let mut clock = MasterClock::Audio {
+            samples_consumed: Arc::clone(&consumed),
+            sample_rate: 48_000,
+            rate: 1.0,
+            samples_base: 0,
+            pts_base: Duration::ZERO,
+            fallback: None,
+        };
+
+        // Sanity check: before rate change the clock reports exactly 1 s.
+        assert_eq!(
+            clock.current_pts(),
+            Duration::from_secs(1),
+            "before set_rate clock must report 1 s"
+        );
+
+        // Step 2: change rate to 2×. The baseline snaps to the current 1 s PTS.
+        clock.set_rate(2.0);
+
+        // Step 3: simulate another 1 real second of audio hardware drain
+        // (48 000 more samples consumed).
+        consumed.fetch_add(48_000, Ordering::Relaxed); // total = 96 000
+
+        // Expected: 1 s (at 1×) + 1 real second at 2× = 3 s media time.
+        let pts = clock.current_pts();
+        let expected = Duration::from_secs(3);
+        let tolerance = Duration::from_millis(1);
+        assert!(
+            pts >= expected.saturating_sub(tolerance) && pts <= expected + tolerance,
+            "1 s at 1× + 1 real-s at 2× must equal ≈3 s; got {pts:?}"
+        );
+    }
+
+    #[test]
+    fn set_rate_system_clock_should_scale_elapsed() {
+        let mut clock = MasterClock::System {
+            started_at: Instant::now(),
+            base_pts: Duration::ZERO,
+            rate: 1.0,
+        };
+
+        // Let a little time pass at 1×.
+        thread::sleep(Duration::from_millis(10));
+        let pts_before_rate_change = clock.current_pts();
+        assert!(
+            pts_before_rate_change >= Duration::from_millis(5),
+            "clock must have advanced ~10 ms before rate change; got {pts_before_rate_change:?}"
+        );
+
+        // Change to 2×. The baseline is re-anchored at the current PTS.
+        clock.set_rate(2.0);
+        let pts_at_rate_change = clock.current_pts();
+        // The clock must not jump backward.
+        assert!(
+            pts_at_rate_change >= pts_before_rate_change,
+            "clock must not go backward on set_rate; before={pts_before_rate_change:?} at={pts_at_rate_change:?}"
+        );
+
+        // Let another 10 ms of wall time pass at 2×.
+        thread::sleep(Duration::from_millis(10));
+        let pts_after = clock.current_pts();
+
+        // At 2× rate, 10 ms wall time should produce ≥ 15 ms of media time
+        // (allowing for scheduler imprecision).
+        let media_elapsed = pts_after.saturating_sub(pts_at_rate_change);
+        assert!(
+            media_elapsed >= Duration::from_millis(15),
+            "2× rate: 10 ms wall time must produce ≥15 ms media time; got media_elapsed={media_elapsed:?}"
+        );
+        assert!(
+            pts_after > Duration::from_millis(20),
+            "total PTS after ~10ms at 1× + ~10ms at 2× must be >20ms; got {pts_after:?}"
         );
     }
 }

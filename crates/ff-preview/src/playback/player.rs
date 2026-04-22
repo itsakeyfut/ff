@@ -225,6 +225,69 @@ impl PlayerHandle {
         samples
     }
 
+    /// Pull up to `pop_n` interleaved stereo `f32` PCM samples at 48 kHz and
+    /// advance the A/V sync clock by exactly `clock_stereo_pairs` — independent
+    /// of how many samples are actually available in the ring buffer.
+    ///
+    /// Use this instead of [`pop_audio_samples`](Self::pop_audio_samples) when
+    /// playing at rates other than 1×.  The cpal callback pops `out_len * rate`
+    /// decoded samples to drive rate-scaled audio, but the master clock must
+    /// still advance at the **hardware** output rate (`out_len / 2` per callback)
+    /// so that `MasterClock::Audio`'s `pts_base + delta / sr * rate` formula
+    /// yields the correct media PTS without double-counting the rate.
+    ///
+    /// # Arguments
+    ///
+    /// * `pop_n` — decoded samples to drain from the ring buffer
+    ///   (`output_buf.len() * rate`, rounded).
+    /// * `clock_stereo_pairs` — hardware stereo pairs to add to the sync counter
+    ///   (`output_buf.len() / 2`, constant regardless of rate).
+    #[allow(clippy::cast_precision_loss)]
+    pub fn pop_audio_samples_for_rate(&self, pop_n: usize, clock_stereo_pairs: u64) -> Vec<f32> {
+        if self.paused.load(Ordering::Relaxed) || self.stopped.load(Ordering::Relaxed) {
+            // Clock still advances — the hardware keeps running even during silence.
+            if let Some(sc) = &self.samples_consumed {
+                sc.fetch_add(clock_stereo_pairs, Ordering::Relaxed);
+            }
+            return Vec::new();
+        }
+        if pop_n == 0 {
+            if let Some(sc) = &self.samples_consumed {
+                sc.fetch_add(clock_stereo_pairs, Ordering::Relaxed);
+            }
+            return Vec::new();
+        }
+        // Mixer path (TimelinePlayer) — System clock, no samples_consumed tracking.
+        if let Some(mixer) = &self.audio_mixer {
+            return mixer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .mix(pop_n);
+        }
+        // Ring-buffer path (PlayerRunner single-track audio).
+        let Some(buf) = &self.audio_buf else {
+            if let Some(sc) = &self.samples_consumed {
+                sc.fetch_add(clock_stereo_pairs, Ordering::Relaxed);
+            }
+            return Vec::new();
+        };
+        let mut guard = buf
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let take = pop_n.min(guard.len());
+        let samples: Vec<f32> = if take > 0 {
+            guard.drain(..take).collect()
+        } else {
+            Vec::new()
+        };
+        drop(guard);
+        // Advance the clock by the hardware output size, not the decoded drain size.
+        if let Some(sc) = &self.samples_consumed {
+            sc.fetch_add(clock_stereo_pairs, Ordering::Relaxed);
+        }
+        samples
+    }
+
     /// Poll for the next [`PlayerEvent`] without blocking.
     ///
     /// Returns `None` when no events are pending.
@@ -453,6 +516,7 @@ impl PlayerRunner {
                     PlayerCommand::SetRate(r) => {
                         if r > 0.0 {
                             self.rate = r;
+                            self.clock.set_rate(r);
                         }
                     }
                     PlayerCommand::SetAvOffset(ms) => {
@@ -498,7 +562,9 @@ impl PlayerRunner {
 
             // ── Audio-only path ───────────────────────────────────────────────
             if self.decode_buf.is_none() {
-                thread::sleep(Duration::from_millis(10));
+                let poll_secs =
+                    (10.0_f64 / self.rate.max(f64::MIN_POSITIVE)).clamp(1.0, 50.0) / 1_000.0;
+                thread::sleep(Duration::from_secs_f64(poll_secs));
                 if let Some(audio_buf) = &self.audio_buf {
                     let empty = audio_buf
                         .lock()
@@ -574,9 +640,12 @@ impl PlayerRunner {
                         if diff > fp {
                             let sleep_secs =
                                 (diff - fp / 2.0).max(0.0) / self.rate.max(f64::MIN_POSITIVE);
-                            // Cap at one frame period: prevents indefinite stall when the
-                            // audio clock freezes (e.g. audio track ends before video).
-                            thread::sleep(Duration::from_secs_f64(sleep_secs.min(fp)));
+                            // Cap at one scaled frame period so the loop still wakes up
+                            // when the audio clock freezes, but slow rates (< 1×) are
+                            // not artificially capped to a value shorter than their
+                            // required inter-frame sleep.
+                            let max_sleep = fp / self.rate.max(f64::MIN_POSITIVE);
+                            thread::sleep(Duration::from_secs_f64(sleep_secs.min(max_sleep)));
                         } else if diff < -fp {
                             log::debug!(
                                 "dropped late frame video_pts={video_pts:?} \
@@ -696,6 +765,9 @@ impl PlayerRunner {
             let clock = MasterClock::Audio {
                 samples_consumed: Arc::new(AtomicU64::new(0)),
                 sample_rate: DECODED_SAMPLE_RATE,
+                rate: 1.0,
+                samples_base: 0,
+                pts_base: Duration::ZERO,
                 fallback: None,
             };
             (clock, Some(buf), Some(cancel), Some(handle))
@@ -707,6 +779,7 @@ impl PlayerRunner {
             let clock = MasterClock::System {
                 started_at: Instant::now(),
                 base_pts: Duration::ZERO,
+                rate: 1.0,
             };
             (clock, None, None, None)
         };
@@ -806,6 +879,9 @@ impl PreviewPlayer {
             MasterClock::Audio {
                 samples_consumed: Arc::new(AtomicU64::new(0)),
                 sample_rate: DECODED_SAMPLE_RATE,
+                rate: 1.0,
+                samples_base: 0,
+                pts_base: Duration::ZERO,
                 fallback: None,
             }
         } else {
@@ -816,6 +892,7 @@ impl PreviewPlayer {
             MasterClock::System {
                 started_at: Instant::now(),
                 base_pts: Duration::ZERO,
+                rate: 1.0,
             }
         };
 
@@ -1585,14 +1662,19 @@ mod tests {
         let target = Duration::from_secs(1);
         handle.seek(target);
 
-        // Wait up to 2 seconds for SeekCompleted.
+        // Wait up to 2 seconds for SeekCompleted, skipping PositionUpdate
+        // events that may have accumulated during the startup window.
         let deadline = Instant::now() + Duration::from_secs(2);
-        let event = loop {
-            if let Some(e) = handle.poll_event() {
-                break Some(e);
+        let seek_result = loop {
+            match handle.poll_event() {
+                Some(PlayerEvent::SeekCompleted(pts)) => break Ok(pts),
+                Some(PlayerEvent::Eof) => break Err("Eof"),
+                Some(PlayerEvent::Error(_)) => break Err("Error"),
+                Some(PlayerEvent::PositionUpdate(_)) => {} // skip pre-seek updates
+                None => {}
             }
             if Instant::now() > deadline {
-                break None;
+                break Err("timeout");
             }
             thread::sleep(Duration::from_millis(10));
         };
@@ -1600,19 +1682,16 @@ mod tests {
         handle_bg.stop();
         let _ = bg.join();
 
-        match event {
-            Some(PlayerEvent::SeekCompleted(pts)) => {
+        match seek_result {
+            Ok(pts) => {
                 assert!(
                     pts >= target.saturating_sub(Duration::from_millis(100)),
                     "SeekCompleted pts must be near the requested target; \
                      target={target:?} pts={pts:?}"
                 );
             }
-            Some(PlayerEvent::Eof) => {
-                panic!("received Eof before SeekCompleted — file may be too short");
-            }
-            Some(PlayerEvent::PositionUpdate(_) | PlayerEvent::Error(_)) | None => {
-                panic!("no PlayerEvent::SeekCompleted received within 2 seconds");
+            Err(reason) => {
+                panic!("SeekCompleted not received within 2 seconds: {reason}");
             }
         }
     }
