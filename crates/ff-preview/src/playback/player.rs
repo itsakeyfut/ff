@@ -233,7 +233,7 @@ impl PlayerHandle {
     /// playing at rates other than 1×.  The cpal callback pops `out_len * rate`
     /// decoded samples to drive rate-scaled audio, but the master clock must
     /// still advance at the **hardware** output rate (`out_len / 2` per callback)
-    /// so that [`MasterClock::Audio`]'s `pts_base + delta / sr * rate` formula
+    /// so that `MasterClock::Audio`'s `pts_base + delta / sr * rate` formula
     /// yields the correct media PTS without double-counting the rate.
     ///
     /// # Arguments
