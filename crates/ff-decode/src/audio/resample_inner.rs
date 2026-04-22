@@ -33,6 +33,12 @@ use crate::error::DecodeError;
 /// RAII guard for `SwrContext` to ensure proper cleanup.
 pub(crate) struct SwrContextGuard(pub(crate) *mut SwrContext);
 
+/// Cache key that identifies a unique (src → dst) resampling configuration.
+/// Stored alongside `SwrContextGuard` so the context can be reused across
+/// frames without reinitialising the FIR filter state on every call.
+/// (src_format, src_rate, src_channels, dst_format, dst_rate, dst_channels)
+pub(crate) type SwrKey = (i32, u32, u32, i32, u32, u32);
+
 impl Drop for SwrContextGuard {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -206,18 +212,15 @@ pub(crate) unsafe fn av_frame_to_audio_frame(
 /// rate / channel count conversion via SwResample when the output parameters
 /// differ from the decoded source.
 ///
-/// # Arguments
-///
-/// * `frame` — The decoded `AVFrame` to convert.
-/// * `format_ctx` — The format context, used for timestamp extraction.
-/// * `stream_index` — Audio stream index in `format_ctx`.
-/// * `output_format` — Optional target sample format.
-/// * `output_sample_rate` — Optional target sample rate.
-/// * `output_channels` — Optional target channel count.
+/// `swr_cache` and `swr_key` are owned by the caller (`AudioDecoderInner`) and
+/// persist across frames.  The `SwrContext` is only rebuilt when the source or
+/// target parameters change, which preserves the FIR filter delay buffer across
+/// frame boundaries and prevents inter-frame discontinuities.
 ///
 /// # Safety
 ///
 /// Caller must ensure `frame` and `format_ctx` are valid.
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn convert_frame_to_audio_frame(
     frame: *mut AVFrame,
     format_ctx: *mut AVFormatContext,
@@ -225,6 +228,8 @@ pub(crate) unsafe fn convert_frame_to_audio_frame(
     output_format: Option<SampleFormat>,
     output_sample_rate: Option<u32>,
     output_channels: Option<u32>,
+    swr_cache: &mut Option<SwrContextGuard>,
+    swr_key: &mut Option<SwrKey>,
 ) -> Result<AudioFrame, DecodeError> {
     // SAFETY: Caller ensures frame is valid
     unsafe {
@@ -248,6 +253,8 @@ pub(crate) unsafe fn convert_frame_to_audio_frame(
                 output_channels,
                 format_ctx,
                 stream_index,
+                swr_cache,
+                swr_key,
             )
         } else {
             av_frame_to_audio_frame(frame, format_ctx, stream_index)
@@ -258,6 +265,11 @@ pub(crate) unsafe fn convert_frame_to_audio_frame(
 // ── SwResample pipeline ───────────────────────────────────────────────────────
 
 /// Performs sample format / rate / channel conversion using `libswresample`.
+///
+/// The `SwrContext` is cached in `swr_cache` / `swr_key` and reused across
+/// frames so the FIR filter's internal delay buffer is preserved at each frame
+/// boundary.  A fresh context is only allocated when the source or target
+/// parameters change.
 ///
 /// # Safety
 ///
@@ -274,6 +286,8 @@ unsafe fn convert_with_swr(
     output_channels: Option<u32>,
     format_ctx: *mut AVFormatContext,
     stream_index: i32,
+    swr_cache: &mut Option<SwrContextGuard>,
+    swr_key: &mut Option<SwrKey>,
 ) -> Result<AudioFrame, DecodeError> {
     // Determine target parameters
     let dst_format = output_format.map_or(src_format, sample_format_to_av);
@@ -288,73 +302,101 @@ unsafe fn convert_with_swr(
         return unsafe { av_frame_to_audio_frame(frame, format_ctx, stream_index) };
     }
 
-    // Create channel layouts for source and destination
-    // SAFETY: We'll properly clean up these layouts via av_channel_layout_uninit
-    let mut src_ch_layout = unsafe { create_channel_layout(src_channels) };
-    let mut dst_ch_layout = unsafe { create_channel_layout(dst_channels) };
+    let key: SwrKey = (
+        src_format,
+        src_sample_rate,
+        src_channels,
+        dst_format,
+        dst_sample_rate,
+        dst_channels,
+    );
 
-    // Allocate and configure SwrContext
-    let mut swr_ctx: *mut SwrContext = ptr::null_mut();
+    // Rebuild the SwrContext only when the resampling parameters change.
+    // Reusing the context across frames preserves the FIR filter delay buffer,
+    // preventing inter-frame discontinuities that cause audio crackling.
+    if swr_key.as_ref() != Some(&key) {
+        *swr_cache = None; // drop old context (calls swr_free via Drop)
 
-    // SAFETY: FFmpeg API call with valid parameters; swr_ctx is initialised to null
-    let ret = unsafe {
-        ff_sys::swr_alloc_set_opts2(
-            &raw mut swr_ctx,
-            &raw const dst_ch_layout,
-            dst_format,
-            dst_sample_rate as i32,
-            &raw const src_ch_layout,
-            src_format,
-            src_sample_rate as i32,
-            0,
-            ptr::null_mut(),
-        )
+        // Create channel layouts for source and destination
+        // SAFETY: We'll properly clean up these layouts via av_channel_layout_uninit
+        let mut src_ch_layout = unsafe { create_channel_layout(src_channels) };
+        let mut dst_ch_layout = unsafe { create_channel_layout(dst_channels) };
+
+        // Allocate and configure SwrContext
+        let mut new_ctx: *mut SwrContext = ptr::null_mut();
+
+        // SAFETY: FFmpeg API call with valid parameters; new_ctx is initialised to null
+        let ret = unsafe {
+            ff_sys::swr_alloc_set_opts2(
+                &raw mut new_ctx,
+                &raw const dst_ch_layout,
+                dst_format,
+                dst_sample_rate as i32,
+                &raw const src_ch_layout,
+                src_format,
+                src_sample_rate as i32,
+                0,
+                ptr::null_mut(),
+            )
+        };
+
+        if ret < 0 {
+            unsafe {
+                ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
+                ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
+            }
+            return Err(DecodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Failed to allocate SwrContext: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
+        }
+
+        // Initialize the resampler
+        // SAFETY: new_ctx is valid after swr_alloc_set_opts2 succeeded
+        let ret = unsafe { ff_sys::swr_init(new_ctx) };
+        if ret < 0 {
+            unsafe {
+                ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
+                ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
+                ff_sys::swr_free(&mut (new_ctx as *mut _));
+            }
+            return Err(DecodeError::Ffmpeg {
+                code: ret,
+                message: format!(
+                    "Failed to initialize SwrContext: {}",
+                    ff_sys::av_error_string(ret)
+                ),
+            });
+        }
+
+        unsafe {
+            ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
+            ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
+        }
+
+        *swr_cache = Some(SwrContextGuard(new_ctx));
+        *swr_key = Some(key);
+    }
+
+    // SAFETY: swr_cache is always Some after the rebuild block above
+    let swr_ctx = match swr_cache.as_ref() {
+        Some(guard) => guard.0,
+        None => {
+            return Err(DecodeError::Ffmpeg {
+                code: 0,
+                message: "SwrContext missing after initialisation".to_string(),
+            });
+        }
     };
 
-    if ret < 0 {
-        // Clean up channel layouts before returning the error
-        unsafe {
-            ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
-            ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
-        }
-        return Err(DecodeError::Ffmpeg {
-            code: ret,
-            message: format!(
-                "Failed to allocate SwrContext: {}",
-                ff_sys::av_error_string(ret)
-            ),
-        });
-    }
-
-    // Wrap in RAII guard for automatic cleanup
-    let _swr_guard = SwrContextGuard(swr_ctx);
-
-    // Initialize the resampler
-    // SAFETY: swr_ctx is valid after swr_alloc_set_opts2 succeeded
-    let ret = unsafe { ff_sys::swr_init(swr_ctx) };
-    if ret < 0 {
-        unsafe {
-            ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
-            ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
-        }
-        return Err(DecodeError::Ffmpeg {
-            code: ret,
-            message: format!(
-                "Failed to initialize SwrContext: {}",
-                ff_sys::av_error_string(ret)
-            ),
-        });
-    }
-
-    // Calculate output sample count
+    // Calculate output sample count (includes buffered delay from previous frames)
     // SAFETY: swr_ctx is valid and initialized
     let out_samples = unsafe { ff_sys::swr_get_out_samples(swr_ctx, nb_samples as i32) };
 
     if out_samples < 0 {
-        unsafe {
-            ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
-            ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
-        }
         return Err(DecodeError::Ffmpeg {
             code: 0,
             message: "Failed to calculate output sample count".to_string(),
@@ -406,12 +448,6 @@ unsafe fn convert_with_swr(
             nb_samples as i32,
         )
     };
-
-    // Clean up channel layouts
-    unsafe {
-        ff_sys::av_channel_layout_uninit(&raw mut src_ch_layout);
-        ff_sys::av_channel_layout_uninit(&raw mut dst_ch_layout);
-    }
 
     if converted_samples < 0 {
         return Err(DecodeError::Ffmpeg {
