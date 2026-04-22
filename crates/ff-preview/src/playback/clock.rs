@@ -237,6 +237,13 @@ pub(crate) enum MasterClock {
 
 impl MasterClock {
     /// Current master clock position.
+    ///
+    /// For `Audio`: returns the maximum of the sample-based clock and the
+    /// wall-clock fallback (when set). Taking the maximum ensures that the
+    /// clock continues advancing at wall-clock rate after the audio ring
+    /// buffer drains (audio track ends before video), while also allowing
+    /// a late-connecting cpal consumer to drive the clock forward once it
+    /// overtakes the initial fallback.
     #[allow(clippy::cast_precision_loss)]
     pub(crate) fn current_pts(&self) -> Duration {
         match self {
@@ -246,14 +253,23 @@ impl MasterClock {
                 fallback,
             } => {
                 let s = samples_consumed.load(Ordering::Relaxed);
-                if s > 0 {
-                    // Normal path: audio-clock driven.
-                    Duration::from_secs_f64(s as f64 / f64::from(*sample_rate))
-                } else if let Some((started_at, base_pts)) = fallback {
-                    // Fallback path: wall-clock driven (no audio consumer connected).
-                    *base_pts + started_at.elapsed()
+                let sample_pts = if s > 0 {
+                    Some(Duration::from_secs_f64(s as f64 / f64::from(*sample_rate)))
                 } else {
-                    Duration::ZERO
+                    None
+                };
+                let fallback_pts = fallback
+                    .as_ref()
+                    .map(|(started_at, base_pts)| *base_pts + started_at.elapsed());
+                match (sample_pts, fallback_pts) {
+                    // Both present: use whichever is further ahead.
+                    // - During normal playback the sample clock is ahead → sample wins.
+                    // - After audio EOF (samples frozen) the wall-clock fallback
+                    //   overtakes → fallback wins.
+                    (Some(sp), Some(fp)) => sp.max(fp),
+                    (Some(sp), None) => sp,
+                    (None, Some(fp)) => fp,
+                    (None, None) => Duration::ZERO,
                 }
             }
             Self::System {
@@ -307,6 +323,39 @@ impl MasterClock {
             && fallback.is_none()
         {
             *fallback = Some((Instant::now(), base_pts));
+        }
+    }
+
+    /// Re-arm the wall-clock fallback at `base_pts`, even when
+    /// `samples_consumed > 0`.
+    ///
+    /// Unlike [`activate_fallback_if_no_audio`](Self::activate_fallback_if_no_audio),
+    /// this method activates unconditionally and is intended to be called by
+    /// the pacing loop when it detects that audio has gone silent (audio track
+    /// ended before video). After re-arming, [`current_pts`](Self::current_pts)
+    /// returns the `max` of the frozen sample position and the advancing
+    /// wall-clock, so video continues at its native frame rate.
+    ///
+    /// No-op for [`MasterClock::System`].
+    pub(crate) fn rearm_fallback_at(&mut self, base_pts: Duration) {
+        if let Self::Audio { fallback, .. } = self {
+            *fallback = Some((Instant::now(), base_pts));
+        }
+    }
+
+    /// Current value of the audio sample counter, or `0` for a `System` clock.
+    ///
+    /// Used by the pacing loop to detect stalls: if this value stops
+    /// advancing for several consecutive frames while `> 0`, the audio track
+    /// has ended and `rearm_fallback_at` should be called.
+    pub(crate) fn audio_samples_snapshot(&self) -> u64 {
+        if let Self::Audio {
+            samples_consumed, ..
+        } = self
+        {
+            samples_consumed.load(Ordering::Relaxed)
+        } else {
+            0
         }
     }
 
@@ -728,7 +777,11 @@ mod tests {
     }
 
     #[test]
-    fn master_clock_audio_should_prefer_samples_over_fallback_when_consumer_starts() {
+    fn master_clock_audio_max_of_sample_and_fallback_should_prefer_further_ahead() {
+        // current_pts() returns max(sample_pts, fallback_pts) when both are set.
+        // Scenario: initial fallback armed at 2 s (first frame PTS=2s, no cpal
+        // consumer). Then 1 s of audio is consumed. sample_pts=1 s < fallback≈2 s,
+        // so the fallback wins and the clock reports ≈2 s.
         let consumed = Arc::new(AtomicU64::new(0));
         let mut clock = MasterClock::Audio {
             samples_consumed: Arc::clone(&consumed),
@@ -737,13 +790,17 @@ mod tests {
         };
         clock.activate_fallback_if_no_audio(Duration::from_secs(2));
         assert!(clock.should_sync(), "fallback must enable sync");
-        // Audio consumer starts.
+        // Audio consumer processes 1 s of audio.
         consumed.store(48_000, Ordering::Relaxed);
-        // current_pts() must now use the sample-based path, not the fallback.
-        assert_eq!(
-            clock.current_pts(),
-            Duration::from_secs(1),
-            "48000 samples at 48 kHz must report 1 s even when fallback is also armed"
+        // sample_pts=1 s, fallback_pts≈2 s → max returns ≈2 s.
+        let pts = clock.current_pts();
+        assert!(
+            pts >= Duration::from_secs(2),
+            "max() must return fallback when fallback is further ahead; got {pts:?}"
+        );
+        assert!(
+            pts < Duration::from_secs(3),
+            "fallback must not be wildly ahead of 2 s; got {pts:?}"
         );
     }
 
@@ -809,6 +866,84 @@ mod tests {
             clock.current_pts(),
             Duration::ZERO,
             "PTS must remain ZERO when fallback is not yet armed"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_rearm_should_advance_past_frozen_sample_pts() {
+        // Simulates audio-track-ended-before-video: samples_consumed is frozen
+        // at 45 222 ms worth of frames. After rearm_fallback_at(45.222s), the
+        // clock must advance beyond 45.222 s even though samples_consumed does
+        // not change.
+        let frozen_frames: u64 = (45_222 * 48_000) / 1_000; // frames for 45.222 s
+        let consumed = Arc::new(AtomicU64::new(frozen_frames));
+        let mut clock = MasterClock::Audio {
+            samples_consumed: Arc::clone(&consumed),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        let frozen_pts = Duration::from_secs_f64(frozen_frames as f64 / 48_000.0);
+        // Before rearm: clock is frozen at the audio EOF position.
+        assert_eq!(
+            clock.current_pts(),
+            frozen_pts,
+            "clock must be frozen at audio EOF position before rearm"
+        );
+        // Re-arm at the frozen position.
+        clock.rearm_fallback_at(frozen_pts);
+        thread::sleep(Duration::from_millis(10));
+        // After rearm: clock must have advanced past the frozen value.
+        let pts_after = clock.current_pts();
+        assert!(
+            pts_after > frozen_pts,
+            "clock must advance past frozen sample_pts after rearm; \
+             frozen={frozen_pts:?} after={pts_after:?}"
+        );
+        assert!(
+            pts_after < frozen_pts + Duration::from_secs(1),
+            "clock must not advance 1 s in a unit test after rearm; got {pts_after:?}"
+        );
+    }
+
+    #[test]
+    fn master_clock_audio_rearm_should_be_noop_for_system_clock() {
+        let mut clock = MasterClock::System {
+            started_at: Instant::now(),
+            base_pts: Duration::ZERO,
+        };
+        // Must not panic and System behaviour must be unchanged.
+        clock.rearm_fallback_at(Duration::from_secs(99));
+        assert!(
+            clock.should_sync(),
+            "System clock must always sync after rearm_fallback_at"
+        );
+    }
+
+    #[test]
+    fn audio_samples_snapshot_should_return_current_counter_for_audio_clock() {
+        let consumed = Arc::new(AtomicU64::new(12_345));
+        let clock = MasterClock::Audio {
+            samples_consumed: Arc::clone(&consumed),
+            sample_rate: 48_000,
+            fallback: None,
+        };
+        assert_eq!(
+            clock.audio_samples_snapshot(),
+            12_345,
+            "audio_samples_snapshot must reflect the current AtomicU64 value"
+        );
+    }
+
+    #[test]
+    fn audio_samples_snapshot_should_return_zero_for_system_clock() {
+        let clock = MasterClock::System {
+            started_at: Instant::now(),
+            base_pts: Duration::ZERO,
+        };
+        assert_eq!(
+            clock.audio_samples_snapshot(),
+            0,
+            "audio_samples_snapshot must return 0 for System clock"
         );
     }
 

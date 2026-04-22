@@ -36,6 +36,11 @@ use crate::event::PlayerEvent;
 
 const AUDIO_MAX_BUF: usize = 96_000;
 const CHANNEL_CAP: usize = 64;
+/// Number of consecutive presented frames with no audio progress before the
+/// wall-clock fallback is re-armed (audio track ended before video track).
+/// At 30 fps this is ~167 ms; at 60 fps ~83 ms — short enough to recover
+/// quickly, long enough to avoid false positives from momentary underruns.
+const AUDIO_STALL_FRAMES: u32 = 5;
 /// Fixed output sample rate of the audio decode thread.
 ///
 /// `spawn_audio_thread` always resamples to this rate via
@@ -422,6 +427,13 @@ impl PlayerRunner {
 
         self.clock.reset(Duration::ZERO);
 
+        // Audio stall detection state: tracks whether samples_consumed is
+        // advancing. When it stops for AUDIO_STALL_FRAMES consecutive
+        // presented frames, the audio track has ended before the video track
+        // and the wall-clock fallback is re-armed so pacing continues.
+        let mut prev_audio_samples: u64 = 0;
+        let mut audio_stall_frames: u32 = 0;
+
         loop {
             // ── Drain commands ────────────────────────────────────────────────
             let mut pending_seek: Option<Duration> = None;
@@ -562,7 +574,9 @@ impl PlayerRunner {
                         if diff > fp {
                             let sleep_secs =
                                 (diff - fp / 2.0).max(0.0) / self.rate.max(f64::MIN_POSITIVE);
-                            thread::sleep(Duration::from_secs_f64(sleep_secs));
+                            // Cap at one frame period: prevents indefinite stall when the
+                            // audio clock freezes (e.g. audio track ends before video).
+                            thread::sleep(Duration::from_secs_f64(sleep_secs.min(fp)));
                         } else if diff < -fp {
                             log::debug!(
                                 "dropped late frame video_pts={video_pts:?} \
@@ -581,6 +595,21 @@ impl PlayerRunner {
                     // This ensures real-time pacing even when pop_audio_samples() is
                     // never called (e.g. no cpal stream attached to the handle).
                     self.clock.activate_fallback_if_no_audio(pts);
+
+                    // Audio-EOF detection: if samples_consumed stops advancing for
+                    // AUDIO_STALL_FRAMES consecutive frames while non-zero (audio was
+                    // playing but has now ended), re-arm the wall-clock fallback so the
+                    // remaining video plays at its native frame rate.
+                    let cur_audio = self.clock.audio_samples_snapshot();
+                    if cur_audio > 0 && cur_audio == prev_audio_samples {
+                        audio_stall_frames = audio_stall_frames.saturating_add(1);
+                        if audio_stall_frames == AUDIO_STALL_FRAMES {
+                            self.clock.rearm_fallback_at(pts);
+                        }
+                    } else {
+                        prev_audio_samples = cur_audio;
+                        audio_stall_frames = 0;
+                    }
 
                     // Populate cache after conversion (rgba_buf holds the converted frame).
                     if let Some(cache) = &mut self.frame_cache
@@ -942,24 +971,31 @@ fn spawn_audio_thread(
                 break;
             }
 
-            let buf_len = buf
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len();
-            if buf_len >= AUDIO_MAX_BUF {
-                thread::sleep(Duration::from_millis(1));
-                continue;
-            }
-
             match decoder.decode_one() {
                 Ok(Some(frame)) => {
                     let samples = super::playback_inner::audio_frame_to_f32(&frame);
-                    if !samples.is_empty() {
+                    // Push ALL samples without dropping. When the ring buffer is
+                    // full, wait for cpal to drain space before continuing.
+                    // Using take(space) instead would silently discard samples on
+                    // platforms where sleep(1ms) sleeps much longer (e.g. ~10ms on
+                    // Windows), causing audio to play at ~2x speed (issue #18).
+                    let mut offset = 0;
+                    while offset < samples.len() {
+                        if cancel.load(Ordering::Acquire) {
+                            return;
+                        }
                         let mut guard = buf
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         let space = AUDIO_MAX_BUF.saturating_sub(guard.len());
-                        guard.extend(samples.into_iter().take(space));
+                        if space == 0 {
+                            drop(guard);
+                            thread::sleep(Duration::from_millis(1));
+                            continue;
+                        }
+                        let take = space.min(samples.len() - offset);
+                        guard.extend(samples[offset..offset + take].iter().copied());
+                        offset += take;
                     }
                 }
                 Ok(None) => break,
