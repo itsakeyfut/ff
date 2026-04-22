@@ -971,24 +971,31 @@ fn spawn_audio_thread(
                 break;
             }
 
-            let buf_len = buf
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len();
-            if buf_len >= AUDIO_MAX_BUF {
-                thread::sleep(Duration::from_millis(1));
-                continue;
-            }
-
             match decoder.decode_one() {
                 Ok(Some(frame)) => {
                     let samples = super::playback_inner::audio_frame_to_f32(&frame);
-                    if !samples.is_empty() {
+                    // Push ALL samples without dropping. When the ring buffer is
+                    // full, wait for cpal to drain space before continuing.
+                    // Using take(space) instead would silently discard samples on
+                    // platforms where sleep(1ms) sleeps much longer (e.g. ~10ms on
+                    // Windows), causing audio to play at ~2x speed (issue #18).
+                    let mut offset = 0;
+                    while offset < samples.len() {
+                        if cancel.load(Ordering::Acquire) {
+                            return;
+                        }
                         let mut guard = buf
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         let space = AUDIO_MAX_BUF.saturating_sub(guard.len());
-                        guard.extend(samples.into_iter().take(space));
+                        if space == 0 {
+                            drop(guard);
+                            thread::sleep(Duration::from_millis(1));
+                            continue;
+                        }
+                        let take = space.min(samples.len() - offset);
+                        guard.extend(samples[offset..offset + take].iter().copied());
+                        offset += take;
                     }
                 }
                 Ok(None) => break,
