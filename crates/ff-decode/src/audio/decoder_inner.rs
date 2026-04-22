@@ -240,6 +240,10 @@ pub(crate) struct AudioDecoderInner {
     output_sample_rate: Option<u32>,
     /// Target output channel count (if remixing is needed)
     output_channels: Option<u32>,
+    /// Cached `SwrContext` — reused across frames to preserve FIR filter state.
+    swr_ctx: Option<resample_inner::SwrContextGuard>,
+    /// Key for the cached context; rebuilt when source or target parameters change.
+    swr_key: Option<resample_inner::SwrKey>,
     /// Whether the source is a live/streaming input (seeking is not supported)
     is_live: bool,
     /// Whether end of file has been reached
@@ -411,6 +415,8 @@ impl AudioDecoderInner {
                 output_format,
                 output_sample_rate,
                 output_channels,
+                swr_ctx: None,
+                swr_key: None,
                 is_live,
                 eof: false,
                 position: Duration::ZERO,
@@ -653,6 +659,8 @@ impl AudioDecoderInner {
                         self.output_format,
                         self.output_sample_rate,
                         self.output_channels,
+                        &mut self.swr_ctx,
+                        &mut self.swr_key,
                     )?;
 
                     // Update position based on frame timestamp
@@ -795,11 +803,14 @@ impl AudioDecoderInner {
                 })?;
         }
 
-        // 3. Flush decoder buffers
+        // 3. Flush decoder buffers and reset the cached SwrContext so the
+        //    resampler does not carry stale delay samples across the seek point.
         // SAFETY: codec_ctx is valid (owned by AudioDecoderInner)
         unsafe {
             ff_sys::avcodec::flush_buffers(self.codec_ctx);
         }
+        self.swr_ctx = None;
+        self.swr_key = None;
 
         // 4. Drain any remaining frames from the decoder after flush
         // SAFETY: codec_ctx and frame are valid
