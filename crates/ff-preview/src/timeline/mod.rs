@@ -79,6 +79,63 @@ struct TransitionState {
     duration: Duration,
 }
 
+// ── OverlayLayer ──────────────────────────────────────────────────────────────
+
+/// One secondary video layer (V2, V3, …) inside [`TimelineRunner`].
+struct OverlayLayer {
+    clips: Vec<ClipState>,
+    /// Index of the clip currently being decoded from this layer.
+    active: usize,
+    sws: SwsRgbaConverter,
+    rgba: Vec<u8>,
+}
+
+// ── AudioOnlyTrack ────────────────────────────────────────────────────────────
+
+/// One dedicated audio-only clip (from an A1/A2/… track) inside [`TimelineRunner`].
+struct AudioOnlyTrack {
+    source: PathBuf,
+    timeline_start: Duration,
+    timeline_end: Duration,
+    in_point: Duration,
+    handle: AudioTrackHandle,
+    cancel: Option<Arc<AtomicBool>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl AudioOnlyTrack {
+    fn start_at(&mut self, from_pts: Duration) {
+        // Cancel any running thread first.
+        if let Some(c) = self.cancel.take() {
+            c.store(true, Ordering::Release);
+        }
+        drop(self.thread.take());
+        self.handle.clear();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let t = spawn_audio_track_thread(
+            self.source.clone(),
+            from_pts,
+            self.handle.clone(),
+            Arc::clone(&cancel),
+        );
+        self.cancel = Some(cancel);
+        self.thread = Some(t);
+    }
+
+    fn stop(&mut self) {
+        if let Some(c) = self.cancel.take() {
+            c.store(true, Ordering::Release);
+        }
+        drop(self.thread.take());
+    }
+}
+
+impl Drop for AudioOnlyTrack {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 // ── TimelinePlayer ────────────────────────────────────────────────────────────
 
 /// Thin builder for a ([`TimelineRunner`], [`PlayerHandle`]) pair backed by a
@@ -186,7 +243,7 @@ impl TimelinePlayer {
 
         // ── Phase 2: build mixer and track handles (if audio present) ─────────
 
-        let (mixer_arc, audio_track_handles): (
+        let (mut mixer_arc, audio_track_handles): (
             Option<Arc<Mutex<AudioMixer>>>,
             Vec<Option<AudioTrackHandle>>,
         ) = if has_any_audio {
@@ -230,6 +287,103 @@ impl TimelinePlayer {
             });
         }
 
+        // ── Phase 4: build overlay layers (V2, V3, …) ────────────────────────
+        // Audio from V2+ clips is routed through AudioOnlyTrack (same mechanism as
+        // A1) so it is started/stopped as the playhead crosses each clip window.
+
+        let mut audio_only_tracks: Vec<AudioOnlyTrack> = Vec::new();
+
+        let mut overlay_layers: Vec<OverlayLayer> = Vec::new();
+        for v_track in timeline.video_tracks().iter().skip(1) {
+            if v_track.is_empty() {
+                continue;
+            }
+            let mut layer_clips: Vec<ClipState> = Vec::new();
+            for clip in v_track {
+                let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
+                let info = ff_probe::open(&clip.source)?;
+                let clip_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point) {
+                    op.saturating_sub(ip)
+                } else {
+                    info.duration().saturating_sub(in_pt)
+                };
+                let timeline_start = clip.timeline_offset;
+                let timeline_end = timeline_start + clip_dur;
+                let mut decode_buf = DecodeBuffer::open(&clip.source).build()?;
+                if in_pt > Duration::ZERO {
+                    decode_buf.seek(in_pt)?;
+                }
+                if info.has_audio() {
+                    let mixer_ref = mixer_arc
+                        .get_or_insert_with(|| Arc::new(Mutex::new(AudioMixer::new(48_000))));
+                    let handle = mixer_ref
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .add_track();
+                    audio_only_tracks.push(AudioOnlyTrack {
+                        source: clip.source.clone(),
+                        timeline_start,
+                        timeline_end,
+                        in_point: in_pt,
+                        handle,
+                        cancel: None,
+                        thread: None,
+                    });
+                }
+                layer_clips.push(ClipState {
+                    source: clip.source.clone(),
+                    decode_buf,
+                    timeline_start,
+                    timeline_end,
+                    in_point: in_pt,
+                    out_point: clip.out_point,
+                    transition_dur: Duration::ZERO,
+                    audio_track: None,
+                });
+            }
+            overlay_layers.push(OverlayLayer {
+                clips: layer_clips,
+                active: 0,
+                sws: SwsRgbaConverter::new(),
+                rgba: Vec::new(),
+            });
+        }
+
+        // ── Phase 5: build audio-only tracks (A1, A2, …) ─────────────────────
+
+        for a_track in timeline.audio_tracks() {
+            for clip in a_track {
+                let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
+                let info = ff_probe::open(&clip.source)?;
+                if !info.has_audio() {
+                    continue;
+                }
+                let clip_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point) {
+                    op.saturating_sub(ip)
+                } else {
+                    info.duration().saturating_sub(in_pt)
+                };
+                let timeline_start = clip.timeline_offset;
+                let timeline_end = timeline_start + clip_dur;
+                // Lazily create the mixer if no V1 clip had audio.
+                let mixer_ref =
+                    mixer_arc.get_or_insert_with(|| Arc::new(Mutex::new(AudioMixer::new(48_000))));
+                let handle = mixer_ref
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .add_track();
+                audio_only_tracks.push(AudioOnlyTrack {
+                    source: clip.source.clone(),
+                    timeline_start,
+                    timeline_end,
+                    in_point: in_pt,
+                    handle,
+                    cancel: None,
+                    thread: None,
+                });
+            }
+        }
+
         // ── Compute total duration ─────────────────────────────────────────────
 
         let total_dur = clip_states
@@ -261,6 +415,8 @@ impl TimelinePlayer {
 
         let runner = TimelineRunner {
             clips: clip_states,
+            overlay_layers,
+            audio_only_tracks,
             active: 0,
             transition: None,
             cmd_rx,
@@ -308,6 +464,12 @@ impl TimelinePlayer {
 /// [`FrameSink`] with [`set_sink`](Self::set_sink) before calling `run`.
 pub struct TimelineRunner {
     clips: Vec<ClipState>,
+    /// Secondary video overlay layers (V2, V3, …). Each is composited over V1
+    /// in order before the frame is delivered to the sink.
+    overlay_layers: Vec<OverlayLayer>,
+    /// Dedicated audio-only clips (from A1, A2, … tracks). Each is started and
+    /// stopped as the playhead crosses its timeline window.
+    audio_only_tracks: Vec<AudioOnlyTrack>,
     /// Index of the clip currently being decoded and presented.
     active: usize,
     /// Non-`None` while a crossfade transition is in progress.
@@ -495,6 +657,20 @@ impl TimelineRunner {
 
                     let timeline_pts = clip_tl_start + f_pts.saturating_sub(clip_in);
 
+                    // ── Manage audio-only decode threads ──────────────────────
+                    for at in &mut self.audio_only_tracks {
+                        let should_run =
+                            timeline_pts >= at.timeline_start && timeline_pts < at.timeline_end;
+                        let is_running = at.cancel.is_some();
+                        if should_run && !is_running {
+                            let local =
+                                at.in_point + timeline_pts.saturating_sub(at.timeline_start);
+                            at.start_at(local);
+                        } else if !should_run && is_running {
+                            at.stop();
+                        }
+                    }
+
                     // Update shared current_pts.
                     self.current_pts.store(
                         u64::try_from(timeline_pts.as_micros()).unwrap_or(u64::MAX),
@@ -557,6 +733,41 @@ impl TimelineRunner {
                     };
 
                     let a_ok = self.sws_a.convert(&frame, &mut self.rgba_a);
+
+                    // ── Composite overlay layers (V2, V3, …) over rgba_a ──────
+                    if a_ok {
+                        for layer in &mut self.overlay_layers {
+                            let maybe_cidx = layer.clips.iter().position(|c| {
+                                timeline_pts >= c.timeline_start && timeline_pts < c.timeline_end
+                            });
+                            let Some(cidx) = maybe_cidx else { continue };
+                            if cidx != layer.active {
+                                let local = layer.clips[cidx].in_point
+                                    + timeline_pts.saturating_sub(layer.clips[cidx].timeline_start);
+                                let _ = layer.clips[cidx].decode_buf.seek(local);
+                                layer.active = cidx;
+                            }
+                            // Drain overlay frames until we catch up to timeline_pts.
+                            while let FrameResult::Frame(f) =
+                                layer.clips[cidx].decode_buf.pop_frame()
+                            {
+                                let f_pts = f.timestamp().as_duration();
+                                let clip_in = layer.clips[cidx].in_point;
+                                let tl_start = layer.clips[cidx].timeline_start;
+                                let v2_pts = tl_start + f_pts.saturating_sub(clip_in);
+                                if v2_pts + Duration::from_millis(50) >= timeline_pts {
+                                    if layer.sws.convert(&f, &mut layer.rgba) {
+                                        timeline_inner::composite_over(
+                                            &mut self.rgba_a,
+                                            &layer.rgba,
+                                        );
+                                    }
+                                    break;
+                                }
+                                // Frame is older than current position — drain.
+                            }
+                        }
+                    }
 
                     if in_trans && a_ok {
                         let alpha = (timeline_pts.saturating_sub(trans_start).as_secs_f32()
@@ -644,6 +855,25 @@ impl TimelineRunner {
                 .invalidate_all();
         }
         self.restart_audio_at(clip_idx, clip_local_pts);
+
+        // Seek overlay layers to the new target position.
+        for layer in &mut self.overlay_layers {
+            let cidx = layer
+                .clips
+                .iter()
+                .position(|c| target >= c.timeline_start && target < c.timeline_end);
+            if let Some(cidx) = cidx {
+                let local = layer.clips[cidx].in_point
+                    + target.saturating_sub(layer.clips[cidx].timeline_start);
+                let _ = layer.clips[cidx].decode_buf.seek(local);
+                layer.active = cidx;
+            }
+        }
+
+        // Stop all audio-only threads; they restart on the next frame tick.
+        for at in &mut self.audio_only_tracks {
+            at.stop();
+        }
 
         Ok(())
     }
