@@ -734,7 +734,8 @@ impl TimelineRunner {
 
                     let a_ok = self.sws_a.convert(&frame, &mut self.rgba_a);
 
-                    // ── Composite overlay layers (V2, V3, …) over rgba_a ──────
+                    // ── Composite overlay layers: V1 is foreground, V2/V3… are background ──
+                    // Phase 1: drain each overlay layer to update its decoded rgba buffer.
                     if a_ok {
                         for layer in &mut self.overlay_layers {
                             let maybe_cidx = layer.clips.iter().position(|c| {
@@ -747,7 +748,6 @@ impl TimelineRunner {
                                 let _ = layer.clips[cidx].decode_buf.seek(local);
                                 layer.active = cidx;
                             }
-                            // Drain overlay frames until we catch up to timeline_pts.
                             while let FrameResult::Frame(f) =
                                 layer.clips[cidx].decode_buf.pop_frame()
                             {
@@ -756,16 +756,41 @@ impl TimelineRunner {
                                 let tl_start = layer.clips[cidx].timeline_start;
                                 let v2_pts = tl_start + f_pts.saturating_sub(clip_in);
                                 if v2_pts + Duration::from_millis(50) >= timeline_pts {
-                                    if layer.sws.convert(&f, &mut layer.rgba) {
-                                        timeline_inner::composite_over(
-                                            &mut self.rgba_a,
-                                            &layer.rgba,
-                                        );
-                                    }
+                                    layer.sws.convert(&f, &mut layer.rgba);
                                     break;
                                 }
-                                // Frame is older than current position — drain.
                             }
+                        }
+                    }
+                    // Phase 2: build composite — deepest background layer first, V1 on top.
+                    if a_ok {
+                        let base_idx = self
+                            .overlay_layers
+                            .iter()
+                            .enumerate()
+                            .rev()
+                            .find(|(_, l)| !l.rgba.is_empty())
+                            .map(|(i, _)| i);
+                        if let Some(base) = base_idx {
+                            // Seed the background buffer with the deepest layer.
+                            self.blend_buf
+                                .resize(self.overlay_layers[base].rgba.len(), 0);
+                            self.blend_buf
+                                .copy_from_slice(&self.overlay_layers[base].rgba);
+                            // Composite shallower background layers on top (from base-1 to V2).
+                            for i in (0..base).rev() {
+                                if !self.overlay_layers[i].rgba.is_empty() {
+                                    let layer_rgba = self.overlay_layers[i].rgba.clone();
+                                    timeline_inner::composite_over(
+                                        &mut self.blend_buf,
+                                        &layer_rgba,
+                                    );
+                                }
+                            }
+                            // Composite V1 on top of the background.
+                            timeline_inner::composite_over(&mut self.blend_buf, &self.rgba_a);
+                            // blend_buf now holds the final composite; make it the active frame.
+                            std::mem::swap(&mut self.rgba_a, &mut self.blend_buf);
                         }
                     }
 
