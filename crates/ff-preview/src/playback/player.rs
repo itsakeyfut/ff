@@ -73,7 +73,7 @@ pub enum PlayerCommand {
     SetAvOffset(i64),
     /// Replace the timeline clip layout without stopping playback.
     ///
-    /// Handled only by [`TimelineRunner`]; [`PlayerRunner`] ignores it.
+    /// Handled only by `TimelineRunner`; `PlayerRunner` ignores it.
     /// The runner updates its internal `ClipState` / `AudioOnlyTrack` positions
     /// in place and seeks to the last known media PTS so the next frame is
     /// spatially correct after the layout change.
