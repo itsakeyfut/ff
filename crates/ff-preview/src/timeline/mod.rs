@@ -432,6 +432,7 @@ impl TimelinePlayer {
                 base_pts: Duration::ZERO,
                 rate: 1.0,
             },
+            resume_pts: Duration::ZERO,
             sws_a: SwsRgbaConverter::new(),
             sws_b: SwsRgbaConverter::new(),
             rgba_a: Vec::new(),
@@ -483,6 +484,11 @@ pub struct TimelineRunner {
     fps: f64,
     rate: f64,
     clock: MasterClock,
+    /// Media PTS to re-anchor the System clock to when `PlayerCommand::Play`
+    /// is received from a paused state. Updated on every seek and after every
+    /// presented frame so that accumulated wall-clock time during pause does
+    /// not advance `current_pts()` past the last known media position.
+    resume_pts: Duration,
     /// Pixel-format converter for the active (outgoing) frame.
     sws_a: SwsRgbaConverter,
     /// Pixel-format converter for the incoming frame during transitions.
@@ -536,6 +542,18 @@ impl TimelineRunner {
                 match cmd {
                     PlayerCommand::Seek(pts) => pending_seek = Some(pts),
                     PlayerCommand::Play => {
+                        // Always re-anchor the System clock on Play.
+                        //
+                        // PlayerHandle::play() sets the shared `paused` atomic
+                        // to `false` BEFORE enqueueing PlayerCommand::Play, so
+                        // paused.load() here always returns false — a guard on
+                        // `if paused` would never fire. Re-anchoring
+                        // unconditionally is safe: when the player was not
+                        // actually paused, resume_pts equals the last presented
+                        // frame PTS (or the seek target), which is already the
+                        // clock's current base, so clock.reset() is a no-op
+                        // in effect.
+                        self.clock.reset(self.resume_pts);
                         self.stopped.store(false, Ordering::Release);
                         self.paused.store(false, Ordering::Release);
                     }
@@ -551,6 +569,11 @@ impl TimelineRunner {
                         }
                     }
                     PlayerCommand::SetAvOffset(_) => {} // audio timing is system-clock driven
+                    PlayerCommand::UpdateLayout(timeline) => {
+                        if let Err(e) = self.update_layout_in_place(&timeline, self.resume_pts) {
+                            log::warn!("timeline layout update ignored: {e}");
+                        }
+                    }
                 }
             }
 
@@ -558,6 +581,7 @@ impl TimelineRunner {
             if let Some(target) = pending_seek {
                 self.seek_timeline(target)?;
                 self.clock.reset(target);
+                self.resume_pts = target;
                 let _ = self.event_tx.try_send(PlayerEvent::SeekCompleted(target));
             }
 
@@ -671,11 +695,12 @@ impl TimelineRunner {
                         }
                     }
 
-                    // Update shared current_pts.
+                    // Update shared current_pts and resume anchor.
                     self.current_pts.store(
                         u64::try_from(timeline_pts.as_micros()).unwrap_or(u64::MAX),
                         Ordering::Relaxed,
                     );
+                    self.resume_pts = timeline_pts;
 
                     // ── Transition zone entry check ────────────────────────────
                     if self.transition.is_none() && active + 1 < self.clips.len() {
@@ -850,6 +875,138 @@ impl TimelineRunner {
         if let Some(sink) = self.sink.as_mut() {
             sink.flush();
         }
+        Ok(())
+    }
+
+    /// Update clip positions in place from a new `Timeline` without stopping
+    /// the runner or replacing audio infrastructure.
+    ///
+    /// Only the position metadata (`timeline_start`, `timeline_end`,
+    /// `in_point`, `out_point`, `transition_dur`) of existing `ClipState` and
+    /// `AudioOnlyTrack` objects is changed. The `AudioMixer` and all
+    /// `AudioTrackHandle`s are reused unchanged; only the decode positions are
+    /// updated by calling `seek_timeline(resume_pts)` at the end.
+    ///
+    /// Returns an error when the new timeline is structurally incompatible with
+    /// the running runner (different V1 clip count or different source paths).
+    /// In that case the runner's state is untouched.
+    fn update_layout_in_place(
+        &mut self,
+        timeline: &ff_pipeline::timeline::Timeline,
+        resume_pts: Duration,
+    ) -> Result<(), PreviewError> {
+        let v_tracks = timeline.video_tracks();
+
+        // ── Validate V1 ────────────────────────────────────────────────────────
+        let new_v1_len = v_tracks.first().map_or(0, Vec::len);
+        if new_v1_len != self.clips.len() {
+            return Err(PreviewError::Ffmpeg {
+                code: -1,
+                message: format!(
+                    "V1 clip count mismatch: runner={} timeline={new_v1_len}",
+                    self.clips.len()
+                ),
+            });
+        }
+        for (i, clip) in v_tracks[0].iter().enumerate() {
+            if clip.source != self.clips[i].source {
+                return Err(PreviewError::Ffmpeg {
+                    code: -1,
+                    message: format!(
+                        "V1 clip[{i}] source mismatch: runner={} timeline={}",
+                        self.clips[i].source.display(),
+                        clip.source.display(),
+                    ),
+                });
+            }
+        }
+
+        // ── Update V1 clip positions ───────────────────────────────────────────
+        for (i, clip) in v_tracks[0].iter().enumerate() {
+            let old_dur = self.clips[i]
+                .timeline_end
+                .saturating_sub(self.clips[i].timeline_start);
+            let new_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point) {
+                op.saturating_sub(ip)
+            } else {
+                old_dur
+            };
+            self.clips[i].timeline_start = clip.timeline_offset;
+            self.clips[i].timeline_end = clip.timeline_offset + new_dur;
+            self.clips[i].in_point = clip.in_point.unwrap_or(Duration::ZERO);
+            self.clips[i].out_point = clip.out_point;
+            self.clips[i].transition_dur = if clip.transition.is_some() {
+                clip.transition_duration
+            } else {
+                Duration::ZERO
+            };
+        }
+
+        // ── Update overlay layers (V2+) ────────────────────────────────────────
+        let new_overlay_count = v_tracks.len().saturating_sub(1);
+        if new_overlay_count == self.overlay_layers.len() {
+            for (layer_i, v_track) in v_tracks.iter().skip(1).enumerate() {
+                let layer = &mut self.overlay_layers[layer_i];
+                if v_track.len() == layer.clips.len() {
+                    for (j, clip) in v_track.iter().enumerate() {
+                        let old_dur = layer.clips[j]
+                            .timeline_end
+                            .saturating_sub(layer.clips[j].timeline_start);
+                        let new_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point)
+                        {
+                            op.saturating_sub(ip)
+                        } else {
+                            old_dur
+                        };
+                        layer.clips[j].timeline_start = clip.timeline_offset;
+                        layer.clips[j].timeline_end = clip.timeline_offset + new_dur;
+                        layer.clips[j].in_point = clip.in_point.unwrap_or(Duration::ZERO);
+                        layer.clips[j].out_point = clip.out_point;
+                    }
+                }
+            }
+        }
+
+        // ── Update audio-only tracks (A1+) ─────────────────────────────────────
+        // Collect new (timeline_start, in_point, out_point) from the timeline's
+        // audio tracks, matched positionally. Mismatched counts are skipped
+        // rather than returning an error because audio tracks are optional.
+        let new_a_positions: Vec<(Duration, Duration, Option<Duration>)> = timeline
+            .audio_tracks()
+            .iter()
+            .flat_map(|track| track.iter())
+            .map(|clip| {
+                (
+                    clip.timeline_offset,
+                    clip.in_point.unwrap_or(Duration::ZERO),
+                    clip.out_point,
+                )
+            })
+            .collect();
+
+        if new_a_positions.len() == self.audio_only_tracks.len() {
+            for (i, (new_tl_start, new_in, new_out)) in new_a_positions.iter().enumerate() {
+                let old_dur = self.audio_only_tracks[i]
+                    .timeline_end
+                    .saturating_sub(self.audio_only_tracks[i].timeline_start);
+                let new_dur = if let Some(op) = new_out {
+                    op.saturating_sub(*new_in)
+                } else {
+                    old_dur
+                };
+                self.audio_only_tracks[i].timeline_start = *new_tl_start;
+                self.audio_only_tracks[i].timeline_end = *new_tl_start + new_dur;
+                self.audio_only_tracks[i].in_point = *new_in;
+            }
+        }
+
+        // ── Seek everything to resume_pts ──────────────────────────────────────
+        // seek_timeline invalidates all mixer buffers, stops audio-only threads,
+        // and repositions the active clip's DecodeBuffer to the correct
+        // source-file PTS. Audio-only threads restart on the next frame tick
+        // based on the updated timeline_start/timeline_end values.
+        self.seek_timeline(resume_pts)?;
+
         Ok(())
     }
 
@@ -1078,6 +1235,78 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, PlayerEvent::PositionUpdate(_))),
             "PositionUpdate events must be emitted during playback"
+        );
+    }
+
+    /// Regression test for the MasterClock::System pause-drift bug.
+    ///
+    /// After pause → seek → sleep N seconds → play, the first PositionUpdate
+    /// must carry a PTS close to the seek target (≤ target + 2 frame periods),
+    /// not target + N.
+    #[test]
+    #[ignore = "requires assets/video/gameplay.mp4; run with -- --include-ignored"]
+    fn timeline_runner_resume_after_seek_while_paused_should_not_drift() {
+        let path = test_video_path();
+        if !path.exists() {
+            println!("skipping: video asset not found");
+            return;
+        }
+
+        let fps = 30.0_f64;
+        let seek_target = Duration::from_secs(1);
+        let two_frame_periods = Duration::from_secs_f64(2.0 / fps);
+
+        let timeline = ff_pipeline::Timeline::builder()
+            .canvas(1280, 720)
+            .frame_rate(fps)
+            .video_track(vec![
+                ff_pipeline::Clip::new(&path).trim(Duration::ZERO, Duration::from_secs(5)),
+            ])
+            .build()
+            .expect("timeline build failed");
+
+        let (runner, handle) = match TimelinePlayer::open(&timeline) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("skipping: open failed: {e}");
+                return;
+            }
+        };
+
+        let handle_bg = handle.clone();
+        let bg = thread::spawn(move || {
+            let _ = runner.run();
+        });
+
+        // Let the runner start, then pause, seek, wait 500 ms, play.
+        thread::sleep(Duration::from_millis(50));
+        handle.pause();
+        thread::sleep(Duration::from_millis(20));
+        handle.seek(seek_target);
+        thread::sleep(Duration::from_millis(500));
+        handle.play();
+
+        // Collect the first PositionUpdate after play.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let first_pts = loop {
+            if let Some(PlayerEvent::PositionUpdate(pts)) = handle.poll_event() {
+                break Some(pts);
+            }
+            if std::time::Instant::now() > deadline {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+
+        handle_bg.stop();
+        let _ = bg.join();
+
+        let pts = first_pts.expect("no PositionUpdate received within 5 seconds");
+        assert!(
+            pts <= seek_target + two_frame_periods,
+            "first frame after seek-while-paused should be near seek target; \
+             got {pts:?}, expected ≤ {:?}",
+            seek_target + two_frame_periods,
         );
     }
 
