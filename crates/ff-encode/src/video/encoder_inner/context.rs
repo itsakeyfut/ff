@@ -456,22 +456,32 @@ impl VideoEncoderInner {
 
         (*stream).time_base = (*codec_ctx).time_base;
 
-        // Copy codec parameters to stream
+        // Copy all codec parameters to the stream — including extradata (e.g. AAC
+        // AudioSpecificConfig) that is only available after avcodec_open2.
+        // Using avcodec_parameters_from_context instead of manual field copies
+        // ensures extradata, frame_size, channel layout, and codec_tag are all
+        // propagated correctly so container muxers and hardware decoders can
+        // identify and decode the stream.
         if !(*stream).codecpar.is_null() {
-            (*(*stream).codecpar).codec_id = (*codec_ctx).codec_id;
-            (*(*stream).codecpar).codec_type = ff_sys::AVMediaType_AVMEDIA_TYPE_AUDIO;
-            (*(*stream).codecpar).sample_rate = (*codec_ctx).sample_rate;
-            (*(*stream).codecpar).format = (*codec_ctx).sample_fmt;
-            // Copy channel layout
-            swresample::channel_layout::copy(
-                &mut (*(*stream).codecpar).ch_layout,
-                &(*codec_ctx).ch_layout,
-            )
-            .map_err(EncodeError::from_ffmpeg_error)?;
+            avcodec::parameters_from_context((*stream).codecpar, codec_ctx)
+                .map_err(EncodeError::from_ffmpeg_error)?;
         }
 
         self.audio_stream_index = ((*self.format_ctx).nb_streams - 1) as i32;
         self.audio_codec_ctx = Some(codec_ctx);
+
+        // Allocate sample FIFO for codecs that require a fixed frame_size (AAC, FLAC, ALAC …).
+        // Leave audio_fifo as None for variable-frame-size codecs (frame_size == 0).
+        let frame_size = (*codec_ctx).frame_size;
+        if frame_size > 0 {
+            let fifo = ff_sys::swresample::audio_fifo::alloc(
+                (*codec_ctx).sample_fmt,
+                (*codec_ctx).ch_layout.nb_channels,
+                frame_size * 2,
+            )
+            .map_err(EncodeError::from_ffmpeg_error)?;
+            self.audio_fifo = Some(fifo);
+        }
 
         Ok(())
     }
@@ -831,6 +841,11 @@ impl VideoEncoderInner {
         // Free resampling context
         if let Some(mut ctx) = self.swr_ctx.take() {
             swresample::free(&mut ctx as *mut *mut _);
+        }
+
+        // Free audio FIFO
+        if let Some(fifo) = self.audio_fifo.take() {
+            ff_sys::swresample::audio_fifo::free(fifo);
         }
 
         // Close output file
