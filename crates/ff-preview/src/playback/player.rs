@@ -155,7 +155,7 @@ impl PlayerHandle {
 
     /// Replace the running timeline's clip layout in place.
     ///
-    /// Sends a [`PlayerCommand::UpdateLayout`] to [`TimelineRunner`]. The runner
+    /// Sends a [`PlayerCommand::UpdateLayout`] to `TimelineRunner`. The runner
     /// updates `timeline_start` / `timeline_end` / `in_point` / `out_point` for
     /// every existing clip, stops audio decode threads, and seeks all decode
     /// buffers to the last known media PTS — so the next presented frame is
@@ -165,7 +165,7 @@ impl PlayerHandle {
     /// Drops silently if the command channel (capacity 64) is full.
     ///
     /// No-op when called on a [`PlayerRunner`]-backed handle (single-track
-    /// player). Only [`TimelineRunner`] handles this command.
+    /// player). Only `TimelineRunner` handles this command.
     #[cfg(feature = "timeline")]
     pub fn update_timeline(&self, timeline: Timeline) {
         let _ = self
