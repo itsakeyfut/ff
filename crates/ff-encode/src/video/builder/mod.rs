@@ -824,6 +824,7 @@ mod tests {
                 audio_stream_index: -1,
                 sws_ctx: None,
                 swr_ctx: None,
+                audio_fifo: None,
                 frame_count: 0,
                 audio_sample_count: 0,
                 bytes_written: 0,

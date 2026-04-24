@@ -22,16 +22,16 @@ pub(super) use two_pass::TwoPassFrame;
 use crate::{AudioCodec, EncodeError, VideoCodec};
 use ff_format::{AudioFrame, VideoFrame};
 use ff_sys::{
-    AV_TIME_BASE, AVChannelLayout, AVChapter, AVCodecContext, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
-    AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC, AVCodecID_AV_CODEC_ID_AV1,
-    AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS, AVCodecID_AV_CODEC_ID_EAC3,
-    AVCodecID_AV_CODEC_ID_FFV1, AVCodecID_AV_CODEC_ID_FLAC, AVCodecID_AV_CODEC_ID_H264,
-    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MJPEG, AVCodecID_AV_CODEC_ID_MP3,
-    AVCodecID_AV_CODEC_ID_MPEG2VIDEO, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE,
-    AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE, AVCodecID_AV_CODEC_ID_PCM_S24LE,
-    AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES, AVCodecID_AV_CODEC_ID_VORBIS,
-    AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9, AVFormatContext, AVFrame,
-    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
+    AV_TIME_BASE, AVAudioFifo, AVChannelLayout, AVChapter, AVCodecContext, AVCodecID,
+    AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_AC3, AVCodecID_AV_CODEC_ID_ALAC,
+    AVCodecID_AV_CODEC_ID_AV1, AVCodecID_AV_CODEC_ID_DNXHD, AVCodecID_AV_CODEC_ID_DTS,
+    AVCodecID_AV_CODEC_ID_EAC3, AVCodecID_AV_CODEC_ID_FFV1, AVCodecID_AV_CODEC_ID_FLAC,
+    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MJPEG,
+    AVCodecID_AV_CODEC_ID_MP3, AVCodecID_AV_CODEC_ID_MPEG2VIDEO, AVCodecID_AV_CODEC_ID_MPEG4,
+    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_S16LE,
+    AVCodecID_AV_CODEC_ID_PCM_S24LE, AVCodecID_AV_CODEC_ID_PNG, AVCodecID_AV_CODEC_ID_PRORES,
+    AVCodecID_AV_CODEC_ID_VORBIS, AVCodecID_AV_CODEC_ID_VP8, AVCodecID_AV_CODEC_ID_VP9,
+    AVFormatContext, AVFrame, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket,
     AVPacketSideDataType_AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
     AVPacketSideDataType_AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVPixelFormat,
     AVPixelFormat_AV_PIX_FMT_YUV420P, SwrContext, SwsContext, av_frame_alloc, av_frame_free,
@@ -65,6 +65,10 @@ pub(super) struct VideoEncoderInner {
 
     /// Resampling context for audio format conversion
     pub(super) swr_ctx: Option<*mut SwrContext>,
+
+    /// Sample FIFO for fixed-frame-size codecs (AAC, FLAC, ALAC …).
+    /// `None` for variable-frame-size codecs (PCM, Vorbis) where `frame_size == 0`.
+    pub(super) audio_fifo: Option<*mut AVAudioFifo>,
 
     /// Frame counter
     pub(super) frame_count: u64,
@@ -202,6 +206,7 @@ impl VideoEncoderInner {
                 audio_stream_index: -1,
                 sws_ctx: None,
                 swr_ctx: None,
+                audio_fifo: None,
                 frame_count: 0,
                 audio_sample_count: 0,
                 bytes_written: 0,
@@ -441,6 +446,12 @@ impl VideoEncoderInner {
     }
 
     /// Push an audio frame for encoding.
+    ///
+    /// For fixed-frame-size codecs (AAC, FLAC, ALAC …) samples are buffered in
+    /// `audio_fifo` and drained in exact `frame_size`-sample chunks so that
+    /// `avcodec_send_frame` never receives a frame whose `nb_samples` differs from
+    /// what the encoder requires.  Variable-frame-size codecs (`frame_size == 0`,
+    /// e.g. PCM) bypass the FIFO and send converted frames directly.
     pub(super) fn push_audio_frame(&mut self, frame: &AudioFrame) -> Result<(), EncodeError> {
         // SAFETY: self is properly initialised; all raw FFmpeg pointers are valid and exclusively owned.
         unsafe {
@@ -450,7 +461,9 @@ impl VideoEncoderInner {
                     reason: "Audio codec not initialized".to_string(),
                 })?;
 
-            // Allocate AVFrame
+            let frame_size = (*codec_ctx).frame_size;
+
+            // Allocate and convert incoming frame.
             let mut av_frame = av_frame_alloc();
             if av_frame.is_null() {
                 return Err(EncodeError::Ffmpeg {
@@ -458,37 +471,99 @@ impl VideoEncoderInner {
                     message: "Cannot allocate frame".to_string(),
                 });
             }
-
-            // Convert AudioFrame to AVFrame
-            let convert_result = self.convert_audio_frame(frame, av_frame);
-            if let Err(e) = convert_result {
+            if let Err(e) = self.convert_audio_frame(frame, av_frame) {
                 av_frame_free(&mut av_frame as *mut *mut _);
                 return Err(e);
             }
 
-            // Set frame properties
-            (*av_frame).pts = self.audio_sample_count as i64;
-
-            // Send frame to encoder
-            let send_result = avcodec::send_frame(codec_ctx, av_frame);
-            if let Err(e) = send_result {
+            // ── Variable frame-size path (PCM, Vorbis …) ────────────────────
+            if frame_size <= 0 || self.audio_fifo.is_none() {
+                (*av_frame).pts = self.audio_sample_count as i64;
+                let send_result = avcodec::send_frame(codec_ctx, av_frame);
                 av_frame_free(&mut av_frame as *mut *mut _);
-                return Err(EncodeError::Ffmpeg {
-                    code: e,
-                    message: format!("Failed to send audio frame: {}", ff_sys::av_error_string(e)),
-                });
+                if let Err(e) = send_result {
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Failed to send audio frame: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    });
+                }
+                self.receive_audio_packets()?;
+                self.audio_sample_count += frame.samples() as u64;
+                return Ok(());
             }
 
-            // Receive packets
-            let receive_result = self.receive_audio_packets();
+            // ── Fixed frame-size path (AAC, FLAC, ALAC …) ───────────────────
+            let fifo = self.audio_fifo.ok_or_else(|| EncodeError::InvalidConfig {
+                reason: "Audio FIFO not initialized for fixed-frame-size codec".to_string(),
+            })?;
 
-            // Always cleanup the frame
+            // Write converted samples into the FIFO.
+            let nb_samples = (*av_frame).nb_samples;
+            let write_result = ff_sys::swresample::audio_fifo::write(
+                fifo,
+                (*av_frame).data.as_ptr() as *const *mut _,
+                nb_samples,
+            );
             av_frame_free(&mut av_frame as *mut *mut _);
+            write_result.map_err(EncodeError::from_ffmpeg_error)?;
 
-            // Check if receiving packets failed
-            receive_result?;
+            // Drain full frame_size chunks.
+            while ff_sys::swresample::audio_fifo::size(fifo) >= frame_size {
+                let mut out_frame = av_frame_alloc();
+                if out_frame.is_null() {
+                    return Err(EncodeError::Ffmpeg {
+                        code: 0,
+                        message: "Cannot allocate audio frame".to_string(),
+                    });
+                }
+                (*out_frame).nb_samples = frame_size;
+                (*out_frame).format = (*codec_ctx).sample_fmt;
+                (*out_frame).sample_rate = (*codec_ctx).sample_rate;
+                swresample::channel_layout::copy(
+                    &mut (*out_frame).ch_layout,
+                    &(*codec_ctx).ch_layout,
+                )
+                .map_err(EncodeError::from_ffmpeg_error)?;
 
-            self.audio_sample_count += frame.samples() as u64;
+                let ret = ff_sys::av_frame_get_buffer(out_frame, 0);
+                if ret < 0 {
+                    av_frame_free(&mut out_frame as *mut *mut _);
+                    return Err(EncodeError::Ffmpeg {
+                        code: ret,
+                        message: format!(
+                            "Cannot allocate audio frame buffer: {}",
+                            ff_sys::av_error_string(ret)
+                        ),
+                    });
+                }
+
+                if let Err(e) = ff_sys::swresample::audio_fifo::read(
+                    fifo,
+                    (*out_frame).data.as_mut_ptr().cast(),
+                    frame_size,
+                ) {
+                    av_frame_free(&mut out_frame as *mut *mut _);
+                    return Err(EncodeError::from_ffmpeg_error(e));
+                }
+
+                (*out_frame).pts = self.audio_sample_count as i64;
+                let send_result = avcodec::send_frame(codec_ctx, out_frame);
+                av_frame_free(&mut out_frame as *mut *mut _);
+                if let Err(e) = send_result {
+                    return Err(EncodeError::Ffmpeg {
+                        code: e,
+                        message: format!(
+                            "Failed to send audio frame: {}",
+                            ff_sys::av_error_string(e)
+                        ),
+                    });
+                }
+                self.receive_audio_packets()?;
+                self.audio_sample_count += frame_size as u64;
+            }
 
             Ok(())
         } // unsafe
@@ -509,6 +584,37 @@ impl VideoEncoderInner {
                 avcodec::send_frame(codec_ctx, ptr::null())
                     .map_err(EncodeError::from_ffmpeg_error)?;
                 self.receive_packets()?;
+            }
+
+            // Flush remaining FIFO samples (fixed-frame-size codecs only).
+            // The last chunk may be smaller than frame_size; send it as-is so the
+            // encoder can write a short final frame before the NULL-frame flush.
+            if let (Some(fifo), Some(codec_ctx)) = (self.audio_fifo, self.audio_codec_ctx) {
+                let remaining = ff_sys::swresample::audio_fifo::size(fifo);
+                if remaining > 0 {
+                    let mut out_frame = av_frame_alloc();
+                    if !out_frame.is_null() {
+                        (*out_frame).nb_samples = remaining;
+                        (*out_frame).format = (*codec_ctx).sample_fmt;
+                        (*out_frame).sample_rate = (*codec_ctx).sample_rate;
+                        let _ = swresample::channel_layout::copy(
+                            &mut (*out_frame).ch_layout,
+                            &(*codec_ctx).ch_layout,
+                        );
+                        if ff_sys::av_frame_get_buffer(out_frame, 0) == 0 {
+                            let _ = ff_sys::swresample::audio_fifo::read(
+                                fifo,
+                                (*out_frame).data.as_mut_ptr().cast(),
+                                remaining,
+                            );
+                            (*out_frame).pts = self.audio_sample_count as i64;
+                            let _ = avcodec::send_frame(codec_ctx, out_frame);
+                            let _ = self.receive_audio_packets();
+                            self.audio_sample_count += remaining as u64;
+                        }
+                        av_frame_free(&mut out_frame as *mut *mut _);
+                    }
+                }
             }
 
             // Flush audio encoder
@@ -897,6 +1003,7 @@ mod tests {
             audio_stream_index: -1,
             sws_ctx: None,
             swr_ctx: None,
+            audio_fifo: None,
             frame_count: 0,
             audio_sample_count: 0,
             bytes_written: 0,
