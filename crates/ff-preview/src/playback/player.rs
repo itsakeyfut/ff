@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 
 use ff_decode::{AudioDecoder, HardwareAccel, SeekMode};
 use ff_format::SampleFormat;
+#[cfg(feature = "timeline")]
+use ff_pipeline::timeline::Timeline;
 
 use super::clock::MasterClock;
 use super::decode_buffer::{DecodeBuffer, FrameResult};
@@ -69,6 +71,14 @@ pub enum PlayerCommand {
     SetRate(f64),
     /// Set the A/V offset in milliseconds. Clamped to ±5 000 ms.
     SetAvOffset(i64),
+    /// Replace the timeline clip layout without stopping playback.
+    ///
+    /// Handled only by `TimelineRunner`; `PlayerRunner` ignores it.
+    /// The runner updates its internal `ClipState` / `AudioOnlyTrack` positions
+    /// in place and seeks to the last known media PTS so the next frame is
+    /// spatially correct after the layout change.
+    #[cfg(feature = "timeline")]
+    UpdateLayout(Box<Timeline>),
 }
 
 // ── PlayerHandle ─────────────────────────────────────────────────────────────
@@ -141,6 +151,26 @@ impl PlayerHandle {
     /// delayed). Negative: video PTS is shifted up (audio appears delayed).
     pub fn set_av_offset(&self, ms: i64) {
         let _ = self.cmd_tx.try_send(PlayerCommand::SetAvOffset(ms));
+    }
+
+    /// Replace the running timeline's clip layout in place.
+    ///
+    /// Sends a [`PlayerCommand::UpdateLayout`] to `TimelineRunner`. The runner
+    /// updates `timeline_start` / `timeline_end` / `in_point` / `out_point` for
+    /// every existing clip, stops audio decode threads, and seeks all decode
+    /// buffers to the last known media PTS — so the next presented frame is
+    /// spatially correct after the move.
+    ///
+    /// The `MasterClock` and `paused` / `stopped` atomics are unaffected.
+    /// Drops silently if the command channel (capacity 64) is full.
+    ///
+    /// No-op when called on a [`PlayerRunner`]-backed handle (single-track
+    /// player). Only `TimelineRunner` handles this command.
+    #[cfg(feature = "timeline")]
+    pub fn update_timeline(&self, timeline: Timeline) {
+        let _ = self
+            .cmd_tx
+            .try_send(PlayerCommand::UpdateLayout(Box::new(timeline)));
     }
 
     /// PTS of the most recently presented frame.
@@ -523,6 +553,8 @@ impl PlayerRunner {
                         const MAX_OFFSET_MS: i64 = 5_000;
                         self.av_offset_ms = ms.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS);
                     }
+                    #[cfg(feature = "timeline")]
+                    PlayerCommand::UpdateLayout(_) => {}
                 }
             }
 
