@@ -614,6 +614,7 @@ impl PlayerRunner {
             }
 
             // ── Apply pending seek ────────────────────────────────────────────
+            let had_seek = pending_seek.is_some();
             if let Some(pts) = pending_seek {
                 // Invalidate the frame cache when seeking outside its range.
                 if let Some(cache) = &mut self.frame_cache {
@@ -630,6 +631,32 @@ impl PlayerRunner {
                 self.clock.reset(pts);
                 self.restart_audio_from(pts);
                 let _ = self.event_tx.try_send(PlayerEvent::SeekCompleted(pts));
+            }
+
+            // When a seek arrives while paused, present one preview frame so
+            // the sink reflects the new position without resuming playback.
+            if had_seek
+                && self.paused.load(Ordering::Acquire)
+                && let Some(buf) = self.decode_buf.as_mut()
+            {
+                let deadline = std::time::Instant::now() + Duration::from_millis(300);
+                loop {
+                    match buf.pop_frame() {
+                        FrameResult::Frame(f) => {
+                            self.present_frame(&f);
+                            let pts = f.timestamp().as_duration();
+                            let _ = self.event_tx.try_send(PlayerEvent::PositionUpdate(pts));
+                            break;
+                        }
+                        FrameResult::Seeking(_) => {
+                            if std::time::Instant::now() > deadline {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        FrameResult::Eof => break,
+                    }
+                }
             }
 
             // Surface non-fatal decode errors from the background thread.

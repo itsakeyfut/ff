@@ -627,11 +627,48 @@ impl TimelineRunner {
             }
 
             // ── Apply pending seek ────────────────────────────────────────────
+            let had_seek = pending_seek.is_some();
             if let Some(target) = pending_seek {
                 self.seek_timeline(target)?;
                 self.clock.reset(target);
                 self.resume_pts = target;
                 let _ = self.event_tx.try_send(PlayerEvent::SeekCompleted(target));
+            }
+
+            // When a seek arrives while paused, present one preview frame so
+            // the sink reflects the new position without resuming playback.
+            if had_seek && self.paused.load(Ordering::Acquire) {
+                let active = self.active;
+                let deadline = std::time::Instant::now() + Duration::from_millis(300);
+                loop {
+                    match self.clips[active].decode_buf.pop_frame() {
+                        FrameResult::Frame(f) => {
+                            let f_pts = f.timestamp().as_duration();
+                            let tl_pts = self.clips[active].timeline_start
+                                + f_pts.saturating_sub(self.clips[active].in_point);
+                            let w = f.width();
+                            let h = f.height();
+                            if self.sws_a.convert(&f, &mut self.rgba_a)
+                                && let Some(sink) = self.sink.as_mut()
+                            {
+                                sink.push_frame(&self.rgba_a, w, h, tl_pts);
+                            }
+                            self.current_pts.store(
+                                u64::try_from(tl_pts.as_micros()).unwrap_or(u64::MAX),
+                                Ordering::Relaxed,
+                            );
+                            let _ = self.event_tx.try_send(PlayerEvent::PositionUpdate(tl_pts));
+                            break;
+                        }
+                        FrameResult::Seeking(_) => {
+                            if std::time::Instant::now() > deadline {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        FrameResult::Eof => break,
+                    }
+                }
             }
 
             // ── Error events from active clip ─────────────────────────────────
