@@ -574,8 +574,47 @@ impl TimelineRunner {
                         self.stopped.store(true, Ordering::Release);
                     }
                     PlayerCommand::SetRate(r) => {
-                        if r > 0.0 {
+                        if r != 0.0 {
+                            let was_negative = self.rate < 0.0;
                             self.rate = r;
+                            if r > 0.0 {
+                                self.clock.set_rate(r);
+                                if was_negative {
+                                    // Returning from reverse: rebase clock and
+                                    // restart audio from the current video position.
+                                    let pts = Duration::from_micros(
+                                        self.current_pts.load(Ordering::Relaxed),
+                                    );
+                                    self.clock.reset(pts);
+                                    self.resume_pts = pts;
+                                    if let Err(e) = self.seek_timeline_coarse(pts) {
+                                        log::warn!(
+                                            "timeline reverse→forward seek failed \
+                                             pts={pts:?} error={e}"
+                                        );
+                                    } else {
+                                        let ci = self.active;
+                                        let clip_local = self.clips[ci].in_point
+                                            + pts.saturating_sub(self.clips[ci].timeline_start);
+                                        if let Some(m) = &self.audio_mixer {
+                                            m.lock()
+                                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                                .invalidate_all();
+                                        }
+                                        self.restart_audio_at(ci, clip_local);
+                                    }
+                                }
+                            } else {
+                                // Entering reverse: silence audio.
+                                if let Some(cancel) = &self.active_audio_cancel {
+                                    cancel.store(true, Ordering::Release);
+                                }
+                                if let Some(m) = &self.audio_mixer {
+                                    m.lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .invalidate_all();
+                                }
+                            }
                         }
                     }
                     PlayerCommand::SetAvOffset(_) => {} // audio timing is system-clock driven
@@ -615,6 +654,70 @@ impl TimelineRunner {
             }
             if self.paused.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+
+            // ── Reverse playback path ─────────────────────────────────────────
+            if self.rate < 0.0 {
+                let current = Duration::from_micros(self.current_pts.load(Ordering::Relaxed));
+                let step = Duration::from_secs_f64(self.rate.abs() / fps.max(f64::MIN_POSITIVE));
+                let target = current.saturating_sub(step);
+
+                let clip_idx = self
+                    .clips
+                    .iter()
+                    .position(|c| target >= c.timeline_start && target < c.timeline_end);
+
+                if let Some(ci) = clip_idx {
+                    let clip_local = self.clips[ci].in_point
+                        + target.saturating_sub(self.clips[ci].timeline_start);
+                    if self.clips[ci].decode_buf.seek_coarse(clip_local).is_ok() {
+                        if ci != self.active {
+                            self.active = ci;
+                            self.transition = None;
+                        }
+                        let deadline = std::time::Instant::now() + Duration::from_millis(300);
+                        let frame = loop {
+                            match self.clips[ci].decode_buf.pop_frame() {
+                                FrameResult::Frame(f) => break Some(f),
+                                FrameResult::Seeking(_) => {
+                                    if std::time::Instant::now() > deadline {
+                                        break None;
+                                    }
+                                    thread::sleep(Duration::from_millis(2));
+                                }
+                                FrameResult::Eof => break None,
+                            }
+                        };
+                        if let Some(f) = frame {
+                            let f_pts = f.timestamp().as_duration();
+                            let tl_pts = self.clips[ci].timeline_start
+                                + f_pts.saturating_sub(self.clips[ci].in_point);
+                            let w = f.width();
+                            let h = f.height();
+                            if self.sws_a.convert(&f, &mut self.rgba_a)
+                                && let Some(sink) = self.sink.as_mut()
+                            {
+                                sink.push_frame(&self.rgba_a, w, h, tl_pts);
+                            }
+                            self.current_pts.store(
+                                u64::try_from(tl_pts.as_micros()).unwrap_or(u64::MAX),
+                                Ordering::Relaxed,
+                            );
+                            self.resume_pts = tl_pts;
+                            let _ = self.event_tx.try_send(PlayerEvent::PositionUpdate(tl_pts));
+                        }
+                    }
+                }
+
+                if self
+                    .clips
+                    .first()
+                    .is_some_and(|c| target < c.timeline_start)
+                {
+                    self.paused.store(true, Ordering::Release);
+                }
+                thread::sleep(frame_period);
                 continue;
             }
 
@@ -788,6 +891,12 @@ impl TimelineRunner {
                                         }
                                         PlayerCommand::Stop => {
                                             self.stopped.store(true, Ordering::Release);
+                                        }
+                                        PlayerCommand::SetRate(r) => {
+                                            if r > 0.0 {
+                                                self.rate = r;
+                                                self.clock.set_rate(r);
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -1194,6 +1303,27 @@ impl TimelineRunner {
             at.stop();
         }
 
+        Ok(())
+    }
+
+    /// Coarse (I-frame only) seek variant of [`seek_timeline`].
+    ///
+    /// Does not restart audio or invalidate the mixer — caller is responsible.
+    /// Used for the reverse→forward recovery path where latency matters more
+    /// than frame-accurate positioning.
+    fn seek_timeline_coarse(&mut self, target: Duration) -> Result<(), PreviewError> {
+        let clip_idx = self
+            .clips
+            .iter()
+            .position(|c| target >= c.timeline_start && target < c.timeline_end)
+            .ok_or(PreviewError::SeekOutOfRange { pts: target })?;
+        let clip_local_pts = self.clips[clip_idx].in_point
+            + target.saturating_sub(self.clips[clip_idx].timeline_start);
+        self.clips[clip_idx]
+            .decode_buf
+            .seek_coarse(clip_local_pts)?;
+        self.active = clip_idx;
+        self.transition = None;
         Ok(())
     }
 
