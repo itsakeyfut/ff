@@ -137,10 +137,15 @@ pub(super) unsafe fn build_video_composition(
         let mut chain_end = movie_ctx;
 
         // ── Optional trim + setpts ────────────────────────────────────────────
-        if let (Some(in_pt), Some(out_pt)) = (layer.in_point, layer.out_point) {
-            let start = in_pt.as_secs_f64();
-            let end = out_pt.as_secs_f64();
-
+        let trim_spec: Option<String> = match (layer.in_point, layer.out_point) {
+            (Some(a), Some(b)) => {
+                Some(format!("start={}:end={}", a.as_secs_f64(), b.as_secs_f64()))
+            }
+            (Some(a), None) => Some(format!("start={}", a.as_secs_f64())),
+            (None, Some(b)) => Some(format!("end={}", b.as_secs_f64())),
+            (None, None) => None,
+        };
+        if let Some(trim_args_str) = trim_spec {
             let trim_filter = ff_sys::avfilter_get_by_name(c"trim".as_ptr());
             if trim_filter.is_null() {
                 bail!(graph, "filter not found: trim");
@@ -148,7 +153,7 @@ pub(super) unsafe fn build_video_composition(
             let Ok(trim_name) = CString::new(format!("trim{idx}")) else {
                 bail!(graph, "CString::new failed for trim name");
             };
-            let Ok(trim_args) = CString::new(format!("start={start}:end={end}")) else {
+            let Ok(trim_args) = CString::new(trim_args_str) else {
                 bail!(graph, "CString::new failed for trim args");
             };
             let mut trim_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
