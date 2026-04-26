@@ -47,9 +47,9 @@ pub struct Clip {
     pub transition_duration: Duration,
     /// Per-clip volume adjustment in dB applied during audio mixing (`0.0` = unity gain).
     ///
-    /// This value is independent of any track-level volume animation set via
-    /// [`TimelineBuilder::audio_animation`]. When non-zero the clip's own gain
-    /// overrides the track-level value; set to `0.0` to defer to the track level.
+    /// This value is independent of any track-level volume animation. When non-zero
+    /// the clip's own gain overrides the track-level value; set to `0.0` to defer
+    /// to the track level.
     ///
     /// Defaults to `0.0`.
     pub volume_db: f64,
