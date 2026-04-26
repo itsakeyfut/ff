@@ -140,7 +140,11 @@ impl PlayerHandle {
 
     /// Set the playback rate.
     ///
-    /// Values ≤ 0.0 are silently ignored by the runner.
+    /// - Positive values play forward at the given speed multiplier (e.g. `2.0` = 2×).
+    /// - Negative values play in reverse at `abs(rate)` speed (e.g. `-1.0` = 1× reverse).
+    ///   Audio is muted during reverse playback and automatically resumes on the next
+    ///   positive-rate call.
+    /// - `0.0` is ignored.
     pub fn set_rate(&self, rate: f64) {
         let _ = self.cmd_tx.try_send(PlayerCommand::SetRate(rate));
     }
@@ -536,6 +540,20 @@ impl PlayerRunner {
                     PlayerCommand::Play => {
                         self.stopped.store(false, Ordering::Release);
                         self.paused.store(false, Ordering::Release);
+                        // The cpal hardware callback advances `samples_consumed` even
+                        // while paused, so `MasterClock::Audio` drifts forward during
+                        // silence. Reset the clock to the last presented video frame so
+                        // frames are not immediately dropped as "late" on resume.
+                        if self.rate > 0.0 {
+                            let pts =
+                                Duration::from_micros(self.current_pts.load(Ordering::Relaxed));
+                            if self.clock.current_pts().saturating_sub(pts)
+                                > Duration::from_millis(100)
+                            {
+                                self.clock.reset(pts);
+                                self.restart_audio_from(pts);
+                            }
+                        }
                     }
                     PlayerCommand::Pause => {
                         self.paused.store(true, Ordering::Release);
@@ -544,9 +562,46 @@ impl PlayerRunner {
                         self.stopped.store(true, Ordering::Release);
                     }
                     PlayerCommand::SetRate(r) => {
-                        if r > 0.0 {
+                        if r != 0.0 {
+                            let was_negative = self.rate < 0.0;
                             self.rate = r;
-                            self.clock.set_rate(r);
+                            if r > 0.0 {
+                                self.clock.set_rate(r);
+                                // Returning from reverse: the MasterClock kept advancing
+                                // forward during reverse playback, so its position is now
+                                // ahead of the video position. Reset it to the current
+                                // video position and re-seek the decode buffer so the
+                                // forward path resumes from the right frame.
+                                if was_negative {
+                                    let pts = Duration::from_micros(
+                                        self.current_pts.load(Ordering::Relaxed),
+                                    );
+                                    self.clock.reset(pts);
+                                    // Use coarse seek (no forward-decode discard) so the
+                                    // first video frame arrives before the audio clock
+                                    // has advanced past pts, preventing A/V drift.
+                                    if let Some(buf) = self.decode_buf.as_mut()
+                                        && let Err(e) = buf.seek_coarse(pts)
+                                    {
+                                        log::warn!(
+                                            "reverse→forward seek failed pts={pts:?} \
+                                             error={e}"
+                                        );
+                                    }
+                                    self.restart_audio_from(pts);
+                                }
+                            } else {
+                                // Entering reverse: mute audio by cancelling the decode thread
+                                // and clearing the buffer.
+                                if let Some(cancel) = &self.audio_cancel {
+                                    cancel.store(true, Ordering::Release);
+                                }
+                                if let Some(buf) = &self.audio_buf {
+                                    buf.lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .clear();
+                                }
+                            }
                         }
                     }
                     PlayerCommand::SetAvOffset(ms) => {
@@ -589,6 +644,49 @@ impl PlayerRunner {
             }
             if self.paused.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+
+            // ── Reverse playback path ─────────────────────────────────────────
+            if self.rate < 0.0 {
+                if let Some(buf) = self.decode_buf.as_mut() {
+                    let current = Duration::from_micros(self.current_pts.load(Ordering::Relaxed));
+                    // Step size = one frame at the requested speed.
+                    let step =
+                        Duration::from_secs_f64(self.rate.abs() / fps.max(f64::MIN_POSITIVE));
+                    let target = current.saturating_sub(step);
+
+                    if buf.seek_coarse(target).is_err() {
+                        break;
+                    }
+
+                    // Drain pop_frame until a decoded frame arrives (with timeout).
+                    let deadline = std::time::Instant::now() + Duration::from_millis(300);
+                    let frame = loop {
+                        match buf.pop_frame() {
+                            FrameResult::Frame(f) => break Some(f),
+                            FrameResult::Seeking(_) => {
+                                if std::time::Instant::now() > deadline {
+                                    break None;
+                                }
+                                thread::sleep(Duration::from_millis(2));
+                            }
+                            FrameResult::Eof => break None,
+                        }
+                    };
+
+                    if let Some(f) = frame {
+                        self.present_frame(&f);
+                        let pts = f.timestamp().as_duration();
+                        let _ = self.event_tx.try_send(PlayerEvent::PositionUpdate(pts));
+                    }
+
+                    if target == Duration::ZERO {
+                        // Reached the start of the clip — pause automatically.
+                        self.paused.store(true, Ordering::Release);
+                    }
+                }
+                thread::sleep(frame_period);
                 continue;
             }
 
