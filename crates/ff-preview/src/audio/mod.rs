@@ -31,10 +31,14 @@ pub struct AudioTrackHandle {
 }
 
 impl AudioTrackHandle {
-    /// Set per-track volume. Clamped to `[0.0, 1.0]`.
+    /// Set per-track volume.
+    ///
+    /// `1.0` = unity gain. Values above `1.0` amplify; values below reduce.
+    /// Negative values are clamped to `0.0` (silence). The mixer output is
+    /// always clipped to `[-1.0, 1.0]`, so amplification may cause saturation
+    /// on loud signals.
     pub fn set_volume(&self, v: f32) {
-        self.volume
-            .store(v.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        self.volume.store(v.max(0.0).to_bits(), Ordering::Relaxed);
     }
 
     /// Set stereo pan. Clamped to `[-1.0` (full left) `.. +1.0` (full right)`]`.
@@ -356,16 +360,31 @@ mod tests {
     }
 
     #[test]
-    fn audio_track_handle_set_volume_should_clamp_to_zero_one() {
+    fn audio_track_handle_set_volume_above_one_should_amplify() {
         let mut mixer = AudioMixer::new(48_000);
         let track = mixer.add_track();
-        track.set_volume(2.0); // should clamp to 1.0
+        track.set_volume(2.0);
+        track.set_pan(-1.0); // full left for determinism
+        track.push_samples(&[0.4]);
+        let out = mixer.mix(2); // 1 stereo frame
+        // L = 0.4 * 2.0 = 0.8 (below clip threshold).
+        assert!(
+            (out[0] - 0.8).abs() < 1e-5,
+            "volume 2.0 should amplify to 0.8; got {}",
+            out[0]
+        );
+    }
+
+    #[test]
+    fn audio_track_handle_set_negative_volume_should_be_silent() {
+        let mut mixer = AudioMixer::new(48_000);
+        let track = mixer.add_track();
+        track.set_volume(-1.0); // clamped to 0.0
         track.push_samples(&[1.0]);
         let out = mixer.mix(2);
-        // With volume clamped to 1.0 and center pan, L = cos(π/4) ≈ 0.707.
         assert!(
-            out[0] <= 1.0,
-            "volume clamped to 1.0 must not exceed gain 1.0"
+            out.iter().all(|&s| s.abs() < 1e-6),
+            "negative volume must be silent"
         );
     }
 

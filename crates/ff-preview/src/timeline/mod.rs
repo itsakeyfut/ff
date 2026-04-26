@@ -372,6 +372,12 @@ impl TimelinePlayer {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .add_track();
+                // Apply per-clip gain (dB → linear).
+                if clip.volume_db != 0.0 {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let linear = 10.0_f64.powf(clip.volume_db / 20.0) as f32;
+                    handle.set_volume(linear);
+                }
                 audio_only_tracks.push(AudioOnlyTrack {
                     source: clip.source.clone(),
                     timeline_start,
