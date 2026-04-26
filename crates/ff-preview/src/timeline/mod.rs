@@ -215,10 +215,10 @@ impl TimelinePlayer {
             let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
             let info = ff_probe::open(&clip.source)?;
 
-            let clip_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point) {
-                op.saturating_sub(ip)
-            } else {
-                info.duration().saturating_sub(in_pt)
+            let clip_dur = match (clip.in_point, clip.out_point) {
+                (Some(ip), Some(op)) => op.saturating_sub(ip),
+                (None, Some(op)) => op,
+                _ => info.duration().saturating_sub(in_pt),
             };
 
             let transition_dur = if clip.transition.is_some() {
@@ -302,10 +302,10 @@ impl TimelinePlayer {
             for clip in v_track {
                 let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
                 let info = ff_probe::open(&clip.source)?;
-                let clip_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point) {
-                    op.saturating_sub(ip)
-                } else {
-                    info.duration().saturating_sub(in_pt)
+                let clip_dur = match (clip.in_point, clip.out_point) {
+                    (Some(ip), Some(op)) => op.saturating_sub(ip),
+                    (None, Some(op)) => op,
+                    _ => info.duration().saturating_sub(in_pt),
                 };
                 let timeline_start = clip.timeline_offset;
                 let timeline_end = timeline_start + clip_dur;
@@ -358,10 +358,10 @@ impl TimelinePlayer {
                 if !info.has_audio() {
                     continue;
                 }
-                let clip_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point) {
-                    op.saturating_sub(ip)
-                } else {
-                    info.duration().saturating_sub(in_pt)
+                let clip_dur = match (clip.in_point, clip.out_point) {
+                    (Some(ip), Some(op)) => op.saturating_sub(ip),
+                    (None, Some(op)) => op,
+                    _ => info.duration().saturating_sub(in_pt),
                 };
                 let timeline_start = clip.timeline_offset;
                 let timeline_end = timeline_start + clip_dur;
@@ -438,6 +438,9 @@ impl TimelinePlayer {
             rgba_a: Vec::new(),
             rgba_b: Vec::new(),
             blend_buf: Vec::new(),
+            last_frame_w: 0,
+            last_frame_h: 0,
+            gap_buf: Vec::new(),
             audio_mixer: mixer_arc.clone(),
             active_audio_cancel: initial_audio_cancel,
             active_audio_thread: initial_audio_thread,
@@ -496,6 +499,13 @@ pub struct TimelineRunner {
     rgba_a: Vec<u8>,
     rgba_b: Vec<u8>,
     blend_buf: Vec<u8>,
+    /// Width of the most recently presented primary-track frame; used to
+    /// synthesise fill frames during primary-track gaps.
+    last_frame_w: u32,
+    /// Height of the most recently presented primary-track frame.
+    last_frame_h: u32,
+    /// Scratch buffer for synthesising black fill frames during primary-track gaps.
+    gap_buf: Vec<u8>,
     /// Multi-track audio mixer — `None` when no clip has audio.
     audio_mixer: Option<Arc<Mutex<AudioMixer>>>,
     /// Cancel flag for the currently running audio decode thread.
@@ -623,6 +633,11 @@ impl TimelineRunner {
                         break;
                     }
                     if self.active != old_active {
+                        // Clear the outgoing clip's pre-decoded audio so its stale
+                        // samples do not continue to mix in after the transition.
+                        if let Some(h) = self.clips[old_active].audio_track.clone() {
+                            h.clear();
+                        }
                         let in_pt = self.clips[self.active].in_point;
                         self.restart_audio_at(self.active, in_pt);
                     }
@@ -631,15 +646,23 @@ impl TimelineRunner {
                 FrameResult::Seeking(last) => {
                     if let Some(ref f) = last {
                         let f_pts = f.timestamp().as_duration();
-                        let tl_start = self.clips[active].timeline_start;
                         let in_pt = self.clips[active].in_point;
-                        let tl_pts = tl_start + f_pts.saturating_sub(in_pt);
-                        let w = f.width();
-                        let h = f.height();
-                        if self.sws_a.convert(f, &mut self.rgba_a)
-                            && let Some(sink) = self.sink.as_mut()
-                        {
-                            sink.push_frame(&self.rgba_a, w, h, tl_pts);
+                        // Suppress pre-seek artefact frames: when a DecodeBuffer
+                        // is opened and immediately seeked to in_point, the
+                        // background thread may have decoded one frame from
+                        // position 0 before processing the seek command. That
+                        // frame ends up as `last` and must not be displayed —
+                        // its content is from before the clip's in_point.
+                        if f_pts >= in_pt {
+                            let tl_start = self.clips[active].timeline_start;
+                            let tl_pts = tl_start + f_pts.saturating_sub(in_pt);
+                            let w = f.width();
+                            let h = f.height();
+                            if self.sws_a.convert(f, &mut self.rgba_a)
+                                && let Some(sink) = self.sink.as_mut()
+                            {
+                                sink.push_frame(&self.rgba_a, w, h, tl_pts);
+                            }
                         }
                     }
                 }
@@ -673,6 +696,12 @@ impl TimelineRunner {
                             break;
                         }
                         if self.active != old_active {
+                            // Clear the outgoing clip's pre-decoded audio so its
+                            // stale samples do not continue to mix in after the
+                            // transition.
+                            if let Some(h) = self.clips[old_active].audio_track.clone() {
+                                h.clear();
+                            }
                             let in_pt = self.clips[self.active].in_point;
                             self.restart_audio_at(self.active, in_pt);
                         }
@@ -692,6 +721,9 @@ impl TimelineRunner {
                             at.start_at(local);
                         } else if !should_run && is_running {
                             at.stop();
+                            // Clear stale pre-decoded samples so the mixer does
+                            // not play this track's buffered audio past clip end.
+                            at.handle.clear();
                         }
                     }
 
@@ -733,7 +765,111 @@ impl TimelineRunner {
                         let diff = timeline_pts.as_secs_f64() - clock_pts.as_secs_f64();
                         let fp = frame_period.as_secs_f64();
 
-                        if diff > fp {
+                        if diff > fp * 2.0 && self.transition.is_none() && self.last_frame_w > 0 {
+                            // Gap in the primary track: the next V1 clip starts more than
+                            // 2 frame-periods ahead of the clock.  Synthesise black frames
+                            // composited with overlay-layer content for every missing
+                            // frame period so that V2 overlays and audio-only tracks
+                            // remain live during the gap.
+                            let gw = self.last_frame_w;
+                            let gh = self.last_frame_h;
+                            let n = (gw * gh * 4) as usize;
+                            'gap: loop {
+                                // Drain incoming commands.
+                                while let Ok(cmd) = self.cmd_rx.try_recv() {
+                                    match cmd {
+                                        PlayerCommand::Play => {
+                                            self.clock.reset(self.resume_pts);
+                                            self.stopped.store(false, Ordering::Release);
+                                            self.paused.store(false, Ordering::Release);
+                                        }
+                                        PlayerCommand::Pause => {
+                                            self.paused.store(true, Ordering::Release);
+                                        }
+                                        PlayerCommand::Stop => {
+                                            self.stopped.store(true, Ordering::Release);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if self.stopped.load(Ordering::Acquire) {
+                                    break 'gap;
+                                }
+                                if self.paused.load(Ordering::Acquire) {
+                                    thread::sleep(Duration::from_millis(5));
+                                    continue 'gap;
+                                }
+                                let gap_pts = self.clock.current_pts();
+                                if gap_pts + frame_period >= timeline_pts {
+                                    break 'gap;
+                                }
+                                // Build a black base frame.
+                                self.gap_buf.resize(n, 0);
+                                self.gap_buf.fill(0);
+                                // Pass 1: update each overlay layer's rgba at gap_pts.
+                                for layer in &mut self.overlay_layers {
+                                    let maybe_cidx = layer.clips.iter().position(|c| {
+                                        gap_pts >= c.timeline_start && gap_pts < c.timeline_end
+                                    });
+                                    let Some(cidx) = maybe_cidx else { continue };
+                                    if cidx != layer.active {
+                                        let local = layer.clips[cidx].in_point
+                                            + gap_pts
+                                                .saturating_sub(layer.clips[cidx].timeline_start);
+                                        let _ = layer.clips[cidx].decode_buf.seek(local);
+                                        layer.active = cidx;
+                                    }
+                                    while let FrameResult::Frame(f) =
+                                        layer.clips[cidx].decode_buf.pop_frame()
+                                    {
+                                        let f_pts = f.timestamp().as_duration();
+                                        let clip_in = layer.clips[cidx].in_point;
+                                        let tl_start = layer.clips[cidx].timeline_start;
+                                        let v2_pts = tl_start + f_pts.saturating_sub(clip_in);
+                                        if v2_pts + Duration::from_millis(50) >= gap_pts {
+                                            layer.sws.convert(&f, &mut layer.rgba);
+                                            break;
+                                        }
+                                    }
+                                }
+                                // Pass 2: composite overlay layers over the black base.
+                                for layer in &self.overlay_layers {
+                                    if !layer.rgba.is_empty()
+                                        && layer.rgba.len() == self.gap_buf.len()
+                                    {
+                                        timeline_inner::composite_over(
+                                            &mut self.gap_buf,
+                                            &layer.rgba,
+                                        );
+                                    }
+                                }
+                                // Manage audio-only decode threads.
+                                for at in &mut self.audio_only_tracks {
+                                    let should_run =
+                                        gap_pts >= at.timeline_start && gap_pts < at.timeline_end;
+                                    let is_running = at.cancel.is_some();
+                                    if should_run && !is_running {
+                                        let local =
+                                            at.in_point + gap_pts.saturating_sub(at.timeline_start);
+                                        at.start_at(local);
+                                    } else if !should_run && is_running {
+                                        at.stop();
+                                        at.handle.clear();
+                                    }
+                                }
+                                self.current_pts.store(
+                                    u64::try_from(gap_pts.as_micros()).unwrap_or(u64::MAX),
+                                    Ordering::Relaxed,
+                                );
+                                self.resume_pts = gap_pts;
+                                let _ =
+                                    self.event_tx.try_send(PlayerEvent::PositionUpdate(gap_pts));
+                                if let Some(sink) = self.sink.as_mut() {
+                                    sink.push_frame(&self.gap_buf, gw, gh, gap_pts);
+                                }
+                                thread::sleep(frame_period);
+                            }
+                        } else if diff > fp {
                             let sleep_secs =
                                 (diff - fp / 2.0).max(0.0) / self.rate.max(f64::MIN_POSITIVE);
                             thread::sleep(Duration::from_secs_f64(sleep_secs));
@@ -749,6 +885,8 @@ impl TimelineRunner {
                     // ── Present frame ─────────────────────────────────────────
                     let w = frame.width();
                     let h = frame.height();
+                    self.last_frame_w = w;
+                    self.last_frame_h = h;
 
                     // Copy transition fields to avoid holding a borrow while
                     // calling `pop_frame` on the next clip.
@@ -926,10 +1064,10 @@ impl TimelineRunner {
             let old_dur = self.clips[i]
                 .timeline_end
                 .saturating_sub(self.clips[i].timeline_start);
-            let new_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point) {
-                op.saturating_sub(ip)
-            } else {
-                old_dur
+            let new_dur = match (clip.in_point, clip.out_point) {
+                (Some(ip), Some(op)) => op.saturating_sub(ip),
+                (None, Some(op)) => op,
+                _ => old_dur,
             };
             self.clips[i].timeline_start = clip.timeline_offset;
             self.clips[i].timeline_end = clip.timeline_offset + new_dur;
@@ -952,11 +1090,10 @@ impl TimelineRunner {
                         let old_dur = layer.clips[j]
                             .timeline_end
                             .saturating_sub(layer.clips[j].timeline_start);
-                        let new_dur = if let (Some(ip), Some(op)) = (clip.in_point, clip.out_point)
-                        {
-                            op.saturating_sub(ip)
-                        } else {
-                            old_dur
+                        let new_dur = match (clip.in_point, clip.out_point) {
+                            (Some(ip), Some(op)) => op.saturating_sub(ip),
+                            (None, Some(op)) => op,
+                            _ => old_dur,
                         };
                         layer.clips[j].timeline_start = clip.timeline_offset;
                         layer.clips[j].timeline_end = clip.timeline_offset + new_dur;
