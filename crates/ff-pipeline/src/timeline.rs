@@ -303,9 +303,17 @@ impl Timeline {
             let mut mixer = MultiTrackAudioMixer::new(48_000, ChannelLayout::Stereo);
             for (track_idx, track) in audio_tracks.iter().enumerate() {
                 for clip in track {
+                    // Per-clip volume_db overrides the track-level animation when non-zero.
+                    // This lets callers set independent gain on each clip without needing
+                    // one audio track per clip.
+                    let volume = if clip.volume_db == 0.0 {
+                        aa(track_idx, "volume", 0.0)
+                    } else {
+                        AnimatedValue::Static(clip.volume_db)
+                    };
                     mixer = mixer.add_track(AudioTrack {
                         source: clip.source.clone(),
-                        volume: aa(track_idx, "volume", 0.0),
+                        volume,
                         pan: aa(track_idx, "pan", 0.0),
                         time_offset: clip.timeline_offset,
                         effects: vec![],

@@ -45,6 +45,14 @@ pub struct Clip {
     pub transition: Option<XfadeTransition>,
     /// Duration of the transition overlap. Ignored when `transition` is `None`.
     pub transition_duration: Duration,
+    /// Per-clip volume adjustment in dB applied during audio mixing (`0.0` = unity gain).
+    ///
+    /// This value is independent of any track-level volume animation set via
+    /// [`TimelineBuilder::audio_animation`]. When non-zero the clip's own gain
+    /// overrides the track-level value; set to `0.0` to defer to the track level.
+    ///
+    /// Defaults to `0.0`.
+    pub volume_db: f64,
 }
 
 impl Clip {
@@ -58,6 +66,7 @@ impl Clip {
             metadata: HashMap::new(),
             transition: None,
             transition_duration: Duration::ZERO,
+            volume_db: 0.0,
         }
     }
 
@@ -104,6 +113,28 @@ impl Clip {
         Self {
             transition: Some(kind),
             transition_duration: duration,
+            ..self
+        }
+    }
+
+    /// Sets the per-clip volume adjustment in dB and returns the updated clip.
+    ///
+    /// `0.0` is unity gain (no change). Positive values increase volume; negative
+    /// values reduce it. When set to a non-zero value this overrides the track-level
+    /// volume animation for this clip during rendering.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    ///
+    /// let clip = Clip::new("narration.wav").volume(-6.0);
+    /// assert_eq!(clip.volume_db, -6.0);
+    /// ```
+    #[must_use]
+    pub fn volume(self, db: f64) -> Self {
+        Self {
+            volume_db: db,
             ..self
         }
     }
@@ -165,5 +196,23 @@ mod tests {
     fn clip_duration_should_return_difference_when_both_points_set() {
         let clip = Clip::new("video.mp4").trim(Duration::from_secs(2), Duration::from_secs(10));
         assert_eq!(clip.duration(), Some(Duration::from_secs(8)));
+    }
+
+    #[test]
+    fn clip_new_should_default_volume_db_to_zero() {
+        let clip = Clip::new("audio.wav");
+        assert_eq!(clip.volume_db, 0.0);
+    }
+
+    #[test]
+    fn clip_volume_should_set_volume_db() {
+        let clip = Clip::new("audio.wav").volume(-6.0);
+        assert_eq!(clip.volume_db, -6.0);
+    }
+
+    #[test]
+    fn clip_volume_positive_should_set_volume_db() {
+        let clip = Clip::new("audio.wav").volume(3.0);
+        assert_eq!(clip.volume_db, 3.0);
     }
 }
