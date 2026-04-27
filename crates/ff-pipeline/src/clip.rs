@@ -53,6 +53,23 @@ pub struct Clip {
     ///
     /// Defaults to `0.0`.
     pub volume_db: f64,
+    /// Audio fade-in duration at the start of the clip (`Duration::ZERO` = no fade).
+    ///
+    /// When non-zero, a linear ramp from silence to the clip's volume level is
+    /// applied over this duration, starting at the clip's in-point.
+    ///
+    /// Defaults to `Duration::ZERO`.
+    pub fade_in: Duration,
+    /// Audio fade-out duration at the end of the clip (`Duration::ZERO` = no fade).
+    ///
+    /// When non-zero, a linear ramp from the clip's volume level to silence is
+    /// applied over this duration, ending at the clip's out-point.
+    /// Requires `out_point` to be set or the source file to be probeable so the
+    /// `afade` start offset can be computed. Omitted with `log::warn!` at render
+    /// time if the clip duration cannot be determined.
+    ///
+    /// Defaults to `Duration::ZERO`.
+    pub fade_out: Duration,
 }
 
 impl Clip {
@@ -67,6 +84,8 @@ impl Clip {
             transition: None,
             transition_duration: Duration::ZERO,
             volume_db: 0.0,
+            fade_in: Duration::ZERO,
+            fade_out: Duration::ZERO,
         }
     }
 
@@ -135,6 +154,54 @@ impl Clip {
     pub fn volume(self, db: f64) -> Self {
         Self {
             volume_db: db,
+            ..self
+        }
+    }
+
+    /// Sets the audio fade-in duration and returns the updated clip.
+    ///
+    /// The fade starts at the beginning of the clip and ramps from silence to the
+    /// clip's volume level over `duration`. `Duration::ZERO` disables the fade.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use std::time::Duration;
+    ///
+    /// let clip = Clip::new("narration.wav").with_fade_in(Duration::from_secs(2));
+    /// assert_eq!(clip.fade_in, Duration::from_secs(2));
+    /// ```
+    #[must_use]
+    pub fn with_fade_in(self, duration: Duration) -> Self {
+        Self {
+            fade_in: duration,
+            ..self
+        }
+    }
+
+    /// Sets the audio fade-out duration and returns the updated clip.
+    ///
+    /// The fade starts `duration` before the end of the clip and ramps to silence.
+    /// Requires `out_point` to be set or the source file to be probeable; omitted
+    /// with `log::warn!` at render time if the clip duration cannot be determined.
+    /// `Duration::ZERO` disables the fade.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    /// use std::time::Duration;
+    ///
+    /// let clip = Clip::new("narration.wav")
+    ///     .trim(Duration::from_secs(0), Duration::from_secs(10))
+    ///     .with_fade_out(Duration::from_secs(1));
+    /// assert_eq!(clip.fade_out, Duration::from_secs(1));
+    /// ```
+    #[must_use]
+    pub fn with_fade_out(self, duration: Duration) -> Self {
+        Self {
+            fade_out: duration,
             ..self
         }
     }
@@ -214,5 +281,38 @@ mod tests {
     fn clip_volume_positive_should_set_volume_db() {
         let clip = Clip::new("audio.wav").volume(3.0);
         assert_eq!(clip.volume_db, 3.0);
+    }
+
+    #[test]
+    fn clip_new_should_default_fade_fields_to_zero() {
+        let clip = Clip::new("audio.wav");
+        assert_eq!(clip.fade_in, Duration::ZERO);
+        assert_eq!(clip.fade_out, Duration::ZERO);
+    }
+
+    #[test]
+    fn clip_with_fade_in_should_set_fade_in() {
+        let clip = Clip::new("audio.wav").with_fade_in(Duration::from_secs(2));
+        assert_eq!(clip.fade_in, Duration::from_secs(2));
+        assert_eq!(clip.fade_out, Duration::ZERO);
+    }
+
+    #[test]
+    fn clip_with_fade_out_should_set_fade_out() {
+        let clip = Clip::new("audio.wav")
+            .trim(Duration::ZERO, Duration::from_secs(10))
+            .with_fade_out(Duration::from_secs(1));
+        assert_eq!(clip.fade_out, Duration::from_secs(1));
+        assert_eq!(clip.fade_in, Duration::ZERO);
+    }
+
+    #[test]
+    fn clip_fade_in_and_fade_out_can_be_chained() {
+        let clip = Clip::new("audio.wav")
+            .trim(Duration::ZERO, Duration::from_secs(10))
+            .with_fade_in(Duration::from_millis(500))
+            .with_fade_out(Duration::from_millis(500));
+        assert_eq!(clip.fade_in, Duration::from_millis(500));
+        assert_eq!(clip.fade_out, Duration::from_millis(500));
     }
 }

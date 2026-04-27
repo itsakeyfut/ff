@@ -46,6 +46,8 @@ use crate::playback::sink::FrameSink;
 const CHANNEL_CAP: usize = 64;
 /// Back-pressure limit for the audio decode thread (mono samples).
 const AUDIO_MAX_BUF: usize = 96_000;
+/// Sample rate used for all audio decode threads.
+const AUDIO_SAMPLE_RATE: f64 = 48_000.0;
 
 // ── ClipState ─────────────────────────────────────────────────────────────────
 
@@ -90,6 +92,28 @@ struct OverlayLayer {
     rgba: Vec<u8>,
 }
 
+// ── AudioFadeConfig ───────────────────────────────────────────────────────────
+
+/// Fade-in / fade-out parameters forwarded to [`spawn_audio_track_thread`].
+#[derive(Clone, Copy)]
+struct AudioFadeConfig {
+    fade_in: Duration,
+    fade_out: Duration,
+    /// Effective clip duration — used to position the fade-out start offset.
+    clip_dur: Duration,
+    /// Source-file PTS at which the clip starts (used to offset the envelope on seek).
+    in_point: Duration,
+}
+
+impl AudioFadeConfig {
+    const NONE: Self = Self {
+        fade_in: Duration::ZERO,
+        fade_out: Duration::ZERO,
+        clip_dur: Duration::ZERO,
+        in_point: Duration::ZERO,
+    };
+}
+
 // ── AudioOnlyTrack ────────────────────────────────────────────────────────────
 
 /// One dedicated audio-only clip (from an A1/A2/… track) inside [`TimelineRunner`].
@@ -98,6 +122,12 @@ struct AudioOnlyTrack {
     timeline_start: Duration,
     timeline_end: Duration,
     in_point: Duration,
+    /// Per-clip audio fade-in duration (`Duration::ZERO` = no fade).
+    fade_in: Duration,
+    /// Per-clip audio fade-out duration (`Duration::ZERO` = no fade).
+    fade_out: Duration,
+    /// Effective clip duration — used to position the fade-out ramp.
+    clip_dur: Duration,
     handle: AudioTrackHandle,
     cancel: Option<Arc<AtomicBool>>,
     thread: Option<JoinHandle<()>>,
@@ -117,6 +147,12 @@ impl AudioOnlyTrack {
             from_pts,
             self.handle.clone(),
             Arc::clone(&cancel),
+            AudioFadeConfig {
+                fade_in: self.fade_in,
+                fade_out: self.fade_out,
+                clip_dur: self.clip_dur,
+                in_point: self.in_point,
+            },
         );
         self.cancel = Some(cancel);
         self.thread = Some(t);
@@ -325,6 +361,9 @@ impl TimelinePlayer {
                         timeline_start,
                         timeline_end,
                         in_point: in_pt,
+                        fade_in: clip.fade_in,
+                        fade_out: clip.fade_out,
+                        clip_dur,
                         handle,
                         cancel: None,
                         thread: None,
@@ -383,6 +422,9 @@ impl TimelinePlayer {
                     timeline_start,
                     timeline_end,
                     in_point: in_pt,
+                    fade_in: clip.fade_in,
+                    fade_out: clip.fade_out,
+                    clip_dur,
                     handle,
                     cancel: None,
                     thread: None,
@@ -413,7 +455,13 @@ impl TimelinePlayer {
                 let source = clip_states[0].source.clone();
                 let in_pt = clip_states[0].in_point;
                 let cancel = Arc::new(AtomicBool::new(false));
-                let thread = spawn_audio_track_thread(source, in_pt, handle, Arc::clone(&cancel));
+                let thread = spawn_audio_track_thread(
+                    source,
+                    in_pt,
+                    handle,
+                    Arc::clone(&cancel),
+                    AudioFadeConfig::NONE,
+                );
                 (Some(cancel), Some(thread))
             } else {
                 (None, None)
@@ -1387,7 +1435,13 @@ impl TimelineRunner {
 
         let source = self.clips[clip_idx].source.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        let thread = spawn_audio_track_thread(source, start_pts, handle, Arc::clone(&cancel));
+        let thread = spawn_audio_track_thread(
+            source,
+            start_pts,
+            handle,
+            Arc::clone(&cancel),
+            AudioFadeConfig::NONE,
+        );
         self.active_audio_cancel = Some(cancel);
         self.active_audio_thread = Some(thread);
     }
@@ -1411,6 +1465,7 @@ fn spawn_audio_track_thread(
     start_pts: Duration,
     track: AudioTrackHandle,
     cancel: Arc<AtomicBool>,
+    fades: AudioFadeConfig,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut decoder = match AudioDecoder::open(&path)
@@ -1432,6 +1487,14 @@ fn spawn_audio_track_thread(
             log::warn!("timeline audio seek failed pts={start_pts:?} error={e}");
         }
 
+        let fade_in_secs = fades.fade_in.as_secs_f64();
+        let fade_out_secs = fades.fade_out.as_secs_f64();
+        let total_secs = fades.clip_dur.as_secs_f64();
+        // Elapsed time at thread start due to seeking past in_point.
+        let seek_offset_secs = start_pts.saturating_sub(fades.in_point).as_secs_f64();
+        let apply_fades = fade_in_secs > 0.0 || fade_out_secs > 0.0;
+        let mut samples_pushed: u64 = 0;
+
         loop {
             if cancel.load(Ordering::Acquire) {
                 break;
@@ -1448,7 +1511,41 @@ fn spawn_audio_track_thread(
                     if let Some(samples) = frame.as_f32()
                         && !samples.is_empty()
                     {
-                        track.push_samples(samples);
+                        if apply_fades {
+                            let mut buf: Vec<f32> = samples.to_vec();
+                            for (i, s) in buf.iter_mut().enumerate() {
+                                // u64→f64 loses precision for very large sample counts
+                                // (>2^52 samples ≈ 1.9M years at 48 kHz); acceptable here.
+                                #[allow(clippy::cast_precision_loss)]
+                                let pos_secs = seek_offset_secs
+                                    + (samples_pushed + i as u64) as f64 / AUDIO_SAMPLE_RATE;
+
+                                // f64→f32: gain values are in [0.0, 1.0]; truncation is inaudible.
+                                #[allow(clippy::cast_possible_truncation)]
+                                let gain_in = if fade_in_secs > 0.0 && pos_secs < fade_in_secs {
+                                    (pos_secs / fade_in_secs) as f32
+                                } else {
+                                    1.0_f32
+                                };
+
+                                #[allow(clippy::cast_possible_truncation)]
+                                let gain_out = if fade_out_secs > 0.0
+                                    && total_secs > 0.0
+                                    && pos_secs >= total_secs - fade_out_secs
+                                {
+                                    let elapsed = pos_secs - (total_secs - fade_out_secs);
+                                    (1.0 - elapsed / fade_out_secs).clamp(0.0, 1.0) as f32
+                                } else {
+                                    1.0_f32
+                                };
+
+                                *s *= gain_in * gain_out;
+                            }
+                            samples_pushed += buf.len() as u64;
+                            track.push_samples(&buf);
+                        } else {
+                            track.push_samples(samples);
+                        }
                     }
                 }
                 Ok(None) => break,
