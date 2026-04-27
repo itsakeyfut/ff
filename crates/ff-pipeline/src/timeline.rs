@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
 use ff_filter::{
-    AnimatedValue, AnimationTrack, AudioTrack, MultiTrackAudioMixer, MultiTrackComposer, VideoLayer,
+    AnimatedValue, AnimationTrack, AudioTrack, FilterStep, MultiTrackAudioMixer,
+    MultiTrackComposer, VideoLayer,
 };
 use ff_format::ChannelLayout;
 
@@ -311,12 +312,60 @@ impl Timeline {
                     } else {
                         AnimatedValue::Static(clip.volume_db)
                     };
+
+                    let mut effects: Vec<FilterStep> = Vec::new();
+
+                    if clip.fade_in > Duration::ZERO {
+                        effects.push(FilterStep::AFadeIn {
+                            start: 0.0,
+                            duration: clip.fade_in.as_secs_f64(),
+                        });
+                    }
+
+                    if clip.fade_out > Duration::ZERO {
+                        // Resolve effective duration to compute the afade start offset.
+                        let eff_dur: Option<Duration> = clip.duration().or_else(|| {
+                            VideoDecoder::open(&clip.source).build().ok().map(|d| {
+                                let total = d.duration();
+                                match clip.in_point {
+                                    Some(ip) => total.saturating_sub(ip),
+                                    None => total,
+                                }
+                            })
+                        });
+                        match eff_dur {
+                            Some(dur) if dur > clip.fade_out => {
+                                // saturating_sub is safe: the guard ensures dur > fade_out.
+                                let start = dur.saturating_sub(clip.fade_out).as_secs_f64();
+                                effects.push(FilterStep::AFadeOut {
+                                    start,
+                                    duration: clip.fade_out.as_secs_f64(),
+                                });
+                            }
+                            Some(_) => {
+                                log::warn!(
+                                    "fade_out ({:.3}s) >= clip duration — skipping fade_out \
+                                     for {}",
+                                    clip.fade_out.as_secs_f64(),
+                                    clip.source.display(),
+                                );
+                            }
+                            None => {
+                                log::warn!(
+                                    "cannot determine clip duration — skipping fade_out \
+                                     for {}",
+                                    clip.source.display(),
+                                );
+                            }
+                        }
+                    }
+
                     mixer = mixer.add_track(AudioTrack {
                         source: clip.source.clone(),
                         volume,
                         pan: aa(track_idx, "pan", 0.0),
                         time_offset: clip.timeline_offset,
-                        effects: vec![],
+                        effects,
                         sample_rate: 48_000,
                         channel_layout: ff_format::ChannelLayout::Stereo,
                     });
