@@ -262,6 +262,18 @@ impl Timeline {
                         composer = composer.join_with_dissolve(prev_end, dur_secs, kind);
                     }
 
+                    let mut layer_effects: Vec<FilterStep> = Vec::new();
+                    #[allow(clippy::float_cmp)]
+                    let neutral =
+                        clip.brightness == 0.0 && clip.contrast == 1.0 && clip.saturation == 1.0;
+                    if !neutral {
+                        layer_effects.push(FilterStep::Eq {
+                            brightness: clip.brightness,
+                            contrast: clip.contrast,
+                            saturation: clip.saturation,
+                        });
+                    }
+
                     composer = composer.add_layer(VideoLayer {
                         source: clip.source.clone(),
                         x: va(track_idx, "x", 0.0),
@@ -275,6 +287,7 @@ impl Timeline {
                         in_point: clip.in_point,
                         out_point: clip.out_point,
                         in_transition: None, // set by join_with_dissolve via add_layer
+                        effects: layer_effects,
                     });
 
                     // Track how many seconds this clip contributes, so the next

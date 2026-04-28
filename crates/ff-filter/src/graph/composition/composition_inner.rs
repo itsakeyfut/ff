@@ -440,6 +440,25 @@ pub(super) unsafe fn build_video_composition(
             chain_end = ccm_ctx;
         }
 
+        // ── Per-layer video effects ───────────────────────────────────────────
+        for (eff_idx, step) in layer.effects.iter().enumerate() {
+            let combined_idx = idx * 1000 + eff_idx;
+            let result = crate::filter_inner::add_and_link_step(
+                graph,
+                chain_end,
+                step,
+                combined_idx,
+                "veff",
+            );
+            match result {
+                Ok(ctx) => chain_end = ctx,
+                Err(e) => bail!(
+                    graph,
+                    format!("failed to apply video effect layer={idx} eff={eff_idx}: {e}")
+                ),
+            }
+        }
+
         // ── xfade (when this layer has an in_transition) ──────────────────────
         if let Some(ref t) = layer.in_transition {
             if !saved_chain.is_null() {

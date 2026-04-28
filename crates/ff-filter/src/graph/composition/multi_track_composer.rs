@@ -65,6 +65,12 @@ pub struct VideoLayer {
     /// Transition applied at the start of this layer (from the preceding layer on the same z-order).
     /// `None` = hard cut. Set by [`MultiTrackComposer::join_with_dissolve`].
     pub in_transition: Option<ClipTransition>,
+    /// Per-layer video filter steps applied to this layer's decoded stream before compositing.
+    ///
+    /// Applied in order after trim/setpts/scale/rotate/opacity and before the `overlay` node.
+    /// Typical use: `FilterStep::Eq { brightness, contrast, saturation }` for per-clip color
+    /// correction. An empty `Vec` (the default) is a no-op.
+    pub effects: Vec<crate::graph::filter_step::FilterStep>,
 }
 
 // ── MultiTrackComposer ────────────────────────────────────────────────────────
@@ -255,6 +261,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                effects: vec![],
             })
             .build();
         assert!(
@@ -277,6 +284,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                effects: vec![],
             })
             .build();
         assert!(
@@ -307,6 +315,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                effects: vec![],
             })
             .build();
         if let Err(FilterError::CompositionFailed { ref reason }) = result {
@@ -345,6 +354,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                effects: vec![],
             })
             .build();
         assert!(result.is_err(), "expected error (nonexistent file)");
@@ -373,6 +383,7 @@ mod tests {
                 in_point: None,
                 out_point: None,
                 in_transition: None,
+                effects: vec![],
             })
             .build();
         if let Err(FilterError::CompositionFailed { ref reason }) = result {
