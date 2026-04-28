@@ -16,7 +16,7 @@ At the same time, when an engineer designs the structs, traits, functions, varia
 
 It is also true that using AI allows the foundation of an application to be established at an earlier stage. For a project like this one — implementing FFmpeg bindings in Rust, with the high-level API designed, implemented, and debugged by hand — I consider AI a valuable accelerator.
 
-For these reasons, as of 2026-03-26, this project is intentionally using AI in its early phase to efficiently bring the vast intellectual domain of FFmpeg into Rust. **Therefore, code contributions beyond questions, bug reports, and feature requests are not expected at this time.**
+**Current phase (as of 2026-04-28):** The library foundation is now in place. Active development has shifted to [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo) — a real-world video editing application built on top of `avio`. Building the demo is the primary vehicle for discovering bugs, stress-testing APIs, and driving further improvements to this library. Issues filed against `avio` during this period are mostly surfaced through hands-on editor use. **Code contributions beyond questions, bug reports, and feature requests are not expected at this time.**
 
 The goal of this project is to serve as the core foundation for video delivery services and video editing applications built in Rust — not to cover every FFmpeg feature. The fundamental motivation was simply a desire to build a video editing application in Rust.
 

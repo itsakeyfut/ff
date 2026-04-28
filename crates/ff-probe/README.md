@@ -2,7 +2,7 @@
 
 Read media file metadata with one function call. No knowledge of container formats or codec identifiers needed — you get back a structured `MediaInfo` with typed accessors for resolution, frame rate, sample rate, duration, and more.
 
-> **Project status (as of 2026-03-26):** This crate is in an early phase. The high-level API is designed and reviewed by hand; AI is used as an accelerator to implement FFmpeg bindings efficiently. Code contributions are not expected at this time — questions, bug reports, and feature requests are welcome. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+> **Project status (as of 2026-04-28):** The library foundation is in place. Development is currently focused on [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`. Building the demo surfaces bugs and drives API improvements in this library. Questions, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
 
 ## Installation
 

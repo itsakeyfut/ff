@@ -2,7 +2,7 @@
 
 Wire decode, filter, and encode into a single configured pipeline. Instead of managing three separate contexts, set an input path, an output path with codec settings, and an optional filter chain — the builder validates the configuration before any processing begins.
 
-> **Project status (as of 2026-03-26):** This crate is in an early phase. The high-level API is designed and reviewed by hand; AI is used as an accelerator to implement FFmpeg bindings efficiently. Code contributions are not expected at this time — questions, bug reports, and feature requests are welcome. See the [main repository](https://github.com/itsakeyfut/avio) for full context.
+> **Project status (as of 2026-04-28):** The library foundation is in place. Development is currently focused on [**avio-editor-demo**](https://github.com/itsakeyfut/avio-editor-demo), a real-world video editing application built on `avio`. Building the demo surfaces bugs and drives API improvements in this library. Questions, bug reports, and feature requests are welcome — see the [main repository](https://github.com/itsakeyfut/avio) for full context.
 
 ## Installation
 
