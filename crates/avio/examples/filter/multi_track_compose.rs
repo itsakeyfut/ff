@@ -101,6 +101,7 @@ fn main() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            effects: vec![],
         })
         .add_layer(VideoLayer {
             source: args.overlay.clone(),
@@ -115,6 +116,7 @@ fn main() {
             in_point: None,
             out_point: None,
             in_transition: None,
+            effects: vec![],
         })
         .build()
     {

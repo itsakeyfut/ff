@@ -70,6 +70,21 @@ pub struct Clip {
     ///
     /// Defaults to `Duration::ZERO`.
     pub fade_out: Duration,
+    /// Per-clip brightness adjustment. Range: −1.0..=1.0. Default: 0.0 (no change).
+    ///
+    /// Applied via the `eq` video filter during `Timeline::render()`.
+    /// Neutral value (`0.0`) produces bit-identical output to the no-eq path.
+    pub brightness: f32,
+    /// Per-clip contrast adjustment. Range: 0.0..=3.0. Default: 1.0 (no change).
+    ///
+    /// Applied via the `eq` video filter during `Timeline::render()`.
+    /// Neutral value (`1.0`) produces bit-identical output to the no-eq path.
+    pub contrast: f32,
+    /// Per-clip saturation adjustment. Range: 0.0..=3.0. Default: 1.0 (no change).
+    ///
+    /// Applied via the `eq` video filter during `Timeline::render()`.
+    /// Neutral value (`1.0`) produces bit-identical output to the no-eq path.
+    pub saturation: f32,
 }
 
 impl Clip {
@@ -86,6 +101,9 @@ impl Clip {
             volume_db: 0.0,
             fade_in: Duration::ZERO,
             fade_out: Duration::ZERO,
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
         }
     }
 
@@ -206,6 +224,37 @@ impl Clip {
         }
     }
 
+    /// Sets per-clip color correction and returns the updated clip.
+    ///
+    /// The three parameters map directly to the `FFmpeg` `eq` filter:
+    /// - `brightness`: −1.0..=1.0, where `0.0` is no change.
+    /// - `contrast`:    0.0..=3.0, where `1.0` is no change.
+    /// - `saturation`:  0.0..=3.0, where `1.0` is no change.
+    ///
+    /// Neutral values (`brightness = 0.0`, `contrast = 1.0`, `saturation = 1.0`)
+    /// produce bit-identical output to the no-eq render path — the `eq` filter is
+    /// only inserted when at least one value differs from its neutral default.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    ///
+    /// let clip = Clip::new("scene.mp4").with_color_correction(0.1, 1.2, 0.9);
+    /// assert_eq!(clip.brightness, 0.1);
+    /// assert_eq!(clip.contrast, 1.2);
+    /// assert_eq!(clip.saturation, 0.9);
+    /// ```
+    #[must_use]
+    pub fn with_color_correction(self, brightness: f32, contrast: f32, saturation: f32) -> Self {
+        Self {
+            brightness,
+            contrast,
+            saturation,
+            ..self
+        }
+    }
+
     /// Returns `out_point - in_point` when both are `Some`, otherwise `None`.
     ///
     /// Does not open the source file.
@@ -314,5 +363,21 @@ mod tests {
             .with_fade_out(Duration::from_millis(500));
         assert_eq!(clip.fade_in, Duration::from_millis(500));
         assert_eq!(clip.fade_out, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn clip_new_should_default_color_correction_to_neutral() {
+        let clip = Clip::new("video.mp4");
+        assert_eq!(clip.brightness, 0.0);
+        assert_eq!(clip.contrast, 1.0);
+        assert_eq!(clip.saturation, 1.0);
+    }
+
+    #[test]
+    fn clip_with_color_correction_should_set_fields() {
+        let clip = Clip::new("scene.mp4").with_color_correction(0.1, 1.2, 0.9);
+        assert_eq!(clip.brightness, 0.1);
+        assert_eq!(clip.contrast, 1.2);
+        assert_eq!(clip.saturation, 0.9);
     }
 }
