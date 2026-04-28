@@ -229,6 +229,10 @@ impl TimelinePlayer {
             out_point: Option<Duration>,
             transition_dur: Duration,
             has_audio: bool,
+            /// Video frame dimensions — used to pre-populate `last_frame_w/h` so the
+            /// gap-fill loop can synthesise black frames before the first real frame.
+            video_w: u32,
+            video_h: u32,
         }
 
         let tracks = timeline.video_tracks();
@@ -266,6 +270,10 @@ impl TimelinePlayer {
             let has_audio = info.has_audio();
             has_any_audio |= has_audio;
 
+            let (video_w, video_h) = info
+                .primary_video()
+                .map_or((0, 0), |v| (v.width(), v.height()));
+
             probes.push(ProbeResult {
                 source: clip.source.clone(),
                 in_pt,
@@ -274,6 +282,8 @@ impl TimelinePlayer {
                 out_point: clip.out_point,
                 transition_dur,
                 has_audio,
+                video_w,
+                video_h,
             });
         }
 
@@ -449,8 +459,13 @@ impl TimelinePlayer {
         let (cmd_tx, cmd_rx) = mpsc::sync_channel(CHANNEL_CAP);
         let (event_tx, event_rx) = mpsc::sync_channel::<PlayerEvent>(CHANNEL_CAP);
 
-        // Start audio for the first clip immediately.
-        let (initial_audio_cancel, initial_audio_thread) =
+        // Only start the audio thread for the first V1 clip immediately when that
+        // clip begins at timeline position 0.  When there is a pre-roll gap the
+        // gap-fill loop starts the audio at the correct timeline position instead.
+        let first_clip_at_origin = clip_states
+            .first()
+            .is_some_and(|c| c.timeline_start == Duration::ZERO);
+        let (initial_audio_cancel, initial_audio_thread) = if first_clip_at_origin {
             if let Some(handle) = clip_states.first().and_then(|c| c.audio_track.clone()) {
                 let source = clip_states[0].source.clone();
                 let in_pt = clip_states[0].in_point;
@@ -465,7 +480,15 @@ impl TimelinePlayer {
                 (Some(cancel), Some(thread))
             } else {
                 (None, None)
-            };
+            }
+        } else {
+            (None, None)
+        };
+
+        // Pre-populate frame dimensions from the first clip's probe so the gap-fill
+        // loop can synthesise black frames even before the first real frame arrives.
+        let (initial_last_w, initial_last_h) =
+            probes.first().map_or((0, 0), |p| (p.video_w, p.video_h));
 
         let runner = TimelineRunner {
             clips: clip_states,
@@ -492,8 +515,8 @@ impl TimelinePlayer {
             rgba_a: Vec::new(),
             rgba_b: Vec::new(),
             blend_buf: Vec::new(),
-            last_frame_w: 0,
-            last_frame_h: 0,
+            last_frame_w: initial_last_w,
+            last_frame_h: initial_last_h,
             gap_buf: Vec::new(),
             audio_mixer: mixer_arc.clone(),
             active_audio_cancel: initial_audio_cancel,
@@ -1043,7 +1066,7 @@ impl TimelineRunner {
                                         );
                                     }
                                 }
-                                // Manage audio-only decode threads.
+                                // Manage audio-only decode threads (A1/A2…).
                                 for at in &mut self.audio_only_tracks {
                                     let should_run =
                                         gap_pts >= at.timeline_start && gap_pts < at.timeline_end;
@@ -1056,6 +1079,17 @@ impl TimelineRunner {
                                         at.stop();
                                         at.handle.clear();
                                     }
+                                }
+                                // Manage V1 inline audio: start it the moment the
+                                // gap clock reaches the active clip's timeline_start.
+                                if self.active_audio_cancel.is_none()
+                                    && self.clips[self.active].audio_track.is_some()
+                                    && gap_pts >= self.clips[self.active].timeline_start
+                                {
+                                    let tl_start = self.clips[self.active].timeline_start;
+                                    let in_pt = self.clips[self.active].in_point;
+                                    let local = in_pt + gap_pts.saturating_sub(tl_start);
+                                    self.restart_audio_at(self.active, local);
                                 }
                                 self.current_pts.store(
                                     u64::try_from(gap_pts.as_micros()).unwrap_or(u64::MAX),
@@ -1080,6 +1114,19 @@ impl TimelineRunner {
                             );
                             continue;
                         }
+                    }
+
+                    // Start V1 inline audio on the first presented frame when a
+                    // pre-roll gap prevented the thread from starting at open() time.
+                    // The gap-fill loop attempts this but exits one frame-period before
+                    // timeline_start, so we catch the remaining case here.
+                    if self.active_audio_cancel.is_none()
+                        && self.clips[active].audio_track.is_some()
+                    {
+                        let in_pt = self.clips[active].in_point;
+                        let local =
+                            in_pt + timeline_pts.saturating_sub(self.clips[active].timeline_start);
+                        self.restart_audio_at(active, local);
                     }
 
                     // ── Present frame ─────────────────────────────────────────
@@ -1349,18 +1396,29 @@ impl TimelineRunner {
 
     /// Seek all decode buffers so that `active` is the clip containing `target`
     /// and that clip's buffer is positioned at the correct source-file PTS.
+    ///
+    /// When `target` falls in a pre-roll or inter-clip gap the method finds the
+    /// next clip after `target`, seeks it to its `in_point`, and returns without
+    /// starting audio — the gap-fill loop in `run()` will start audio at the
+    /// right time.
     fn seek_timeline(&mut self, target: Duration) -> Result<(), PreviewError> {
-        let clip_idx = self
+        // Try to find a clip that contains `target`.
+        let clip_in_range = self
             .clips
             .iter()
             .position(|c| target >= c.timeline_start && target < c.timeline_end);
 
-        let Some(clip_idx) = clip_idx else {
+        // If target is in a gap, find the next clip after `target`.
+        let (clip_idx, clip_local_pts, is_gap_seek) = if let Some(ci) = clip_in_range {
+            let local =
+                self.clips[ci].in_point + target.saturating_sub(self.clips[ci].timeline_start);
+            (ci, local, false)
+        } else if let Some(ci) = self.clips.iter().position(|c| c.timeline_start > target) {
+            // Seek the clip to its in_point; gap-fill loop will tick until it starts.
+            (ci, self.clips[ci].in_point, true)
+        } else {
             return Err(PreviewError::SeekOutOfRange { pts: target });
         };
-
-        let clip_local_pts = self.clips[clip_idx].in_point
-            + target.saturating_sub(self.clips[clip_idx].timeline_start);
 
         self.clips[clip_idx].decode_buf.seek(clip_local_pts)?;
         self.active = clip_idx;
@@ -1373,7 +1431,16 @@ impl TimelineRunner {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .invalidate_all();
         }
-        self.restart_audio_at(clip_idx, clip_local_pts);
+        if is_gap_seek {
+            // Cancel any running V1 audio thread; the gap loop will restart it
+            // once the clock reaches the clip's timeline_start.
+            if let Some(cancel) = self.active_audio_cancel.take() {
+                cancel.store(true, Ordering::Release);
+            }
+            drop(self.active_audio_thread.take());
+        } else {
+            self.restart_audio_at(clip_idx, clip_local_pts);
+        }
 
         // Seek overlay layers to the new target position.
         for layer in &mut self.overlay_layers {
