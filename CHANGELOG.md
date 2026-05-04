@@ -11,6 +11,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.14.3] - 2026-05-05
+
+### Added
+
+#### ff-pipeline
+- `Clip::volume_db` and `Clip::with_volume_db()`: per-clip audio gain in decibels applied at both export and real-time preview ([#1142](https://github.com/itsakeyfut/avio/issues/1142))
+- `Clip::fade_in`, `Clip::fade_out`, and `Clip::with_audio_fades()`: per-clip audio fade-in/fade-out with live preview envelope ([#1144](https://github.com/itsakeyfut/avio/issues/1144), [#1145](https://github.com/itsakeyfut/avio/issues/1145), [#1146](https://github.com/itsakeyfut/avio/issues/1146))
+- `Clip::brightness`, `Clip::contrast`, `Clip::saturation`, and `Clip::with_color_correction()`: per-clip RGB color correction wired through the `eq` filter on export and `VideoLayer::effects` in preview ([#1150](https://github.com/itsakeyfut/avio/issues/1150))
+- `Clip::speed` and `Clip::with_speed()`: per-clip variable-speed playback; video uses `setpts+fps`, audio uses an `asetrate+aresample+aeval` chain to avoid `atempo` NaN artifacts at high speeds ([#1153](https://github.com/itsakeyfut/avio/issues/1153))
+
+#### ff-filter
+- `VideoLayer::effects`: per-layer `Vec<FilterStep>` applied before the xfade compositor node, enabling per-clip GPU effects in multi-track export ([#1150](https://github.com/itsakeyfut/avio/issues/1150))
+- `FilterStep::Speed { factor }`: new variant; video path inserts `setpts=PTS/factor` + `fps=30`, audio path uses the new asetrate/aresample chain ([#1153](https://github.com/itsakeyfut/avio/issues/1153))
+- `add_asetrate_resample_chain`: new `pub(crate)` helper that builds an `apad→asetrate→aresample→aeval` chain for NaN-free high-speed audio; `decompose_atempo` max raised from 2.0 to 100.0 (FFmpeg 4.0+ cap) ([#1153](https://github.com/itsakeyfut/avio/issues/1153))
+
+#### ff-preview
+- `PlayerHandle::set_rate()` with negative values: reverse playback via per-frame `seek_coarse`, muted audio, and seamless forward-recovery on direction change ([#1136](https://github.com/itsakeyfut/avio/issues/1136), [#1137](https://github.com/itsakeyfut/avio/issues/1137), [#1138](https://github.com/itsakeyfut/avio/issues/1138))
+- `update_timeline()` on `PlayerHandle`: hot-reload a modified `Timeline` layout without restarting the runner ([#1131](https://github.com/itsakeyfut/avio/issues/1131))
+- `ClipState::speed` in `TimelineRunner`: PTS remapping for variable-speed clips with per-chunk linear audio resampling ([#1154](https://github.com/itsakeyfut/avio/issues/1154))
+
+### Fixed
+
+#### ff-preview
+- Frame-stepping while paused: a single decoded frame is now presented to the sink after a seek command arrives while the player is paused ([#1140](https://github.com/itsakeyfut/avio/issues/1140))
+- `SwrContext` was re-allocated on every audio frame, causing crackling; it is now cached and reused across frames ([#1116](https://github.com/itsakeyfut/avio/issues/1116))
+- `MasterClock` was not re-anchored on `Play`, causing accumulated pause-drift to skew A/V sync after long pauses ([#1130](https://github.com/itsakeyfut/avio/issues/1130))
+- `MasterClock` rate scaling was applied twice in `pop_audio_samples`, causing double-speed audio at rates other than 1× ([#1118](https://github.com/itsakeyfut/avio/issues/1118), [#1119](https://github.com/itsakeyfut/avio/issues/1119))
+- `TimelinePlayer` did not composite secondary video tracks (V2/V3) or mix audio-only tracks (A1/A2); both are now handled ([#1121](https://github.com/itsakeyfut/avio/issues/1121), [#1122](https://github.com/itsakeyfut/avio/issues/1122))
+- Overlay z-order was inverted: V1 (primary) is now rendered as foreground, V2/V3 as background ([#1124](https://github.com/itsakeyfut/avio/issues/1124))
+- `TimelineRunner` froze when a gap before the first clip was encountered, stale audio threads were not cancelled on seek, and audio started prematurely for clips beginning after a pre-roll gap ([#1148](https://github.com/itsakeyfut/avio/issues/1148))
+- Partial `in_point`/`out_point` trim bounds caused filter graph build failures; stale audio decoder threads were not cancelled on clip transition ([#1133](https://github.com/itsakeyfut/avio/issues/1133), [#1134](https://github.com/itsakeyfut/avio/issues/1134))
+
+#### ff-encode
+- Audio stream in exported files was missing extradata, causing some players to reject the file; `avcodec_parameters_from_context` is now used after codec open ([#1126](https://github.com/itsakeyfut/avio/issues/1126))
+- Encoder produced truncated audio because sample frames were pushed without buffering; `AVAudioFifo` now accumulates samples to exactly `frame_size` before encoding ([#1127](https://github.com/itsakeyfut/avio/issues/1127), [#1128](https://github.com/itsakeyfut/avio/issues/1128))
+
+#### ff-decode
+- `SwrContext` was re-created on every audio frame, causing audio crackling during `AudioDecoder` iteration ([#1116](https://github.com/itsakeyfut/avio/issues/1116))
+
+---
+
 ## [0.14.2] - 2026-04-22
 
 ### Fixed
