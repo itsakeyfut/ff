@@ -85,6 +85,21 @@ pub struct Clip {
     /// Applied via the `eq` video filter during `Timeline::render()`.
     /// Neutral value (`1.0`) produces bit-identical output to the no-eq path.
     pub saturation: f32,
+    /// Per-clip playback speed multiplier. Range: 0.1..=100.0. Default: 1.0 (normal speed).
+    ///
+    /// Applied via `setpts=PTS/{speed}` on the video stream and a chain of `atempo` filters
+    /// on the audio stream during `Timeline::render()`.
+    /// Neutral value (`1.0`) produces bit-identical output to the no-speed path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    ///
+    /// let clip = Clip::new("scene.mp4").with_speed(2.0);
+    /// assert_eq!(clip.speed, 2.0);
+    /// ```
+    pub speed: f64,
 }
 
 impl Clip {
@@ -104,6 +119,7 @@ impl Clip {
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
+            speed: 1.0,
         }
     }
 
@@ -255,6 +271,27 @@ impl Clip {
         }
     }
 
+    /// Sets the per-clip playback speed multiplier and returns the updated clip.
+    ///
+    /// Values greater than `1.0` produce fast motion; values less than `1.0` produce slow
+    /// motion. The speed is applied via `setpts=PTS/{speed}` on the video stream and a chain
+    /// of `atempo` filters on the audio stream during `Timeline::render()`.
+    ///
+    /// The neutral value (`1.0`) produces bit-identical output to the no-speed path.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ff_pipeline::Clip;
+    ///
+    /// let clip = Clip::new("scene.mp4").with_speed(2.0);
+    /// assert_eq!(clip.speed, 2.0);
+    /// ```
+    #[must_use]
+    pub fn with_speed(self, speed: f64) -> Self {
+        Self { speed, ..self }
+    }
+
     /// Returns `out_point - in_point` when both are `Some`, otherwise `None`.
     ///
     /// Does not open the source file.
@@ -379,5 +416,23 @@ mod tests {
         assert_eq!(clip.brightness, 0.1);
         assert_eq!(clip.contrast, 1.2);
         assert_eq!(clip.saturation, 0.9);
+    }
+
+    #[test]
+    fn clip_new_should_default_speed_to_one() {
+        let clip = Clip::new("video.mp4");
+        assert_eq!(clip.speed, 1.0);
+    }
+
+    #[test]
+    fn clip_with_speed_should_set_speed() {
+        let clip = Clip::new("video.mp4").with_speed(2.0);
+        assert_eq!(clip.speed, 2.0);
+    }
+
+    #[test]
+    fn clip_with_speed_slow_motion_should_set_speed() {
+        let clip = Clip::new("video.mp4").with_speed(0.5);
+        assert_eq!(clip.speed, 0.5);
     }
 }

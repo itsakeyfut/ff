@@ -293,21 +293,21 @@ pub(super) unsafe fn add_fit_to_aspect_pad(
 
 // ── Speed (atempo chain) ──────────────────────────────────────────────────────
 
-/// Decompose a speed `factor` into a chain of `atempo` values, each in [0.5, 2.0].
+/// Decompose a speed `factor` into a chain of `atempo` values, each in [0.5, 100.0].
 ///
-/// The `atempo` filter only accepts values in [0.5, 2.0] per instance.
+/// `FFmpeg` 4.0+ (`YAE_ATEMPO_MAX = 100.0`) accepts up to 100.0 per instance.
 /// Chaining multiple instances multiplies the effective speed factor:
 ///
-/// - `factor = 4.0`  → `[2.0, 2.0]`       (2.0 × 2.0 = 4.0)
-/// - `factor = 0.25` → `[0.5, 0.5]`       (0.5 × 0.5 = 0.25)
-/// - `factor = 8.0`  → `[2.0, 2.0, 2.0]`  (2.0³ = 8.0)
-/// - `factor = 1.5`  → `[1.5]`            (within range directly)
+/// - `factor = 4.0`   → `[4.0]`         (single instance)
+/// - `factor = 0.25`  → `[0.5, 0.5]`   (0.5 × 0.5 = 0.25)
+/// - `factor = 150.0` → `[100.0, 1.5]` (2 instances instead of 8 at 2.0-max)
+/// - `factor = 1.5`   → `[1.5]`        (within range directly)
 pub(super) fn decompose_atempo(factor: f64) -> Vec<f64> {
     let mut remaining = factor;
     let mut chain = Vec::new();
-    while remaining > 2.0 {
-        chain.push(2.0);
-        remaining /= 2.0;
+    while remaining > 100.0 {
+        chain.push(100.0);
+        remaining /= 100.0;
     }
     while remaining < 0.5 {
         chain.push(0.5);
@@ -326,7 +326,7 @@ pub(super) fn decompose_atempo(factor: f64) -> Vec<f64> {
 ///
 /// `graph` and `prev_ctx` must be valid pointers owned by the same
 /// `AVFilterGraph`.
-pub(super) unsafe fn add_atempo_chain(
+pub(crate) unsafe fn add_atempo_chain(
     graph: *mut ff_sys::AVFilterGraph,
     prev_ctx: *mut ff_sys::AVFilterContext,
     factor: f64,
@@ -370,6 +370,174 @@ pub(super) unsafe fn add_atempo_chain(
     Ok(ctx)
 }
 
+/// Insert a speed-change filter chain for `factor > 2.0`:
+///
+/// ```text
+/// apad=pad_dur=1  →  asetrate=r={new_sr}  →  aresample={output_sr}  →  aeval (NaN clamp)
+/// ```
+///
+/// * `apad` appends 1 s of silence so SWR's polyphase FIR resampler has enough
+///   input at EOF to flush its filter window without reading uninitialised memory
+///   (which produces NaN → AAC encoder EINVAL at high downsampling ratios).
+/// * `aeval` replaces any residual NaN/Inf samples with 0 as a last-resort guard.
+///   The expression is generated for `nb_channels` channels so it matches the
+///   actual stream layout (the per-track aformat has already normalised the layout
+///   before this chain is appended).
+/// * Both `apad` and `aeval` are optional: if their filter is unavailable the
+///   chain proceeds with just `asetrate → aresample`.
+///
+/// Audio pitch changes proportionally ("vinyl effect"); no WSOLA processing.
+///
+/// # Safety
+///
+/// `graph` and `prev_ctx` must be valid pointers owned by the same
+/// `AVFilterGraph`.
+pub(crate) unsafe fn add_asetrate_resample_chain(
+    graph: *mut ff_sys::AVFilterGraph,
+    prev_ctx: *mut ff_sys::AVFilterContext,
+    new_sr: u32,
+    output_sr: u32,
+    nb_channels: u32,
+    index: usize,
+) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    let mut ctx = prev_ctx;
+
+    // ── 1. apad=pad_dur=1 (optional) ────────────────────────────────────────
+    // Prevents SWR polyphase resampler from reading uninitialised memory at EOF
+    // when the last output frame cannot be filled from remaining input samples.
+    // At speed=150 the 1 s of appended silence shrinks to ~7 ms — imperceptible.
+    let apad_filter = ff_sys::avfilter_get_by_name(c"apad".as_ptr());
+    if apad_filter.is_null() {
+        log::warn!("apad filter unavailable — SWR tail-flush NaN guard skipped index={index}");
+    } else {
+        let name = std::ffi::CString::new(format!("apad_spd{index}"))
+            .map_err(|_| FilterError::BuildFailed)?;
+        let args = c"pad_dur=1";
+        let mut apad_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut apad_ctx,
+            apad_filter,
+            name.as_ptr(),
+            args.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 || apad_ctx.is_null() {
+            log::warn!(
+                "apad creation FAILED ret={ret} index={index} — continuing without tail padding"
+            );
+        } else {
+            let ret = ff_sys::avfilter_link(ctx, 0, apad_ctx, 0);
+            if ret < 0 {
+                log::warn!("apad link FAILED ret={ret} index={index}");
+            } else {
+                ctx = apad_ctx;
+            }
+        }
+    }
+
+    // ── 2. asetrate=r={new_sr} (required) ───────────────────────────────────
+    let asetrate_filter = ff_sys::avfilter_get_by_name(c"asetrate".as_ptr());
+    if asetrate_filter.is_null() {
+        log::warn!("filter not found name=asetrate (speed fallback)");
+        return Err(FilterError::BuildFailed);
+    }
+    let name = std::ffi::CString::new(format!("asetrate_spd{index}"))
+        .map_err(|_| FilterError::BuildFailed)?;
+    let args =
+        std::ffi::CString::new(format!("r={new_sr}")).map_err(|_| FilterError::BuildFailed)?;
+    let mut asetrate_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut asetrate_ctx,
+        asetrate_filter,
+        name.as_ptr(),
+        args.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=asetrate args=r={new_sr}");
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(ctx, 0, asetrate_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    ctx = asetrate_ctx;
+
+    // ── 3. aresample={output_sr} (required) ────────────────────────────────
+    // aresample accepts the rate as a positional arg (just the number).
+    // "r=" is not a valid option name in this FFmpeg version.
+    let aresample_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
+    if aresample_filter.is_null() {
+        log::warn!("filter not found name=aresample (speed fallback)");
+        return Err(FilterError::BuildFailed);
+    }
+    let name2 = std::ffi::CString::new(format!("aresample_spd{index}"))
+        .map_err(|_| FilterError::BuildFailed)?;
+    let args2 =
+        std::ffi::CString::new(format!("{output_sr}")).map_err(|_| FilterError::BuildFailed)?;
+    let mut aresample_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+    let ret = ff_sys::avfilter_graph_create_filter(
+        &raw mut aresample_ctx,
+        aresample_filter,
+        name2.as_ptr(),
+        args2.as_ptr(),
+        std::ptr::null_mut(),
+        graph,
+    );
+    if ret < 0 {
+        log::warn!("filter creation failed name=aresample args={output_sr} code={ret}");
+        return Err(FilterError::BuildFailed);
+    }
+    let ret = ff_sys::avfilter_link(ctx, 0, aresample_ctx, 0);
+    if ret < 0 {
+        return Err(FilterError::BuildFailed);
+    }
+    ctx = aresample_ctx;
+
+    // ── 4. aeval NaN/Inf sanitizer (optional) ───────────────────────────────
+    // Replaces any NaN or Inf samples that survive the resampler with 0.
+    // One expression per channel, joined by `|`, so the output layout matches
+    // the input layout exactly regardless of mono/stereo/surround.
+    let aeval_filter = ff_sys::avfilter_get_by_name(c"aeval".as_ptr());
+    if aeval_filter.is_null() {
+        log::warn!("aeval filter unavailable — NaN sanitizer skipped index={index}");
+    } else {
+        let name3 = std::ffi::CString::new(format!("aeval_spd{index}"))
+            .map_err(|_| FilterError::BuildFailed)?;
+        let per_ch = |ch: u32| format!("if(isnan(val({ch}))+isinf(val({ch})),0,val({ch}))");
+        let exprs_str = (0..nb_channels.max(1))
+            .map(per_ch)
+            .collect::<Vec<_>>()
+            .join("|");
+        let args3 = std::ffi::CString::new(format!("exprs={exprs_str}"))
+            .map_err(|_| FilterError::BuildFailed)?;
+        let mut aeval_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut aeval_ctx,
+            aeval_filter,
+            name3.as_ptr(),
+            args3.as_ptr(),
+            std::ptr::null_mut(),
+            graph,
+        );
+        if ret < 0 || aeval_ctx.is_null() {
+            log::warn!("aeval creation FAILED ret={ret} index={index} — NaN may reach encoder");
+        } else {
+            let ret = ff_sys::avfilter_link(ctx, 0, aeval_ctx, 0);
+            if ret < 0 {
+                log::warn!("aeval link FAILED ret={ret} index={index}");
+            } else {
+                ctx = aeval_ctx;
+            }
+        }
+    }
+
+    log::debug!("speed fallback asetrate={new_sr} aresample={output_sr} index={index}");
+    Ok(ctx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::decompose_atempo;
@@ -385,13 +553,24 @@ mod tests {
     }
 
     #[test]
-    fn decompose_atempo_should_chain_two_instances_for_factor_4() {
-        assert_eq!(decompose_atempo(4.0), vec![2.0, 2.0]);
+    fn decompose_atempo_should_use_single_instance_for_factor_4() {
+        assert_eq!(decompose_atempo(4.0), vec![4.0]);
     }
 
     #[test]
-    fn decompose_atempo_should_chain_three_instances_for_factor_8() {
-        assert_eq!(decompose_atempo(8.0), vec![2.0, 2.0, 2.0]);
+    fn decompose_atempo_should_use_single_instance_for_factor_8() {
+        assert_eq!(decompose_atempo(8.0), vec![8.0]);
+    }
+
+    #[test]
+    fn decompose_atempo_should_chain_two_instances_for_factor_150() {
+        let chain = decompose_atempo(150.0);
+        assert_eq!(chain.len(), 2);
+        let product: f64 = chain.iter().product();
+        assert!(
+            (product - 150.0).abs() < 1e-6,
+            "product should be ~150, got {product}, chain={chain:?}"
+        );
     }
 
     #[test]
@@ -404,15 +583,15 @@ mod tests {
         );
         for &v in &chain {
             assert!(
-                (0.5..=2.0).contains(&v),
-                "each value must be in [0.5, 2.0], got {v}"
+                (0.5..=100.0).contains(&v),
+                "each value must be in [0.5, 100.0], got {v}"
             );
         }
     }
 
     #[test]
     fn decompose_atempo_should_produce_values_all_within_valid_range() {
-        for factor in [0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 8.0, 16.0, 100.0] {
+        for factor in [0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 8.0, 16.0, 100.0, 150.0] {
             let chain = decompose_atempo(factor);
             assert!(
                 !chain.is_empty(),
@@ -425,8 +604,8 @@ mod tests {
             );
             for &v in &chain {
                 assert!(
-                    (0.5..=2.0).contains(&v),
-                    "each value must be in [0.5, 2.0], got {v} for factor={factor}"
+                    (0.5..=100.0).contains(&v),
+                    "each value must be in [0.5, 100.0], got {v} for factor={factor}"
                 );
             }
         }

@@ -451,7 +451,46 @@ pub(super) unsafe fn build_video_composition(
                 "veff",
             );
             match result {
-                Ok(ctx) => chain_end = ctx,
+                Ok(ctx) => {
+                    chain_end = ctx;
+                    // setpts=PTS/factor compresses timestamps but in a pull-based filter graph
+                    // the overlay consumes one movie frame per output frame (arrival order).
+                    // An fps filter after setpts forces PTS-based frame selection, dropping or
+                    // duplicating frames so the overlay receives the correct N/factor frames.
+                    if let crate::FilterStep::Speed { .. } = step {
+                        let fps_filter = ff_sys::avfilter_get_by_name(c"fps".as_ptr());
+                        if fps_filter.is_null() {
+                            bail!(graph, "filter not found: fps (speed)");
+                        }
+                        let Ok(fps_name) = CString::new(format!("fps_spd{combined_idx}")) else {
+                            bail!(graph, "CString::new failed for fps_spd name");
+                        };
+                        let mut fps_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                        // Canvas is hardcoded to r=30; fps must match.
+                        let ret = ff_sys::avfilter_graph_create_filter(
+                            &raw mut fps_ctx,
+                            fps_filter,
+                            fps_name.as_ptr(),
+                            c"fps=30".as_ptr(),
+                            std::ptr::null_mut(),
+                            graph,
+                        );
+                        if ret < 0 {
+                            bail!(
+                                graph,
+                                format!(
+                                    "failed to create fps filter for speed \
+                                     layer={idx} combined_idx={combined_idx}"
+                                )
+                            );
+                        }
+                        let ret = ff_sys::avfilter_link(chain_end, 0, fps_ctx, 0);
+                        if ret < 0 {
+                            bail!(graph, "link failed: setpts→fps_spd");
+                        }
+                        chain_end = fps_ctx;
+                    }
+                }
                 Err(e) => bail!(
                     graph,
                     format!("failed to apply video effect layer={idx} eff={eff_idx}: {e}")
@@ -909,8 +948,74 @@ pub(super) unsafe fn build_audio_mix(
         // ── Per-track effects chain ───────────────────────────────────────────
         for (eff_idx, step) in track.effects.iter().enumerate() {
             let combined_idx = idx * 1000 + eff_idx;
-            let result =
-                crate::filter_inner::add_and_link_step(graph, chain_end, step, combined_idx, "eff");
+            // FilterStep::Speed uses `setpts` for video but needs audio-specific
+            // handling here.  For factor in [0.5, 2.0] use atempo (pitch-preserving
+            // WSOLA).  For factor > 2.0 the FFmpeg atempo ring buffer silently
+            // overflows (the internal assert skips the check when tempo > 2.0),
+            // producing NaN samples.  Fall back to asetrate+aresample (vinyl effect:
+            // pitch shifts proportionally) which is free of WSOLA arithmetic.
+            let result = if let crate::FilterStep::Speed { factor } = step {
+                // Always use asetrate+aresample for any non-unity speed.
+                // atempo (WSOLA) produces NaN when both the current fragment and the
+                // ring buffer are silent (cross-correlation denominator → 0/0).
+                // asetrate+aresample avoids all WSOLA arithmetic; for small ratios
+                // (e.g. 1.5x) the SWR FIR is only ~48 taps and never produces NaN.
+                // amovie outputs at the file's native rate (e.g. 44100 Hz) while
+                // `sample_rate` is the target mix rate (e.g. 48000 Hz).  The optional
+                // aresample earlier in the chain fires only when track.sample_rate !=
+                // sample_rate, but track.sample_rate is set to the target rate in the
+                // pipeline, so the audio may still be at the file's native rate here.
+                // Normalise to sample_rate before the speed chain so that
+                //   new_sr = sample_rate * factor
+                // is correct regardless of the source file's sample rate.
+                let norm_filter = ff_sys::avfilter_get_by_name(c"aresample".as_ptr());
+                if norm_filter.is_null() {
+                    bail!(graph, "filter not found: aresample (speed pre-norm)");
+                }
+                let Ok(norm_name) = CString::new(format!("spd_norm_sr{combined_idx}")) else {
+                    bail!(graph, "CString::new failed for spd_norm_sr name");
+                };
+                let Ok(norm_args) = CString::new(format!("{sample_rate}")) else {
+                    bail!(graph, "CString::new failed for spd_norm_sr args");
+                };
+                let mut norm_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+                let ret = ff_sys::avfilter_graph_create_filter(
+                    &raw mut norm_ctx,
+                    norm_filter,
+                    norm_name.as_ptr(),
+                    norm_args.as_ptr(),
+                    std::ptr::null_mut(),
+                    graph,
+                );
+                if ret < 0 {
+                    bail!(
+                        graph,
+                        format!(
+                            "failed to create aresample for speed pre-norm \
+                             track={idx} code={ret}"
+                        )
+                    );
+                }
+                let ret = ff_sys::avfilter_link(chain_end, 0, norm_ctx, 0);
+                if ret < 0 {
+                    bail!(graph, format!("link failed: →spd_norm_sr track={idx}"));
+                }
+                chain_end = norm_ctx;
+
+                // Now chain_end is at sample_rate; new_sr = sample_rate * factor
+                // gives the correct asetrate value for the desired speedup.
+                let new_sr = (f64::from(sample_rate) * factor).round() as u32;
+                crate::filter_inner::add_asetrate_resample_chain(
+                    graph,
+                    chain_end,
+                    new_sr,
+                    sample_rate,
+                    channel_layout.channels(),
+                    combined_idx,
+                )
+            } else {
+                crate::filter_inner::add_and_link_step(graph, chain_end, step, combined_idx, "eff")
+            };
             if let Ok(ctx) = result {
                 chain_end = ctx;
             } else {
