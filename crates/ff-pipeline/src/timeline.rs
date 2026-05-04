@@ -263,6 +263,9 @@ impl Timeline {
                     }
 
                     let mut layer_effects: Vec<FilterStep> = Vec::new();
+                    if (clip.speed - 1.0).abs() > 1e-9 {
+                        layer_effects.push(FilterStep::Speed { factor: clip.speed });
+                    }
                     #[allow(clippy::float_cmp)]
                     let neutral =
                         clip.brightness == 0.0 && clip.contrast == 1.0 && clip.saturation == 1.0;
@@ -327,6 +330,10 @@ impl Timeline {
                     };
 
                     let mut effects: Vec<FilterStep> = Vec::new();
+
+                    if (clip.speed - 1.0).abs() > 1e-9 {
+                        effects.push(FilterStep::Speed { factor: clip.speed });
+                    }
 
                     if clip.fade_in > Duration::ZERO {
                         effects.push(FilterStep::AFadeIn {

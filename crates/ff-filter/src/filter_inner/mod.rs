@@ -18,6 +18,7 @@ mod normalize;
 mod push_pull;
 
 pub(crate) use build::add_and_link_step;
+pub(crate) use build::add_asetrate_resample_chain;
 
 use std::ptr::NonNull;
 

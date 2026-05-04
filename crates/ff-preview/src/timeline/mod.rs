@@ -68,6 +68,9 @@ struct ClipState {
     transition_dur: Duration,
     /// Audio track handle — `None` if the clip has no audio stream.
     audio_track: Option<AudioTrackHandle>,
+    /// Playback speed multiplier from `Clip::speed` (`1.0` = normal).
+    /// Used to remap source-file PTS → timeline PTS in `run()`.
+    speed: f64,
 }
 
 // ── TransitionState ───────────────────────────────────────────────────────────
@@ -103,6 +106,9 @@ struct AudioFadeConfig {
     clip_dur: Duration,
     /// Source-file PTS at which the clip starts (used to offset the envelope on seek).
     in_point: Duration,
+    /// Playback speed multiplier (`1.0` = normal). When != 1.0, decoded samples are
+    /// linearly resampled to compress/expand playback time without pitch preservation.
+    speed: f64,
 }
 
 impl AudioFadeConfig {
@@ -111,6 +117,7 @@ impl AudioFadeConfig {
         fade_out: Duration::ZERO,
         clip_dur: Duration::ZERO,
         in_point: Duration::ZERO,
+        speed: 1.0,
     };
 }
 
@@ -152,6 +159,7 @@ impl AudioOnlyTrack {
                 fade_out: self.fade_out,
                 clip_dur: self.clip_dur,
                 in_point: self.in_point,
+                speed: 1.0,
             },
         );
         self.cancel = Some(cancel);
@@ -233,6 +241,7 @@ impl TimelinePlayer {
             /// gap-fill loop can synthesise black frames before the first real frame.
             video_w: u32,
             video_h: u32,
+            speed: f64,
         }
 
         let tracks = timeline.video_tracks();
@@ -254,11 +263,17 @@ impl TimelinePlayer {
         for clip in clip_list {
             let in_pt = clip.in_point.unwrap_or(Duration::ZERO);
             let info = ff_probe::open(&clip.source)?;
+            let speed = clip.speed.max(0.01);
 
-            let clip_dur = match (clip.in_point, clip.out_point) {
+            let unscaled_dur = match (clip.in_point, clip.out_point) {
                 (Some(ip), Some(op)) => op.saturating_sub(ip),
                 (None, Some(op)) => op,
                 _ => info.duration().saturating_sub(in_pt),
+            };
+            let clip_dur = if (speed - 1.0).abs() < 1e-9 {
+                unscaled_dur
+            } else {
+                unscaled_dur.div_f64(speed)
             };
 
             let transition_dur = if clip.transition.is_some() {
@@ -284,6 +299,7 @@ impl TimelinePlayer {
                 has_audio,
                 video_w,
                 video_h,
+                speed,
             });
         }
 
@@ -330,6 +346,7 @@ impl TimelinePlayer {
                 out_point: p.out_point,
                 transition_dur: p.transition_dur,
                 audio_track: audio_track_handles[i].clone(),
+                speed: p.speed,
             });
         }
 
@@ -388,6 +405,7 @@ impl TimelinePlayer {
                     out_point: clip.out_point,
                     transition_dur: Duration::ZERO,
                     audio_track: None,
+                    speed: clip.speed.max(0.01),
                 });
             }
             overlay_layers.push(OverlayLayer {
@@ -469,13 +487,17 @@ impl TimelinePlayer {
             if let Some(handle) = clip_states.first().and_then(|c| c.audio_track.clone()) {
                 let source = clip_states[0].source.clone();
                 let in_pt = clip_states[0].in_point;
+                let clip0_speed = clip_states[0].speed;
                 let cancel = Arc::new(AtomicBool::new(false));
                 let thread = spawn_audio_track_thread(
                     source,
                     in_pt,
                     handle,
                     Arc::clone(&cancel),
-                    AudioFadeConfig::NONE,
+                    AudioFadeConfig {
+                        speed: clip0_speed,
+                        ..AudioFadeConfig::NONE
+                    },
                 );
                 (Some(cancel), Some(thread))
             } else {
@@ -721,8 +743,13 @@ impl TimelineRunner {
                     match self.clips[active].decode_buf.pop_frame() {
                         FrameResult::Frame(f) => {
                             let f_pts = f.timestamp().as_duration();
+                            let elapsed = f_pts.saturating_sub(self.clips[active].in_point);
                             let tl_pts = self.clips[active].timeline_start
-                                + f_pts.saturating_sub(self.clips[active].in_point);
+                                + if (self.clips[active].speed - 1.0).abs() < 1e-9 {
+                                    elapsed
+                                } else {
+                                    elapsed.div_f64(self.clips[active].speed)
+                                };
                             let w = f.width();
                             let h = f.height();
                             if self.sws_a.convert(&f, &mut self.rgba_a)
@@ -783,8 +810,13 @@ impl TimelineRunner {
                     .position(|c| target >= c.timeline_start && target < c.timeline_end);
 
                 if let Some(ci) = clip_idx {
+                    let elapsed_tl = target.saturating_sub(self.clips[ci].timeline_start);
                     let clip_local = self.clips[ci].in_point
-                        + target.saturating_sub(self.clips[ci].timeline_start);
+                        + if (self.clips[ci].speed - 1.0).abs() < 1e-9 {
+                            elapsed_tl
+                        } else {
+                            elapsed_tl.mul_f64(self.clips[ci].speed)
+                        };
                     if self.clips[ci].decode_buf.seek_coarse(clip_local).is_ok() {
                         if ci != self.active {
                             self.active = ci;
@@ -805,8 +837,13 @@ impl TimelineRunner {
                         };
                         if let Some(f) = frame {
                             let f_pts = f.timestamp().as_duration();
+                            let elapsed = f_pts.saturating_sub(self.clips[ci].in_point);
                             let tl_pts = self.clips[ci].timeline_start
-                                + f_pts.saturating_sub(self.clips[ci].in_point);
+                                + if (self.clips[ci].speed - 1.0).abs() < 1e-9 {
+                                    elapsed
+                                } else {
+                                    elapsed.div_f64(self.clips[ci].speed)
+                                };
                             let w = f.width();
                             let h = f.height();
                             if self.sws_a.convert(&f, &mut self.rgba_a)
@@ -872,7 +909,14 @@ impl TimelineRunner {
                         // its content is from before the clip's in_point.
                         if f_pts >= in_pt {
                             let tl_start = self.clips[active].timeline_start;
-                            let tl_pts = tl_start + f_pts.saturating_sub(in_pt);
+                            let elapsed = f_pts.saturating_sub(in_pt);
+                            let spd = self.clips[active].speed;
+                            let tl_pts = tl_start
+                                + if (spd - 1.0).abs() < 1e-9 {
+                                    elapsed
+                                } else {
+                                    elapsed.div_f64(spd)
+                                };
                             let w = f.width();
                             let h = f.height();
                             if self.sws_a.convert(f, &mut self.rgba_a)
@@ -890,6 +934,7 @@ impl TimelineRunner {
                     let clip_out = self.clips[active].out_point;
                     let clip_tl_start = self.clips[active].timeline_start;
                     let clip_tl_end = self.clips[active].timeline_end;
+                    let clip_speed = self.clips[active].speed;
 
                     // Skip frames before in_point (e.g. right after a seek).
                     if f_pts < clip_in {
@@ -898,10 +943,16 @@ impl TimelineRunner {
 
                     // Treat frames past out_point as EOF for this clip.
                     let past_out = clip_out.is_some_and(|op| f_pts >= op);
-                    let past_end = {
-                        let tl_pts = clip_tl_start + f_pts.saturating_sub(clip_in);
-                        tl_pts >= clip_tl_end
+                    let elapsed = f_pts.saturating_sub(clip_in);
+                    // Remap source PTS → timeline PTS via speed factor.
+                    // For speed=2.0 the clip occupies half the timeline duration;
+                    // for speed=0.5 it occupies double.
+                    let tl_elapsed = if (clip_speed - 1.0).abs() < 1e-9 {
+                        elapsed
+                    } else {
+                        elapsed.div_f64(clip_speed)
                     };
+                    let past_end = clip_tl_start + tl_elapsed >= clip_tl_end;
 
                     if past_out || past_end {
                         let old_active = active;
@@ -925,7 +976,7 @@ impl TimelineRunner {
                         continue;
                     }
 
-                    let timeline_pts = clip_tl_start + f_pts.saturating_sub(clip_in);
+                    let timeline_pts = clip_tl_start + tl_elapsed;
 
                     // ── Manage audio-only decode threads ──────────────────────
                     for at in &mut self.audio_only_tracks {
@@ -982,7 +1033,14 @@ impl TimelineRunner {
                         let diff = timeline_pts.as_secs_f64() - clock_pts.as_secs_f64();
                         let fp = frame_period.as_secs_f64();
 
-                        if diff > fp * 2.0 && self.transition.is_none() && self.last_frame_w > 0 {
+                        // Only enter gap fill for an actual gap between clips.
+                        // For slow-motion clips (speed < 1.0) the large diff is expected
+                        // and should be handled by the `diff > fp` sleep below instead.
+                        if diff > fp * 2.0
+                            && (clip_speed - 1.0) > -1e-9
+                            && self.transition.is_none()
+                            && self.last_frame_w > 0
+                        {
                             // Gap in the primary track: the next V1 clip starts more than
                             // 2 frame-periods ahead of the clock.  Synthesise black frames
                             // composited with overlay-layer content for every missing
@@ -1088,7 +1146,14 @@ impl TimelineRunner {
                                 {
                                     let tl_start = self.clips[self.active].timeline_start;
                                     let in_pt = self.clips[self.active].in_point;
-                                    let local = in_pt + gap_pts.saturating_sub(tl_start);
+                                    let gap_elapsed = gap_pts.saturating_sub(tl_start);
+                                    let spd = self.clips[self.active].speed;
+                                    let local = in_pt
+                                        + if (spd - 1.0).abs() < 1e-9 {
+                                            gap_elapsed
+                                        } else {
+                                            gap_elapsed.mul_f64(spd)
+                                        };
                                     self.restart_audio_at(self.active, local);
                                 }
                                 self.current_pts.store(
@@ -1124,8 +1189,14 @@ impl TimelineRunner {
                         && self.clips[active].audio_track.is_some()
                     {
                         let in_pt = self.clips[active].in_point;
-                        let local =
-                            in_pt + timeline_pts.saturating_sub(self.clips[active].timeline_start);
+                        let elapsed_tl =
+                            timeline_pts.saturating_sub(self.clips[active].timeline_start);
+                        let local = in_pt
+                            + if (clip_speed - 1.0).abs() < 1e-9 {
+                                elapsed_tl
+                            } else {
+                                elapsed_tl.mul_f64(clip_speed)
+                            };
                         self.restart_audio_at(active, local);
                     }
 
@@ -1275,6 +1346,7 @@ impl TimelineRunner {
     /// Returns an error when the new timeline is structurally incompatible with
     /// the running runner (different V1 clip count or different source paths).
     /// In that case the runner's state is untouched.
+    #[allow(clippy::too_many_lines)]
     fn update_layout_in_place(
         &mut self,
         timeline: &ff_pipeline::timeline::Timeline,
@@ -1308,18 +1380,27 @@ impl TimelineRunner {
 
         // ── Update V1 clip positions ───────────────────────────────────────────
         for (i, clip) in v_tracks[0].iter().enumerate() {
-            let old_dur = self.clips[i]
+            let new_speed = clip.speed.max(0.01);
+            let old_scaled_dur = self.clips[i]
                 .timeline_end
                 .saturating_sub(self.clips[i].timeline_start);
-            let new_dur = match (clip.in_point, clip.out_point) {
+            // Recover unscaled (source) duration from the stored scaled duration and old speed.
+            let old_unscaled = old_scaled_dur.mul_f64(self.clips[i].speed);
+            let new_unscaled = match (clip.in_point, clip.out_point) {
                 (Some(ip), Some(op)) => op.saturating_sub(ip),
                 (None, Some(op)) => op,
-                _ => old_dur,
+                _ => old_unscaled,
+            };
+            let new_dur = if (new_speed - 1.0).abs() < 1e-9 {
+                new_unscaled
+            } else {
+                new_unscaled.div_f64(new_speed)
             };
             self.clips[i].timeline_start = clip.timeline_offset;
             self.clips[i].timeline_end = clip.timeline_offset + new_dur;
             self.clips[i].in_point = clip.in_point.unwrap_or(Duration::ZERO);
             self.clips[i].out_point = clip.out_point;
+            self.clips[i].speed = new_speed;
             self.clips[i].transition_dur = if clip.transition.is_some() {
                 clip.transition_duration
             } else {
@@ -1410,8 +1491,13 @@ impl TimelineRunner {
 
         // If target is in a gap, find the next clip after `target`.
         let (clip_idx, clip_local_pts, is_gap_seek) = if let Some(ci) = clip_in_range {
-            let local =
-                self.clips[ci].in_point + target.saturating_sub(self.clips[ci].timeline_start);
+            let elapsed_tl = target.saturating_sub(self.clips[ci].timeline_start);
+            let local = self.clips[ci].in_point
+                + if (self.clips[ci].speed - 1.0).abs() < 1e-9 {
+                    elapsed_tl
+                } else {
+                    elapsed_tl.mul_f64(self.clips[ci].speed)
+                };
             (ci, local, false)
         } else if let Some(ci) = self.clips.iter().position(|c| c.timeline_start > target) {
             // Seek the clip to its in_point; gap-fill loop will tick until it starts.
@@ -1475,8 +1561,13 @@ impl TimelineRunner {
             .iter()
             .position(|c| target >= c.timeline_start && target < c.timeline_end)
             .ok_or(PreviewError::SeekOutOfRange { pts: target })?;
+        let elapsed_tl = target.saturating_sub(self.clips[clip_idx].timeline_start);
         let clip_local_pts = self.clips[clip_idx].in_point
-            + target.saturating_sub(self.clips[clip_idx].timeline_start);
+            + if (self.clips[clip_idx].speed - 1.0).abs() < 1e-9 {
+                elapsed_tl
+            } else {
+                elapsed_tl.mul_f64(self.clips[clip_idx].speed)
+            };
         self.clips[clip_idx]
             .decode_buf
             .seek_coarse(clip_local_pts)?;
@@ -1501,13 +1592,17 @@ impl TimelineRunner {
         handle.clear(); // discard stale samples
 
         let source = self.clips[clip_idx].source.clone();
+        let clip_speed = self.clips[clip_idx].speed;
         let cancel = Arc::new(AtomicBool::new(false));
         let thread = spawn_audio_track_thread(
             source,
             start_pts,
             handle,
             Arc::clone(&cancel),
-            AudioFadeConfig::NONE,
+            AudioFadeConfig {
+                speed: clip_speed,
+                ..AudioFadeConfig::NONE
+            },
         );
         self.active_audio_cancel = Some(cancel);
         self.active_audio_thread = Some(thread);
@@ -1526,6 +1621,42 @@ impl Drop for TimelineRunner {
 }
 
 // ── spawn_audio_track_thread ──────────────────────────────────────────────────
+
+/// Linear-interpolation resample of a mono `f32` slice.
+///
+/// Consumes `speed` input samples per output sample:
+/// - `speed > 1.0` → fewer output samples (fast motion, pitch raised)
+/// - `speed < 1.0` → more output samples (slow motion, pitch lowered)
+///
+/// `phase` carries the fractional position across chunk boundaries so the
+/// resampling is seamless across successive calls with consecutive chunks.
+///
+/// Preview quality only — no pitch correction.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn resample_linear(input: &[f32], speed: f64, phase: &mut f64) -> Vec<f32> {
+    let capacity = ((input.len() as f64 / speed) + 1.0) as usize;
+    let mut out = Vec::with_capacity(capacity);
+    let mut pos = *phase;
+    let len = input.len();
+    while pos < len as f64 {
+        let idx = pos as usize;
+        let frac = (pos - idx as f64) as f32;
+        let s = if idx + 1 < len {
+            input[idx] * (1.0 - frac) + input[idx + 1] * frac
+        } else {
+            input[idx]
+        };
+        out.push(s);
+        pos += speed;
+    }
+    // Carry the fractional overshoot into the next chunk.
+    *phase = pos - len as f64;
+    out
+}
 
 fn spawn_audio_track_thread(
     path: PathBuf,
@@ -1554,11 +1685,19 @@ fn spawn_audio_track_thread(
             log::warn!("timeline audio seek failed pts={start_pts:?} error={e}");
         }
 
-        let fade_in_secs = fades.fade_in.as_secs_f64();
-        let fade_out_secs = fades.fade_out.as_secs_f64();
-        let total_secs = fades.clip_dur.as_secs_f64();
-        // Elapsed time at thread start due to seeking past in_point.
-        let seek_offset_secs = start_pts.saturating_sub(fades.in_point).as_secs_f64();
+        let speed = fades.speed.max(0.01);
+        let apply_speed = (speed - 1.0).abs() > 1e-6;
+        // Fractional position within the current source chunk carried across iterations.
+        let mut speed_phase: f64 = 0.0;
+
+        // All fade/total timings are expressed in TIMELINE time (= source time / speed)
+        // so that `samples_pushed / AUDIO_SAMPLE_RATE` (output time) lines up correctly.
+        let inv_speed = 1.0 / speed;
+        let fade_in_secs = fades.fade_in.as_secs_f64() * inv_speed;
+        let fade_out_secs = fades.fade_out.as_secs_f64() * inv_speed;
+        let total_secs = fades.clip_dur.as_secs_f64() * inv_speed;
+        // Elapsed output time at thread start due to seeking past in_point.
+        let seek_offset_secs = start_pts.saturating_sub(fades.in_point).as_secs_f64() * inv_speed;
         let apply_fades = fade_in_secs > 0.0 || fade_out_secs > 0.0;
         let mut samples_pushed: u64 = 0;
 
@@ -1575,9 +1714,22 @@ fn spawn_audio_track_thread(
 
             match decoder.decode_one() {
                 Ok(Some(frame)) => {
-                    if let Some(samples) = frame.as_f32()
-                        && !samples.is_empty()
+                    if let Some(raw) = frame.as_f32()
+                        && !raw.is_empty()
                     {
+                        // ── Speed resampling (linear interpolation) ────────────
+                        // For speed > 1.0: fewer output samples (fast motion, pitch up).
+                        // For speed < 1.0: more output samples (slow motion, pitch down).
+                        // This is a simple preview-quality resample; no pitch correction.
+                        let samples: &[f32];
+                        let resampled: Vec<f32>;
+                        if apply_speed {
+                            resampled = resample_linear(raw, speed, &mut speed_phase);
+                            samples = &resampled;
+                        } else {
+                            samples = raw;
+                        }
+
                         if apply_fades {
                             let mut buf: Vec<f32> = samples.to_vec();
                             for (i, s) in buf.iter_mut().enumerate() {
@@ -1611,6 +1763,10 @@ fn spawn_audio_track_thread(
                             samples_pushed += buf.len() as u64;
                             track.push_samples(&buf);
                         } else {
+                            #[allow(clippy::cast_possible_truncation)]
+                            {
+                                samples_pushed += samples.len() as u64;
+                            }
                             track.push_samples(samples);
                         }
                     }
