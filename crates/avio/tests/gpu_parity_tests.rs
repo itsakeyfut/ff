@@ -2471,6 +2471,7 @@ fn preview_runner_should_fall_back_and_advance_on_unsupported_clip() {
         }
     };
     let pts = Arc::new(Mutex::new(Vec::<Duration>::new()));
+    runner.set_pacing(avio::Pacing::Unpaced);
     runner.set_sink(Box::new(PtsSink {
         pts: Arc::clone(&pts),
         handle: handle.clone(),

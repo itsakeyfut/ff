@@ -1,10 +1,12 @@
 //! Internal A/V sync reference clock.
 //!
 //! [`MasterClock`] is the crate-internal reference clock used by the
-//! `PlayerRunner` pacing loop. It has two variants:
+//! `PlayerRunner` and `SceneRunner` pacing loops. It has three variants:
 //!
 //! - `Audio`: driven by consumed audio samples ÷ sample-rate.
 //! - `System`: driven by [`std::time::Instant`] (video-only files).
+//! - `Stepped`: driven by the runner itself, one frame period per presented
+//!   frame, so nothing is ever late (`Pacing::Unpaced`).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +18,8 @@ use std::time::{Duration, Instant};
 ///
 /// - `Audio`: driven by consumed audio samples ÷ `sample_rate`.
 /// - `System`: driven by [`std::time::Instant`] (video-only files).
+/// - `Stepped`: driven by the runner, which moves it with [`advance`](Self::advance)
+///   and [`reset`](Self::reset) as it presents frames; wall time never enters.
 pub(crate) enum MasterClock {
     Audio {
         samples_consumed: Arc<AtomicU64>,
@@ -42,9 +46,26 @@ pub(crate) enum MasterClock {
         /// Playback rate multiplier. 1.0 = real-time.
         rate: f64,
     },
+    /// The position the runner last set. Reads back exactly that until the
+    /// runner advances or resets it, so a frame is never early or late and the
+    /// pacing loop neither sleeps nor drops.
+    Stepped { pts: Duration },
 }
 
 impl MasterClock {
+    /// Whether this is the runner-driven [`Stepped`](Self::Stepped) clock.
+    pub(crate) fn is_stepped(&self) -> bool {
+        matches!(self, Self::Stepped { .. })
+    }
+
+    /// Move a [`Stepped`](Self::Stepped) clock forward by `by`. No-op for the
+    /// clocks that advance on their own.
+    pub(crate) fn advance(&mut self, by: Duration) {
+        if let Self::Stepped { pts } = self {
+            *pts += by;
+        }
+    }
+
     /// Current master clock position.
     ///
     /// For `Audio`: returns the maximum of the sample-based clock and the
@@ -95,12 +116,14 @@ impl MasterClock {
                 base_pts,
                 rate,
             } => *base_pts + started_at.elapsed().mul_f64(*rate),
+            Self::Stepped { pts } => *pts,
         }
     }
 
     /// Whether A/V sync should be applied for the current frame.
     ///
     /// - `System`: always `true` — wall clock drives FPS pacing.
+    /// - `Stepped`: always `true`, the runner's own position being the reference.
     /// - `Audio`: `true` once any of the following holds:
     ///   - `samples_consumed > 0` (a cpal consumer has called `pop_audio_samples`), or
     ///   - `fallback.is_some()` (the wall-clock fallback was armed after the first frame).
@@ -110,7 +133,7 @@ impl MasterClock {
     ///   clock reference is available.
     pub(crate) fn should_sync(&self) -> bool {
         match self {
-            Self::System { .. } => true,
+            Self::System { .. } | Self::Stepped { .. } => true,
             Self::Audio {
                 samples_consumed,
                 samples_base,
@@ -171,13 +194,15 @@ impl MasterClock {
     /// Update the playback rate multiplier.
     ///
     /// Re-baselines the clock so that `current_pts()` does not jump at the
-    /// moment of the rate change.  Values ≤ 0.0 are ignored.
+    /// moment of the rate change.  Values ≤ 0.0 are ignored, and so is a
+    /// [`Stepped`](Self::Stepped) clock: a rate scales wall time, which it has none of.
     #[allow(clippy::cast_precision_loss)]
     pub(crate) fn set_rate(&mut self, new_rate: f64) {
         if new_rate <= 0.0 {
             return;
         }
         match self {
+            Self::Stepped { .. } => {}
             Self::Audio {
                 samples_consumed,
                 sample_rate,
@@ -248,6 +273,7 @@ impl MasterClock {
                 *started_at = Instant::now();
                 *base_pts = base;
             }
+            Self::Stepped { pts } => *pts = base,
             Self::Audio {
                 samples_consumed,
                 samples_base,
@@ -270,6 +296,53 @@ impl MasterClock {
 mod tests {
     use super::*;
     use std::thread;
+
+    #[test]
+    fn master_clock_stepped_should_only_move_on_advance_and_reset() {
+        let mut clock = MasterClock::Stepped {
+            pts: Duration::from_millis(100),
+        };
+        assert!(clock.should_sync(), "a stepped clock is always a reference");
+        assert!(clock.is_stepped());
+        // Wall time passing must not move it.
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(clock.current_pts(), Duration::from_millis(100));
+        clock.advance(Duration::from_millis(40));
+        assert_eq!(clock.current_pts(), Duration::from_millis(140));
+        clock.reset(Duration::from_secs(3));
+        assert_eq!(clock.current_pts(), Duration::from_secs(3));
+        assert_eq!(clock.audio_samples_snapshot(), 0);
+    }
+
+    #[test]
+    fn master_clock_stepped_should_ignore_set_rate() {
+        let mut clock = MasterClock::Stepped {
+            pts: Duration::from_millis(500),
+        };
+        clock.set_rate(2.0);
+        assert_eq!(clock.current_pts(), Duration::from_millis(500));
+        clock.advance(Duration::from_millis(10));
+        assert_eq!(
+            clock.current_pts(),
+            Duration::from_millis(510),
+            "advance is in frame periods, never scaled by a rate"
+        );
+    }
+
+    #[test]
+    fn master_clock_advance_should_be_a_no_op_for_a_system_clock() {
+        let mut clock = MasterClock::System {
+            started_at: Instant::now(),
+            base_pts: Duration::from_secs(1),
+            rate: 1.0,
+        };
+        assert!(!clock.is_stepped());
+        clock.advance(Duration::from_secs(5));
+        assert!(
+            clock.current_pts() < Duration::from_secs(2),
+            "advance must not touch a wall-clock variant"
+        );
+    }
 
     #[test]
     fn master_clock_system_should_advance_from_base_pts() {

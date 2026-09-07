@@ -20,20 +20,19 @@
 //! # The deferred full-convergence boundary
 //!
 //! Per-pixel convergence between preview and export is **out of scope for v0.18** and
-//! is deliberately not asserted, for three reasons that this test cannot remove:
+//! is deliberately not asserted, for two reasons that this test cannot remove:
 //!
 //! 1. **Colour space.** The preview composites in rgba, while the export normalises to
 //!    `yuv420p` before compositing (RK-012), so identical inputs land on different
 //!    numbers — the reason the tolerance here is coarse rather than tight.
 //! 2. **Lossy encode.** The export is compared *after* an H.264 encode/decode round
 //!    trip, which perturbs pixels independently of any compositing difference.
-//! 3. **Real-time playback.** The preview runner is driven by a wall clock and may drop
-//!    frames under load, so there is no stable frame-by-frame correspondence to compare
-//!    against; the preview side is therefore asserted by the span it covers (its PTS
-//!    range), not by a frame count.
 //!
-//! Closing that gap needs the preview and export compositors to share a colour space
-//! and a deterministic (non-real-time) preview drive; both are tracked beyond v0.18.
+//! A third reason used to be real-time playback: the runner dropped frames under load,
+//! so the preview side could only be asserted by the span it covered. The runner is
+//! driven unpaced here (`Pacing::Unpaced`, #1757, ADR-0015), which delivers every
+//! frame, so the preview leg is now compared by frame count like the export leg.
+//! Closing the remaining gap needs the two compositors to share a colour space.
 //!
 //! Probe-gated (RK-002): the source encode, the preview open and the export each skip
 //! gracefully when the environment cannot run them, so the suite stays green on a
@@ -239,9 +238,6 @@ fn preview_and_export_should_agree_structurally() {
     // Scoped so the runner and its handle (and therefore its decoder threads, which
     // hold the source file open) are dropped before the export reads the same file.
     let state = Arc::new(Mutex::new(PreviewState::default()));
-    // How long the runner was actually live. The span assertion below needs it to tell a
-    // machine that stalled from a runner that stopped; see there for why.
-    let preview_elapsed;
     {
         let (mut runner, handle) = match TimelinePlayer::open(&timeline) {
             Ok(p) => p,
@@ -250,13 +246,14 @@ fn preview_and_export_should_agree_structurally() {
                 return;
             }
         };
+        // Unpaced: every decoded frame is delivered, so the preview leg is compared
+        // by frame count like the export leg (ADR-0015).
+        runner.set_pacing(avio::Pacing::Unpaced);
         runner.set_sink(Box::new(ParitySink {
             state: Arc::clone(&state),
             handle: handle.clone(),
         }));
-        let started = std::time::Instant::now();
         let _ = runner.run();
-        preview_elapsed = started.elapsed();
     }
     let preview = state
         .lock()
@@ -297,8 +294,7 @@ fn preview_and_export_should_agree_structurally() {
         (CANVAS_W, CANVAS_H),
         "export must render at the canvas size"
     );
-    // The export is deterministic, so its frame count is checked directly; the preview
-    // is real-time and may drop frames, so it is checked by the span it covers.
+    // Both legs are deterministic now, so both are checked by frame count.
     assert!(
         (EXPECTED_FRAMES - 1..=EXPECTED_FRAMES + 1).contains(&export_frames),
         "export should decode ~{EXPECTED_FRAMES} frames, got {export_frames}"
@@ -311,36 +307,30 @@ fn preview_and_export_should_agree_structurally() {
     );
     // The timeline is exactly the source's length: `EXPECTED_FRAMES` frames at `FPS`.
     let end = Duration::from_secs_f64(EXPECTED_FRAMES as f64 / FPS);
-    // Not the exact end: the runner is real-time and drops any frame more than one
-    // period late (`SceneRunner`'s "dropped late frame" path), the tail included, so
-    // requiring it is flaky: a coverage run came in at 366ms of 500ms.
-    //
-    // Half the span is not enough either. The drop is unbounded: one stall longer than
-    // the timeline drops *every* frame after the first, which is how this failed on
-    // macOS CI with 1 frame at 0ns (#1780). The likely stall is lazy wgpu pipeline
-    // compilation on a paravirtualised GPU, and it is a property of the machine rather
-    // than of the runner. Moving the threshold a third time would not fix that shape.
-    //
-    // So accept either: the preview covered most of the span, or the run genuinely
-    // spent the timeline's duration trying. That still fails a runner that *stops*:
-    // the drop path does not sleep, so a clock that rejects every frame burns through
-    // the timeline in milliseconds and satisfies neither arm.
-    let covered_the_span = preview.last_pts * 2 >= end;
-    let spent_the_duration = preview_elapsed >= end;
+    // Unpaced delivery drops nothing, so the preview must have played the same frames
+    // the export encoded, and its last frame must be the last one before `end`. This
+    // used to be a half-span bound and then an elapsed-time arm (#1723, #1780), each
+    // widened for a wall-clock runner that lost frames under load; ADR-0015 removed
+    // the wall clock from this test instead.
+    let frame_period = Duration::from_secs_f64(1.0 / FPS);
+    assert_eq!(
+        preview.frames, EXPECTED_FRAMES,
+        "preview must deliver every source frame: {} frames, last pts {:?} (end {end:?})",
+        preview.frames, preview.last_pts
+    );
     assert!(
-        covered_the_span || spent_the_duration,
-        "preview must play most of the timeline or spend its duration trying: \
-         last pts {:?} over {} frames in {preview_elapsed:?}, end {end:?}",
-        preview.last_pts,
+        preview.last_pts + frame_period * 2 >= end,
+        "preview must reach the end of the timeline: last pts {:?}, end {end:?}",
+        preview.last_pts
+    );
+    // The two legs may differ by the export's flush frame (measured: preview 15, export
+    // 14), which the export bound above already allows; anything wider is a lost frame.
+    assert!(
+        preview.frames.abs_diff(export_frames) <= 1,
+        "preview ({}) and export ({export_frames}) frame counts must agree to within \
+         the encoder's flush frame",
         preview.frames
     );
-    if !covered_the_span {
-        println!(
-            "preview dropped to {:?} over {} frames in {preview_elapsed:?} (end {end:?}): \
-             the machine could not sustain real time, accepted by the elapsed arm",
-            preview.last_pts, preview.frames
-        );
-    }
     // Non-vacuity: the source is strongly chromatic, so a blank / black / grey frame on
     // either side fails here rather than sailing through the comparison below (two
     // black frames would otherwise "agree" perfectly).

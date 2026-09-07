@@ -17,6 +17,11 @@
 //! before it could arm the blend and the seam was reached 0 times — that was #1737, and
 //! a fixture the engine never produced was hiding it (RK-015).
 //!
+//! The runner is driven unpaced (#1757, ADR-0015): the transition window is
+//! `[1200, 1600)`ms and the sink stops after 40 frames, so the seam is offered exactly
+//! the four frames at 1200, 1233, 1267 and 1300ms. Paced to the wall clock, a loaded
+//! runner dropped the whole window and `blends` read 0.
+//!
 //! Probe-gated (RK-002): skips when the shared asset cannot be opened.
 
 #![cfg(feature = "timeline")]
@@ -31,8 +36,8 @@ use ff_filter::{
 };
 use ff_format::VideoFrame;
 use ff_preview::{
-    FrameSink, PlayerHandle, PreviewCompositor, Scene, ScenePlacement, ScenePlayer, SceneSource,
-    SceneVideoTrack,
+    FrameSink, Pacing, PlayerHandle, PreviewCompositor, Scene, ScenePlacement, ScenePlayer,
+    SceneSource, SceneVideoTrack,
 };
 
 /// The colour the injected blender returns. Opaque magenta: the source is real video and
@@ -190,6 +195,9 @@ fn transitioned_scene() -> Scene {
 fn run_scene(inject: bool) -> Option<(bool, u32)> {
     let scene = transitioned_scene();
     let (mut runner, handle) = ScenePlayer::open(&scene).ok()?;
+    // Every frame is delivered, so the transition window is reached on exactly the
+    // frames that fall in it, whatever the machine's speed (#1757).
+    runner.set_pacing(Pacing::Unpaced);
 
     let saw = Arc::new(Mutex::new(false));
     let blends = Arc::new(Mutex::new(0));
