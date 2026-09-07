@@ -70,6 +70,16 @@ pub(super) fn build_video_composition(
     frame_rate: f64,
     layers: &[VideoLayer],
 ) -> Result<FilterGraph, FilterError> {
+    // Refused before any FFmpeg allocation: the filter path cannot build these
+    // operators correctly (#1753, ADR-0014; the implementation is #1784).
+    if let Some(layer) = layers
+        .iter()
+        .find(|l| !l.composite_op.is_filter_path_supported())
+    {
+        return Err(FilterError::UnsupportedCompositeOp {
+            op: layer.composite_op,
+        });
+    }
     // SAFETY: see the safety argument above.
     unsafe {
         build_video_composition_unsafe(canvas_width, canvas_height, background, frame_rate, layers)
@@ -1085,6 +1095,16 @@ pub(super) fn build_realtime_composition(
     layers: &[super::realtime_composer::RealtimeLayer],
     canvas: Option<(u32, u32)>,
 ) -> Result<FilterGraph, FilterError> {
+    // Refused before any FFmpeg allocation: the filter path cannot build these
+    // operators correctly (#1753, ADR-0014; the implementation is #1784).
+    if let Some(layer) = layers
+        .iter()
+        .find(|l| !l.composite_op.is_filter_path_supported())
+    {
+        return Err(FilterError::UnsupportedCompositeOp {
+            op: layer.composite_op,
+        });
+    }
     // SAFETY: see the safety argument above.
     unsafe { build_realtime_composition_unsafe(layers, canvas) }
 }

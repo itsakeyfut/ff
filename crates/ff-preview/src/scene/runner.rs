@@ -300,12 +300,27 @@ impl SceneRunner {
 
         // CPU compositor (cached, keyed by layer identity/size).
         if self.composer.is_none() || self.composer_key != key {
-            self.composer = RealtimeComposer::with_canvas(&specs, self.canvas).ok();
-            self.composer_key = if self.composer.is_some() {
-                key
-            } else {
-                Vec::new()
+            let new_layer_set = self.composer_key != key;
+            self.composer = match RealtimeComposer::with_canvas(&specs, self.canvas) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    // A GPU compositor is attached but declined this frame for an
+                    // unrelated reason, and the CPU compositor refuses the operator
+                    // outright (#1753), so the base frame is what gets shown. Said
+                    // once per layer set rather than per frame. With no GPU attached
+                    // at all the timeline is refused up front by the engine's open.
+                    if new_layer_set
+                        && matches!(e, ff_filter::FilterError::UnsupportedCompositeOp { .. })
+                    {
+                        log::warn!(
+                            "preview: CPU compositor refused the layer set, showing the \
+                             base frame only error={e}"
+                        );
+                    }
+                    None
+                }
             };
+            self.composer_key = key;
         }
         let composer = self.composer.as_mut()?;
         for (slot, vf) in frames.iter().enumerate() {

@@ -54,7 +54,11 @@ impl TimelinePlayer {
     /// # Errors
     ///
     /// Returns [`PreviewError`] when the scene has no video tracks, a source file
-    /// cannot be opened, or a clip cannot be probed.
+    /// cannot be opened, or a clip cannot be probed. Returns
+    /// [`PreviewError::NeedsGpuCompositor`] when no GPU compositor could be attached
+    /// and a clip uses a composite operator the CPU compositor refuses
+    /// (`In`/`Out`/`Atop`/`Xor`, #1753): without it the runner would show the base
+    /// frame with that layer silently missing.
     pub fn open(timeline: &Timeline) -> Result<(SceneRunner, PlayerHandle), PreviewError> {
         Self::open_inner(timeline, false)
     }
@@ -76,24 +80,65 @@ impl TimelinePlayer {
         force_cpu: bool,
     ) -> Result<(SceneRunner, PlayerHandle), PreviewError> {
         let (mut runner, handle) = ScenePlayer::open(&timeline.to_scene())?;
-        Self::attach_gpu_compositor(&mut runner, force_cpu);
+        let gpu_attached = Self::attach_gpu_compositor(&mut runner, force_cpu);
+        if !gpu_attached && let Some(reason) = cpu_compositor_refusal(timeline) {
+            return Err(PreviewError::NeedsGpuCompositor { reason });
+        }
         Ok((runner, handle))
     }
 
     /// Attaches the GPU compositor when the `gpu` feature is built, an adapter is
-    /// available, and CPU is not forced. A no-op otherwise (the runner uses its
-    /// built-in CPU compositor).
+    /// available, and CPU is not forced, returning whether it did. A no-op returning
+    /// `false` otherwise (the runner uses its built-in CPU compositor).
     #[cfg(feature = "gpu")]
-    fn attach_gpu_compositor(runner: &mut SceneRunner, force_cpu: bool) {
+    fn attach_gpu_compositor(runner: &mut SceneRunner, force_cpu: bool) -> bool {
         if force_cpu {
             log::info!("preview compositor path=cpu reason=forced");
-            return;
+            return false;
         }
-        if let Some(gpu) = crate::gpu_preview::GpuPreviewCompositor::new() {
-            runner.set_gpu_compositor(Box::new(gpu));
+        match crate::gpu_preview::GpuPreviewCompositor::new() {
+            Some(gpu) => {
+                runner.set_gpu_compositor(Box::new(gpu));
+                true
+            }
+            None => false,
         }
     }
 
     #[cfg(not(feature = "gpu"))]
-    fn attach_gpu_compositor(_runner: &mut SceneRunner, _force_cpu: bool) {}
+    fn attach_gpu_compositor(_runner: &mut SceneRunner, _force_cpu: bool) -> bool {
+        false
+    }
+}
+
+/// Why the CPU compositor would refuse `timeline`, if it would.
+///
+/// The filter path refuses `In`/`Out`/`Atop`/`Xor` when its graph is built (#1753,
+/// ADR-0014), and the runner then shows the base frame with that layer missing. So a
+/// timeline that needs one of them is refused here, before any decoding starts,
+/// whenever no GPU compositor is attached. Checked on the model rather than the
+/// derived scene so the message can name the track and clip, but with the same
+/// track-activity rule the derivation applies: a disabled, muted or solo-shadowed
+/// track contributes no layer, so an operator there is never built and must not
+/// refuse the timeline. Every active layer counts, the base included: the CPU
+/// compositor used to ignore the base layer's operator while the GPU applies it
+/// against an empty backdrop, which is its own silent divergence.
+fn cpu_compositor_refusal(timeline: &Timeline) -> Option<String> {
+    let any_solo = timeline.video_tracks().iter().any(|t| t.solo);
+    timeline
+        .video_tracks()
+        .iter()
+        .enumerate()
+        .filter(|(_, track)| track.is_active(any_solo))
+        .find_map(|(t, track)| {
+            track.clips.iter().enumerate().find_map(|(c, clip)| {
+                (!clip.composite_op.is_filter_path_supported()).then(|| {
+                    format!(
+                        "video track {t} clip {c} uses composite operator {:?}, which the \
+                         CPU compositor does not implement (#1784)",
+                        clip.composite_op
+                    )
+                })
+            })
+        })
 }

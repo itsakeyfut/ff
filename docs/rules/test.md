@@ -69,11 +69,15 @@ Real filter-graph verification effectively runs only on a full FFmpeg build (mac
 validated on the first `push`. A test that checks "FFmpeg accepts these args" must **push a frame**
 — `build().expect(...)` proves nothing about the arguments.
 
-**One exception: `parse_desc`.** A `FilterStep::ParseDesc` description is parsed at `build()`
-(`avfilter_graph_parse2`), which resolves filter names *and applies their options*, so a bad option
-name or value returns `InvalidConfig` there rather than on the first push (ADR-0012). Asserting on
-`build()` is therefore correct for that one step kind — but gate it, because the check is skipped
-when the filter registry is empty, which is exactly CI's Linux FFmpeg.
+**Two exceptions: `parse_desc`, and the composite operators.** A `FilterStep::ParseDesc`
+description is parsed at `build()` (`avfilter_graph_parse2`), which resolves filter names *and
+applies their options*, so a bad option name or value returns `InvalidConfig` there rather than on
+the first push (ADR-0012). Asserting on `build()` is therefore correct for that step kind, but gate
+it, because the check is skipped when the filter registry is empty, which is exactly CI's Linux
+FFmpeg. The second exception is the opposite shape: `In`/`Out`/`Atop`/`Xor` on a
+`FilterStep::Composite`, or on any `MultiTrackComposer` / `RealtimeComposer` layer, are refused at
+`build()` with `UnsupportedCompositeOp` (ADR-0014). That check is pure, no registry lookup, so
+asserting it needs **no** probe gate and reports identically on every build.
 
 ### 3. Property tests (proptest)
 

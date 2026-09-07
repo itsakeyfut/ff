@@ -68,6 +68,18 @@ pub enum PreviewError {
         pts: std::time::Duration,
     },
 
+    /// The scene needs the GPU compositor for something the CPU compositor
+    /// refuses to build.
+    ///
+    /// Raised at open time so a timeline that cannot play correctly on this
+    /// machine fails before decoding starts, instead of showing frames with the
+    /// offending layer silently missing.
+    #[error("preview needs the GPU compositor: {reason}")]
+    NeedsGpuCompositor {
+        /// What the CPU compositor refused, and where in the scene.
+        reason: String,
+    },
+
     /// The background decode thread panicked and could not be recovered.
     ///
     /// The buffer cannot continue decoding; recover at the application level by
@@ -86,9 +98,10 @@ impl MediaError for PreviewError {
             Self::Pipeline(e) => e.severity(),
             Self::SeekFailed { .. } | Self::DecodeThreadPoisoned => ErrorSeverity::Recoverable,
             Self::Ffmpeg { .. } | Self::SeekOutOfRange { .. } => ErrorSeverity::Other,
-            Self::FileNotFound { .. } | Self::NoVideoStream { .. } | Self::Io(_) => {
-                ErrorSeverity::Fatal
-            }
+            Self::FileNotFound { .. }
+            | Self::NoVideoStream { .. }
+            | Self::NeedsGpuCompositor { .. }
+            | Self::Io(_) => ErrorSeverity::Fatal,
         }
     }
 }

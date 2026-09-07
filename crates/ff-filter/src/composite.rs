@@ -4,26 +4,22 @@
 
 /// Porter-Duff compositing operator for combining two video layers.
 ///
-/// # What the filter path actually computes
+/// # Which path renders which operator
 ///
 /// `Over` and `Under` are built with the `overlay` filter and are genuine alpha
-/// compositing. **`In`, `Out`, `Atop` and `Xor` are not**: they are built with
-/// `blend`'s `all_expr`, which applies one expression to every plane, and the
-/// composite chain normalises both inputs to `yuv420p` first, a format with no
-/// alpha plane. So they evaluate the Porter-Duff formula with each colour
-/// channel standing in for alpha (`In` reduces to a per-channel multiply).
+/// compositing on both paths. **`In`, `Out`, `Atop` and `Xor` render on the GPU
+/// compositor only**, which implements the W3C / Porter-Duff definitions
+/// (#1670). On the filter path they are **refused at build time** with
+/// [`FilterError::UnsupportedCompositeOp`](crate::FilterError::UnsupportedCompositeOp)
+/// (#1753, ADR-0014): libavfilter has no Porter-Duff filter, `blend`'s
+/// `all_expr` can only reference the same plane of both inputs, and the
+/// composite chain normalises to `yuv420p`, so the only thing it could compute
+/// is per-channel arithmetic wearing the operator's name. A filter-path
+/// implementation that carries alpha through the chain is #1784, which lifts
+/// the refusal.
 ///
-/// That is a workaround, not a design: `FFmpeg` has no Porter-Duff filter, and
-/// `all_expr` can only reference the same plane of both inputs, so it cannot
-/// express a colour term that depends on the *other* input's alpha. Reaching the
-/// real operators through libavfilter needs `alphaextract` plus a second
-/// `blend`.
-///
-/// The GPU compositor implements the W3C / Porter-Duff definitions properly
-/// (#1670). Preview and export both composite on the GPU, so the split is not
-/// between them: these four render one way with an adapter and another whenever
-/// the whole-frame fallback swaps in this filter path (a headless machine, a
-/// forced-CPU run). Closing that is #1753.
+/// Use [`is_filter_path_supported`](Self::is_filter_path_supported) to ask
+/// before building.
 ///
 /// Unlike [`BlendMode`](crate::BlendMode), which is a colour function of two
 /// pixels, these are meant to be alpha algebra. There is no `blend all_mode`
@@ -46,37 +42,50 @@ pub enum CompositeOp {
     /// Built via `overlay` with swapped input order.
     Under,
 
-    /// Intended as the top layer masked by the bottom layer's alpha
-    /// (intersection). On the filter path the expression runs per colour plane,
-    /// so it reduces to a per-channel multiply; see the type docs.
+    /// Top layer masked by the bottom layer's alpha (intersection).
     ///
-    /// Built via `blend` with `c0_expr='B*A/255'`.
+    /// GPU compositor only; refused on the filter path (see the type docs).
     In,
 
     /// Top layer visible only where the bottom layer is transparent.
     ///
-    /// Built via `blend` with `c0_expr='B*(255-A)/255'`.
+    /// GPU compositor only; refused on the filter path (see the type docs).
     Out,
 
     /// Top layer placed atop the bottom; visible only where the bottom is opaque.
     ///
-    /// Built via `blend` with `c0_expr='B*A/255 + A*(255-B)/255'`.
+    /// GPU compositor only; refused on the filter path (see the type docs).
     Atop,
 
     /// Pixels from exactly one layer (XOR of opaque regions).
     ///
-    /// Built via `blend` with `c0_expr='B*(255-A)/255 + A*(255-B)/255'`.
+    /// GPU compositor only; refused on the filter path (see the type docs).
     Xor,
 }
 
 impl CompositeOp {
-    /// Returns the `FFmpeg` `blend` `all_expr` formula for the expression-based
-    /// operators (`In`/`Out`/`Atop`/`Xor`), or `None` for `Over`/`Under` which
-    /// are built with the `overlay` filter rather than `blend`.
+    /// Whether the filter (CPU) path can build this operator correctly.
     ///
-    /// In the formula, `A` is the bottom pixel and `B` is the top pixel. This is
-    /// the single source of these formulas, shared by the `Composite` filter step
-    /// and the `MultiTrackComposer` canvas compositing.
+    /// `true` for `Over` and `Under`, which the `overlay` filter implements as
+    /// real alpha compositing. `false` for `In`, `Out`, `Atop` and `Xor`, which
+    /// the filter path refuses until #1784 carries alpha through the chain; the
+    /// GPU compositor renders them. Every filter-path entry point checks this at
+    /// build time, so a caller only needs it to decide *before* building, for
+    /// example to require a GPU compositor up front.
+    #[must_use]
+    pub fn is_filter_path_supported(self) -> bool {
+        matches!(self, Self::Over | Self::Under)
+    }
+
+    /// The per-plane `blend` `all_expr` the filter path *would* use for
+    /// `In`/`Out`/`Atop`/`Xor`, or `None` for `Over`/`Under` (built with
+    /// `overlay`).
+    ///
+    /// Kept as the starting point for #1784. It is not reachable from any public
+    /// builder today: every entry point refuses these operators first (see
+    /// [`is_filter_path_supported`](Self::is_filter_path_supported)), because
+    /// applied per colour plane on `yuv420p` this is arithmetic, not alpha
+    /// compositing. `A` is the bottom pixel and `B` the top.
     #[must_use]
     pub(crate) fn blend_all_expr(self) -> Option<&'static str> {
         match self {
