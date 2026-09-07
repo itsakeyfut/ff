@@ -994,3 +994,165 @@ fn render_with_progress_forcing_cpu_should_report_progress_and_export() {
     );
     assert_valid_export(&out, "force-CPU (progress)");
 }
+
+#[cfg(feature = "gpu")]
+#[test]
+fn a_positioned_base_clip_should_export_the_same_on_both_routes() {
+    // A lone clip at (10, 4) scaled 0.5: the CPU export has always placed it, and since
+    // ADR-0016 the GPU export places it too, in the same canvas space. Before, the GPU
+    // route ignored the placement, so the export changed with the adapter.
+    let bright = test_output_path("placed_base_src.mp4");
+    let _gs = FileGuard::new(bright.clone());
+    if make_source_file(&bright, CANVAS, CANVAS, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+    let build = || {
+        Timeline::builder()
+            .canvas(CANVAS, CANVAS)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new(&bright).with_position(10.0, 4.0).with_scale(0.5),
+            ])
+            .build()
+            .ok()
+    };
+    let out_cpu = test_output_path("placed_base_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = build() else { return };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("placed_base_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = build() else { return };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+    let (cpu_n, cpu_box) = count_and_bbox(&out_cpu, 3);
+    let (gpu_n, gpu_box) = count_and_bbox(&out_gpu, 3);
+    println!("placed base: cpu=({cpu_n}, {cpu_box:?}) gpu=({gpu_n}, {gpu_box:?})");
+    assert_eq!(cpu_n, gpu_n, "both routes must export the same frame count");
+    assert_eq!(
+        cpu_box,
+        Some((10, 4, 41, 35)),
+        "the CPU control must place the lone clip where it was measured"
+    );
+    assert_eq!(
+        gpu_box, cpu_box,
+        "the GPU route must place the lone clip like the CPU"
+    );
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn a_rotated_base_clip_should_take_the_cpu_route() {
+    // The GPU declines rotation (the corner fill differs, RK-020), so a rotated lone clip
+    // must make the timeline ineligible and render through the CPU composer on `render`
+    // too: the two outputs then show the same black corner.
+    let bright = test_output_path("rotated_base_src.mp4");
+    let _gs = FileGuard::new(bright.clone());
+    if make_source_file(&bright, CANVAS, CANVAS, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+    let build = || {
+        Timeline::builder()
+            .canvas(CANVAS, CANVAS)
+            .frame_rate(30.0)
+            .video_track(vec![Clip::new(&bright).with_rotation(45.0)])
+            .build()
+            .ok()
+    };
+    let out_cpu = test_output_path("rotated_base_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = build() else { return };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("rotated_base_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = build() else { return };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+    let cpu_corner = corner_luma(&out_cpu, 3);
+    let gpu_corner = corner_luma(&out_gpu, 3);
+    println!("rotated base: cpu corner={cpu_corner:?} gpu corner={gpu_corner:?}");
+    let (Some(c), Some(g)) = (cpu_corner, gpu_corner) else {
+        panic!("both routes must decode a sample frame");
+    };
+    assert!(
+        c < 32.0,
+        "the CPU control must render the rotation's black corner, got {c}"
+    );
+    assert!(
+        (c - g).abs() < 4.0,
+        "`render` must fall back to the CPU for a rotated base: cpu={c} gpu={g}"
+    );
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn a_placed_base_under_an_overlay_should_export_the_same_on_both_routes() {
+    // A placed base under a second track takes the stack path on the GPU route: the
+    // base is composited to the canvas on its own pass (placement included) and the stack
+    // must then treat it as an identity canvas-sized layer. Placing it a second time would
+    // shrink and move the bright box; the dim overlay is below the bright threshold, so
+    // the box reads the base alone.
+    let bright = test_output_path("placed_under_overlay_base.mp4");
+    let dim = test_output_path("placed_under_overlay_over.mp4");
+    let _gb = FileGuard::new(bright.clone());
+    let _gd = FileGuard::new(dim.clone());
+    if make_source_file(&bright, CANVAS, CANVAS, 30.0, SRC_FRAMES, 235, 128, 128).is_none() {
+        return;
+    }
+    if make_source_file(&dim, CANVAS, CANVAS, 30.0, SRC_FRAMES, 90, 128, 128).is_none() {
+        return;
+    }
+    let build = || {
+        Timeline::builder()
+            .canvas(CANVAS, CANVAS)
+            .frame_rate(30.0)
+            .video_track(vec![
+                Clip::new(&bright).with_position(10.0, 4.0).with_scale(0.5),
+            ])
+            .video_track(vec![
+                Clip::new(&dim).with_position(40.0, 40.0).with_scale(0.25),
+            ])
+            .build()
+            .ok()
+    };
+    let out_cpu = test_output_path("placed_under_overlay_cpu.mp4");
+    let _gc = FileGuard::new(out_cpu.clone());
+    let Some(cpu_t) = build() else { return };
+    if !render_or_skip(cpu_t.render_forcing_cpu(&out_cpu, export_config())) {
+        return;
+    }
+    if avio::GpuCompositor::new().is_none() {
+        return;
+    }
+    let out_gpu = test_output_path("placed_under_overlay_gpu.mp4");
+    let _gg = FileGuard::new(out_gpu.clone());
+    let Some(gpu_t) = build() else { return };
+    if !render_or_skip(gpu_t.render(&out_gpu, export_config())) {
+        return;
+    }
+    let (cpu_n, cpu_box) = count_and_bbox(&out_cpu, 3);
+    let (gpu_n, gpu_box) = count_and_bbox(&out_gpu, 3);
+    println!("placed base under overlay: cpu=({cpu_n}, {cpu_box:?}) gpu=({gpu_n}, {gpu_box:?})");
+    assert_eq!(cpu_n, gpu_n, "both routes must export the same frame count");
+    assert_eq!(
+        cpu_box,
+        Some((10, 4, 41, 35)),
+        "the CPU control must place the base once under the overlay"
+    );
+    assert_eq!(
+        gpu_box, cpu_box,
+        "the GPU stack pass must not place the base a second time"
+    );
+}

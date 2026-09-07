@@ -122,8 +122,10 @@ impl Timeline {
 
     /// Returns the canvas dimensions **only when explicitly set** via
     /// [`TimelineBuilder::canvas`], or `None` when they were auto-probed from the
-    /// first clip. Consumers that reframe to a deliberate output aspect (e.g. the
-    /// real-time preview) use this to distinguish an intended canvas from a default.
+    /// first clip. Rendering does not consult this: every route places layers on
+    /// [`canvas_width`](Self::canvas_width) x [`canvas_height`](Self::canvas_height)
+    /// whichever way it was chosen (ADR-0016). It tells an application whether the
+    /// size was the author's decision or a default it may want to confirm.
     pub fn explicit_canvas(&self) -> Option<(u32, u32)> {
         if self.canvas_explicit {
             Some((self.canvas_width, self.canvas_height))
@@ -1300,7 +1302,11 @@ impl Timeline {
 
         ff_preview::Scene {
             fps: self.frame_rate().max(1.0),
-            canvas: self.explicit_canvas(),
+            // Always concrete: explicit, or probed from the first clip at build. The
+            // preview places every layer on this canvas exactly as the export does
+            // (ADR-0016), so an implicit canvas must not leave the runner to derive
+            // its own from the base frame.
+            canvas: Some((self.canvas_width, self.canvas_height)),
             lavfi_overlay: self.lavfi_overlay.clone(),
             video_tracks,
             audio_tracks,

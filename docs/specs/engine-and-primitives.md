@@ -128,9 +128,10 @@ computes the merged opacity/x/y/scale/rotation + blend + composite once; `video_
 `scale_x`/`scale_y`/`rotation` + `composite_op`), and `build_realtime_composition` consumes the new
 fields (rendering scale/rotation as static-at-t=0 nodes, matching export; `composite_op` is carried but
 still rendered as `Over` until C4b). This closes gaps 2 and 3 for preview overlays. **Deferred (Q2):**
-exact pixel-parity (the realtime `rgba`/base-size output vs export's `color`-canvas/`yuv420p`, and the
-overlay force-scale) and base-track (V1) scale/rotation — both entangled with canvas semantics — are left
-to a C4 canvas-reconciliation follow-up.
+exact pixel-parity (the realtime `rgba` output vs export's `yuv420p`) and the overlay force-scale are left
+to a canvas-reconciliation follow-up (#1782). The base-track (V1) placement is settled: every layer is
+placed in canvas space on every route (ADR-0016), and the realtime composer composites onto a canvas-sized
+accumulator rather than the base's own size.
 
 **C4b (done):** preview renders `composite_op` (gap 1 closed). `build_realtime_composition` now dispatches
 non-`Over` overlays through the shared `add_composite_step` — the same Porter-Duff *construction* the export

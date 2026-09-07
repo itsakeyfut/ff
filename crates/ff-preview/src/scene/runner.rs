@@ -102,10 +102,10 @@ pub struct SceneRunner {
     /// Identifies the composer's current configuration as
     /// `(layer_id, active_clip_idx, width, height)` per layer. Rebuild on change.
     pub(super) composer_key: Vec<(usize, usize, u32, u32)>,
-    /// Project output canvas, when the timeline set one explicitly. When `Some`,
-    /// every composited frame is letterboxed to these dimensions so the preview
-    /// matches the project's output aspect. `None` composites at the base clip's
-    /// own size (legacy behaviour).
+    /// Project output canvas. When `Some`, every layer is placed on a canvas of these
+    /// dimensions (the base included, at its native size unless scaled) and every
+    /// composited frame is canvas-sized. `None` composites at the base clip's own
+    /// size, the standalone behaviour an engine never asks for.
     pub(super) canvas: Option<(u32, u32)>,
     /// Timeline-global generated `lavfi` overlay, composited as the topmost layer
     /// (above every file overlay). `None` when the timeline set no `lavfi_overlay`.

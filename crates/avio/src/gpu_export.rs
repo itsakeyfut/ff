@@ -11,12 +11,13 @@
 //!
 //! The route takes a **single active video track** at unity speed whose every clip is a
 //! file source. Several restrictions the first version had are gone: a source whose frame
-//! rate differs from the timeline's is conformed by the drain (#1660), one whose aspect
-//! differs from the canvas is letterboxed by the shared compositing core (#1661), a
+//! rate differs from the timeline's is conformed by the drain (#1660), one whose size
+//! differs from the canvas sits at its native size on it like every layer (ADR-0016), a
 //! **cross-fade at any boundary** is rendered by the drain rather than rejected (#1659),
-//! and a clip carrying a position or scale is no longer turned away — the drain
-//! composites one layer per output, and a base layer's transform is ignored on both paths
-//! (#1633; see `gpu_compositor::layer_transform`).
+//! and a clip carrying a position or scale is placed by the shared core in canvas space,
+//! the CPU composer's own geometry (ADR-0016; see `gpu_compositor::layer_transform`). A
+//! rotated clip, and a cross-fade between two clips of which either is placed, still take
+//! the CPU route.
 //!
 //! What still keeps the whole export on the CPU `MultiTrackComposer` path (see
 //! [`eligible_track`]): more than one active video track, a lavfi overlay, a generated
@@ -161,8 +162,8 @@ fn transitionless_layer(clip: &Clip, track: &Track, canvas: (u32, u32)) -> Video
 /// - each source's native frame rate is usable (positive and finite). Neither the rate
 ///   nor the aspect has to *match* the timeline any more: the drain conforms the rate
 ///   (#1660), repeating or skipping source frames so the clip keeps its on-screen
-///   duration, and the shared compositing core letterboxes a differently-shaped frame
-///   into the canvas (#1661).
+///   duration, and the shared compositing core places a differently-sized frame on the
+///   canvas at its native size like every layer (ADR-0016).
 pub(crate) fn eligible_tracks(
     video_tracks: &[Track],
     lavfi_overlay: Option<&str>,
@@ -194,7 +195,7 @@ pub(crate) fn eligible_tracks(
 }
 
 /// Whether one track can be driven by the GPU drain. `is_base` marks the bottom of the
-/// stack, whose transform the compositor ignores (see `gpu_compositor::layer_transform`).
+/// stack, the only track a transition is rendered on.
 fn eligible_one_track(
     track: &Track,
     is_base: bool,
@@ -211,9 +212,10 @@ fn eligible_one_track(
     // placed-size content; the GPU places via `layer_transform` *after* the blend, which
     // for a non-base track would either apply the transform twice or reorder the
     // resampling against the blend. Neither is measured, so it falls back rather than
-    // approximate (RK-020). The base track is unaffected: its transform is ignored, so
-    // blending canvas-composited frames is exactly what the CPU does -- which is the
-    // path #1659 shipped and this must not regress.
+    // approximate (RK-020). On the base track the drain composites each clip to the
+    // canvas and blends the two canvas frames, which is what the CPU does as long as
+    // neither clip is placed (ADR-0016); a placed pair is declined in the transition
+    // pass below for the same reason as the non-base case.
     if !is_base && track.clips.iter().skip(1).any(|c| c.transition.is_some()) {
         return None;
     }
@@ -231,16 +233,22 @@ fn eligible_one_track(
         if (clip.speed - 1.0).abs() > 1e-9 {
             return None;
         }
+        // A rotated layer has no GPU placement (`layer_transform` declines it, RK-020):
+        // decline the export up front rather than fail it mid-drain.
+        if clip.rotation.abs() > f64::EPSILON
+            || clip.rotation_track.is_some()
+            || track.automation.rotation.is_some()
+        {
+            return None;
+        }
         let layer = transitionless_layer(clip, track, canvas);
         let GpuMapping::Gpu(plan) = map_scene(std::slice::from_ref(&layer), canvas, Duration::ZERO)
         else {
             return None;
         };
-        // No transform gate: the drain composites one layer per output, which is the
-        // compositor's **base** layer, and a base layer's x / y / scale / rotation are
-        // ignored on both paths (measured; see `gpu_compositor::layer_transform`). A
-        // positioned or scaled clip therefore renders identically either way, so keeping
-        // it on the CPU bought nothing.
+        // Placement needs no gate: `layer_transform` places every layer in canvas space,
+        // which is the CPU composer's geometry (ADR-0016), so a positioned or scaled clip
+        // renders identically on either route.
         // A stateful node keeps its state in the cached effect graph, and the stack
         // scheduler alternates the compositor between a one-layer solo composite (the
         // base) and an N-layer stack composite every output frame, which evicts that
@@ -266,6 +274,14 @@ fn eligible_one_track(
     // cross-fade from, so both routes render a plain clip (`transitionless_layer`).
     let last = track.clips.len() - 1;
     for i in 1..track.clips.len() {
+        // The CPU blends the two placed-size chains and overlays the result at the
+        // incoming clip's offset; the drain blends two canvas-composited frames. Those
+        // agree only when neither clip is placed, so a placed pair takes the CPU route.
+        if track.clips[i].transition.is_some()
+            && (is_placed(&track.clips[i - 1], track) || is_placed(&track.clips[i], track))
+        {
+            return None;
+        }
         if track.clips[i].transition.is_some()
             && !eligible_transition(
                 &track.clips[i - 1],
@@ -300,8 +316,9 @@ fn eligible_one_track(
         }
     }
 
-    // Probe pass (I/O): each source's frame rate must be usable. Its aspect no longer
-    // has to match the canvas -- the shared compositing core letterboxes it (#1661).
+    // Probe pass (I/O): each source's frame rate must be usable. Its size no longer
+    // has to match the canvas: the shared compositing core places it in canvas space
+    // like every layer (ADR-0016).
     for clip in &track.clips {
         let src = clip.source_path()?;
         let Ok(decoder) = VideoDecoder::open(src).build() else {
@@ -348,6 +365,26 @@ fn is_stateful_effect(effect: &GpuEffect) -> bool {
 /// anything but `Over` for the whole timeline.
 fn is_neutral_composite(plan: &GpuLayerPlan) -> bool {
     (plan.opacity - 1.0).abs() < 1e-6 && plan.blend_mode == RenderBlendMode::Normal
+}
+
+/// Whether `clip` (with `track`'s automation merged in by the derive) is placed anywhere
+/// but the identity, statically or by a track. Placement is applied by a clip's own
+/// canvas pass (ADR-0016), so a cross-fade between placed clips cannot be blended on
+/// canvas frames the way the CPU blends the placed chains.
+fn is_placed(clip: &Clip, track: &Track) -> bool {
+    clip.x.abs() > f64::EPSILON
+        || clip.y.abs() > f64::EPSILON
+        || (clip.scale - 1.0).abs() > f64::EPSILON
+        || clip.rotation.abs() > f64::EPSILON
+        || clip.x_track.is_some()
+        || clip.y_track.is_some()
+        || clip.scale_track.is_some()
+        || clip.rotation_track.is_some()
+        || track.automation.x.is_some()
+        || track.automation.y.is_some()
+        || track.automation.scale_x.is_some()
+        || track.automation.scale_y.is_some()
+        || track.automation.rotation.is_some()
 }
 
 /// Whether the transition on `incoming` -- the clip cross-faded *into*, whose
@@ -660,10 +697,9 @@ struct TrackSource<'a> {
     frame_rate: f64,
     /// The bottom of the stack. Only the base is pre-composited to the canvas; every
     /// other track hands the stack its raw decoded frame, so its effects, opacity, blend
-    /// and placement are applied exactly once -- and it is *stretched* to the base's size
-    /// by `layer_transform`, which is what the CPU's `scale = canvas * (sx, sy)` does. A
-    /// solo composite would instead letterbox it and bake that in (measured: a 64x32
-    /// overlay on a 64x64 canvas landed 32x16 letterboxed where the CPU had 32x32).
+    /// and placement are applied exactly once, by `layer_transform` in canvas space
+    /// (ADR-0016). A solo composite would instead place it once and bake that in, and
+    /// the stack would place the placed frame again.
     is_base: bool,
     /// `transition::effective_durations`, resolved once for the track: each boundary is
     /// both a clip's own transition and its predecessor's handle, and resolving it per
@@ -806,7 +842,7 @@ impl<'a> TrackSource<'a> {
                         // pass, so it applies the layer once. Compositing here first
                         // would apply the effects, opacity and blend twice over
                         // (measured: an overlay at opacity 0.5 read 51 where the CPU
-                        // read 140) and bake a letterbox in on top.
+                        // read 140) and bake a placement in on top.
                         let frame = match pulled {
                             Pulled::Owned(frame) => frame,
                             Pulled::Held(frame) => frame.clone(),
@@ -880,11 +916,11 @@ impl<'a> TrackSource<'a> {
 /// applied stripped out.
 ///
 /// Only the base is composited to the canvas before the stack (it has to be: a
-/// transition blends two canvas frames, and the stack's placement reference is the base's
-/// size, which must stay the canvas whether or not a window is open). That pass applies
-/// its effects, opacity and blend mode, so the stack pass must not apply them a second
-/// time. Its placement is ignored at index 0 either way, so the neutral shell is all the
-/// stack needs.
+/// transition blends two canvas frames, and the stack composites in canvas space, which
+/// must stay the canvas whether or not a window is open). That pass applies its
+/// effects, opacity, blend mode **and placement** (ADR-0016), so the stack pass must not
+/// apply any of them a second time: the composited base is a canvas-sized frame at the
+/// identity.
 fn stack_layer_for(is_base: bool, cur_layer: &VideoLayer) -> VideoLayer {
     if is_base {
         composited_base_layer(cur_layer)
@@ -900,6 +936,11 @@ fn composited_base_layer(layer: &VideoLayer) -> VideoLayer {
     neutral.opacity = AnimatedValue::Static(1.0);
     neutral.blend_mode = BlendMode::Normal;
     neutral.composite_op = CompositeOp::Over;
+    neutral.x = AnimatedValue::Static(0.0);
+    neutral.y = AnimatedValue::Static(0.0);
+    neutral.scale_x = AnimatedValue::Static(1.0);
+    neutral.scale_y = AnimatedValue::Static(1.0);
+    neutral.rotation = AnimatedValue::Static(0.0);
     neutral
 }
 
@@ -1114,9 +1155,10 @@ mod tests {
     #[test]
     fn eligible_tracks_should_reject_a_transition_on_a_non_base_track() {
         // The CPU scales each clip to its placed size *before* `xfade`, while the GPU
-        // places after the blend. For the base that is the same thing (its transform is
-        // ignored); for an overlay it is not, and no measurement backs a reordering, so
-        // it falls back rather than approximate (RK-020).
+        // places after the blend. On the base track that only agrees for unplaced clips
+        // (a placed pair is declined too); for an overlay it never does, and no
+        // measurement backs a reordering, so it falls back rather than approximate
+        // (RK-020).
         let src = std::env::temp_dir().join("avio_eligible_mt_xfade_probe.mp4");
         if !probe_source_or_skip(&src, 64, 64, 30.0) {
             return;
@@ -1374,11 +1416,11 @@ mod tests {
 
     #[test]
     fn eligible_track_should_accept_a_source_whose_aspect_differs_from_the_canvas() {
-        // #1661: the probe pass no longer requires the source aspect to match the canvas
-        // — the shared compositing core letterboxes it — so a 16:9 source on a square
-        // canvas stays on the GPU route instead of falling back to CPU. This is the
-        // direct evidence the gate opened: the end-to-end export cannot show it, because
-        // the CPU fallback letterboxes too and would produce the same picture.
+        // The probe pass does not require the source size to match the canvas: the
+        // shared compositing core places it at its native size (ADR-0016), so a 16:9
+        // source on a square canvas stays on the GPU route instead of falling back to
+        // CPU. This is the direct evidence the gate is open; the end-to-end export
+        // cannot show it, because the CPU route places it the same way.
         let src = std::env::temp_dir().join("avio_eligible_169_probe.mp4");
         if !probe_source_or_skip(&src, 64, 36, 30.0) {
             return;
@@ -1740,10 +1782,62 @@ mod tests {
     }
 
     #[test]
-    fn eligible_track_should_reject_a_non_identity_transform() {
-        // A scaled layer is not an identity transform (RK-020) -> CPU.
-        let t = square_timeline(vec![Clip::new("a.mp4").with_scale(0.5)]);
-        assert!(eligible(&t).is_none());
+    fn eligible_track_should_reject_a_rotated_clip_and_accept_a_scaled_one() {
+        // Placement is rendered by the shared core in canvas space (ADR-0016), so a
+        // scaled clip is eligible; rotation has no GPU placement and is not. Both on a
+        // real, probeable source: the previous version of this test used a missing file
+        // and was rejected by the probe pass, not by the transform it named.
+        let src = std::env::temp_dir().join("avio_eligible_rotation_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let scaled = square_timeline(vec![Clip::new(&src).with_scale(0.5)]);
+        assert_eq!(
+            eligible(&scaled),
+            Some(vec![0]),
+            "a scaled clip is placed by the shared core and stays on the GPU route"
+        );
+        let spun = square_timeline(vec![Clip::new(&src).with_rotation(30.0)]);
+        assert!(
+            eligible(&spun).is_none(),
+            "a rotated clip has no GPU placement and must take the CPU route"
+        );
+    }
+
+    #[test]
+    fn eligible_tracks_should_reject_a_base_track_transition_between_placed_clips() {
+        // The CPU blends the two placed-size chains and overlays the result at the
+        // incoming clip's offset; the drain blends two canvas-composited frames. Those
+        // agree only when neither clip is placed, so a placed pair on the base track
+        // takes the CPU route, while the same pair without placement stays.
+        let src = std::env::temp_dir().join("avio_eligible_placed_xfade_probe.mp4");
+        if !probe_source_or_skip(&src, 64, 64, 30.0) {
+            return;
+        }
+        let path = src.to_str().unwrap();
+        let fade = |c: Clip| c.with_transition(XfadeTransition::Fade, Duration::from_millis(200));
+        let plain = vec![placed(path, 0.0, 1.0), fade(placed(path, 1.0, 1.0))];
+        assert_eq!(
+            eligible(&square_timeline(plain)),
+            Some(vec![0]),
+            "an unplaced pair keeps the transition on the GPU route"
+        );
+        let outgoing_placed = vec![
+            placed(path, 0.0, 1.0).with_position(10.0, 4.0),
+            fade(placed(path, 1.0, 1.0)),
+        ];
+        assert!(
+            eligible(&square_timeline(outgoing_placed)).is_none(),
+            "a placed outgoing clip must send the transition to the CPU route"
+        );
+        let incoming_scaled = vec![
+            placed(path, 0.0, 1.0),
+            fade(placed(path, 1.0, 1.0).with_scale(0.5)),
+        ];
+        assert!(
+            eligible(&square_timeline(incoming_scaled)).is_none(),
+            "a scaled incoming clip must send the transition to the CPU route"
+        );
     }
 
     #[test]

@@ -3,29 +3,24 @@
 //! Owns the `ff-render` context and a cached `Compositor`, and composites a set of
 //! derived layers (any [`GpuLayerSource`]) with their decoded frames into an rgba
 //! buffer. Both the preview executor ([`GpuPreviewCompositor`](crate::GpuPreviewCompositor))
-//! and the export drain use it, so the mapping-to-GPU logic, the layer placement, the
-//! letterbox, and the effect execution live in one place.
+//! and the export drain use it, so the mapping-to-GPU logic, the layer placement, and
+//! the effect execution live in one place.
 //!
 //! It returns `None` on any unsupported layer ([`map_scene`] fallback, or a placement
 //! with no GPU equivalent) or any GPU error, so the caller falls back to the CPU
 //! compositor for that frame -- never a panic, never a partial result.
 //!
-//! **Placement (#1633):** `layer_transform` reproduces the CPU compositor's geometry,
-//! which works in *base-layer space*: layer 0 defines the size and its own transform is
-//! ignored, every other layer is stretched to that size, scaled by `base * scale`, and
-//! overlaid with its top-left at `(x, y)`. Only the finished composite is fitted into the
-//! canvas. The model's units are canvas pixels / clockwise degrees while
+//! **Placement (ADR-0016):** `layer_transform` places every layer, the base included, in
+//! **canvas space**: its top-left at `(x, y)` canvas pixels, at its native size when
+//! `scale == 1` and at `canvas * scale` otherwise, clipped at the canvas edge. That is the
+//! CPU export composer's construction, which the realtime composer now shares, so the
+//! rule is pinned by measurement against both. Nothing is fitted or stretched to the
+//! canvas here: framing against the canvas is a `FitMode` effect in the layer's chain.
+//! The model's units are canvas pixels / clockwise degrees while
 //! `ff_render::LayerTransform` is UV-space / counter-clockwise radians, so the conversion
-//! lives there and is pinned by measurement against the CPU. A **rotated** non-base layer
-//! still falls back: the CPU's `rotate` fills the corners it exposes with `fillcolor`
-//! while the GPU transform leaves them transparent, so there is nothing to map it to
-//! (RK-020).
-//!
-//! **Letterbox (#1661):** a frame whose aspect differs from the canvas is *fitted* into
-//! it, matching the CPU compositor's `scale=…:force_original_aspect_ratio=decrease` +
-//! `pad` pass instead of the compositor's default stretch (see [`fit_size`]). A scene
-//! whose base aspect is extreme enough that a fitted side rounds away to nothing still
-//! falls back.
+//! lives there. A **rotated** layer still falls back: the CPU's `rotate` fills the
+//! corners it exposes with `fillcolor` while the GPU transform leaves them transparent,
+//! so there is nothing to map it to (RK-020).
 //!
 //! **Per-frame cost (#1634):** an effected layer's `RenderGraph` is cached per layer
 //! position ([`CachedEffectGraph`]) and reused while its effect list compares equal, so
@@ -555,24 +550,16 @@ impl GpuCompositor {
 /// Wraps each processed layer frame in a [`FrameLayer`] with the transform that places
 /// it, or `None` when a layer's placement has no GPU equivalent.
 ///
-/// The CPU compositor works in **base-layer space**: layer 0 defines the size, every
-/// other layer is stretched to it and overlaid there, and only the finished composite is
-/// fitted into the canvas (`composition_inner.rs:1199-1224` and `:1323`). This reproduces
-/// that by giving layer 0 the fit and every other layer its placement *composed with* the
-/// same fit, so the whole stack lands in one band exactly as the CPU's single composite
-/// fit does. That is why the old shared-aspect requirement is gone: an overlay's own
-/// aspect never survives the stretch, so it cannot disagree with the base's band.
+/// Every layer, the base included, is placed in canvas space (ADR-0016), the
+/// construction the CPU export composer has always used and the realtime composer now
+/// shares. Nothing is fitted or stretched to the canvas here.
 fn assemble(
     processed: Vec<(VideoFrame, &GpuLayerPlan)>,
     canvas: (u32, u32),
 ) -> Option<Vec<FrameLayer>> {
-    let (first, _) = processed.first()?;
-    let base = (first.width(), first.height());
-    let base_fit = letterbox_transform(base.0, base.1, canvas)?;
     let transforms = processed
         .iter()
-        .enumerate()
-        .map(|(idx, (_, lp))| layer_transform(idx, lp, &base_fit, base))
+        .map(|(frame, lp)| layer_transform(lp, (frame.width(), frame.height()), canvas))
         .collect::<Option<Vec<_>>>()?;
     Some(
         processed
@@ -590,157 +577,71 @@ fn assemble(
     )
 }
 
-/// The [`LayerTransform`] that places layer `index`, or `None` when its placement has no
-/// GPU equivalent.
+/// The [`LayerTransform`] that places a layer whose frame is `frame` pixels on `canvas`,
+/// or `None` when its placement has no GPU equivalent.
 ///
-/// The rule is the CPU compositor's, **measured** rather than read off the model, because
-/// the two do not say the same thing:
+/// The rule is the CPU export composer's (`build_video_composition` in
+/// `composition_inner.rs`), **measured** rather than read off the model:
 ///
-/// * **Layer 0 is the base.** Its `x` / `y` / `scale` / `rotation` are *ignored* — the CPU
-///   builds no scale, rotate or overlay node for it (`composition_inner.rs:1181-1197`), so
-///   it only ever receives the fit. Measured: a lone layer given `x=10, y=4` or
-///   `scale=0.5` renders byte-identically to the same layer left alone. Applying the
-///   transform here would make the GPU diverge from the correctness reference, so the fix
-///   for a layer that carries one is to stop *falling back*, not to start drawing it.
-///   Whether the model should honour a base transform at all is #1766.
-/// * **Every other layer** is stretched to the base's size (its own aspect does not
-///   survive), scaled by `base * (scale_x, scale_y)`, and overlaid with its **top-left**
-///   at `(x, y)` in base-layer pixels. The finished composite is then fitted into the
-///   canvas, which is `base_fit`.
+/// * the layer's top-left sits at `(x, y)` canvas pixels and is clipped at the canvas
+///   edge, on both paths: `overlay` writes into a canvas-sized accumulator, the GPU into
+///   a canvas-sized target, so an overhang is drawn and clipped rather than refused;
+/// * it keeps its native size when `scale == 1` exactly, and is `canvas * (sx, sy)`
+///   otherwise (the multiplier is against the canvas, not the frame);
+/// * rotation returns `None`: the CPU's `rotate` fills the corners it exposes with
+///   `fillcolor` while the GPU transform leaves them transparent (RK-020).
 ///
-/// Composing those: the layer covers `scale` of the base, its centre sits at
-/// `x/bw + scale_x/2` in base UV, and `base_fit` maps base UV `u` to canvas UV
-/// `0.5 + fit * (u - 0.5)`. `transform.wgsl` puts a layer's centre at
-/// `0.5 + scale * translate`, so the fit cancels out of the translate and only multiplies
-/// the scale.
+/// `transform.wgsl` puts a layer's centre at `0.5 + scale * translate` and draws it
+/// `scale` of the canvas wide, so a centre at `x/cw + sx/2` gives
+/// `translate = (x/cw + sx/2 - 0.5) / sx`. A canvas-sized identity layer yields the
+/// identity, which `ff_render`'s compositor skips entirely, so that case keeps its exact
+/// pixels and its per-frame cost.
 ///
-/// Verified against the CPU on three fixtures, each pinning a different term:
-///
-/// * a 64x64 overlay at `(10, 4)` scaled `0.5` over a 64x64 base in a 64x64 canvas lands
-///   at `(10, 4)..(41, 35)` — the offset and the scale;
-/// * the same overlay scaled `0.5` with no offset over a **64x32** base lands at
-///   `(0, 16)..(31, 31)` — that the multiplier is against the *base*, not the canvas;
-/// * that overlay at `(10, 4)` over the 64x32 base lands at `(10, 20)..(41, 35)` — that
-///   the *offset* is against the base too, which neither of the first two can tell apart
-///   (a mutation check found this one missing).
-///
-/// Rotation on a non-base layer returns `None`: the CPU's `rotate` fills the corners it
-/// exposes with `fillcolor` while the GPU transform leaves them transparent, so there is
-/// nothing to map it to (RK-020).
+/// Verified against the CPU: a 64x64 layer at `(10, 4)` scaled `0.5` on a 64x64 canvas
+/// lights `(10, 4)..(41, 35)` inclusive, alone and as an overlay; a 64x32 layer at
+/// scale 1 on a 64x64 canvas lights `(0, 0)..(63, 31)`; the same 64x32 layer scaled
+/// `0.5` at `(10, 4)` lights `(10, 4)..(41, 35)`, which is what tells the canvas-relative
+/// multiplier apart from a frame-relative one.
 fn layer_transform(
-    index: usize,
     lp: &GpuLayerPlan,
-    base_fit: &LayerTransform,
-    base: (u32, u32),
+    frame: (u32, u32),
+    canvas: (u32, u32),
 ) -> Option<LayerTransform> {
-    if index == 0 {
-        return Some(base_fit.clone());
-    }
     if lp.rotation.abs() > 1e-6 {
         return None;
     }
-    let (bw, bh) = (px(base.0), px(base.1));
-    // A zero-sized base has no space to place into, and a non-positive scale has no
+    let (cw, ch) = (px(canvas.0), px(canvas.1));
+    // A zero-sized canvas has no space to place into, and a non-positive scale has no
     // extent to draw; either would divide by zero below.
-    if bw <= 0.0 || bh <= 0.0 || lp.scale_x <= 0.0 || lp.scale_y <= 0.0 {
+    if cw <= 0.0 || ch <= 0.0 || lp.scale_x <= 0.0 || lp.scale_y <= 0.0 {
         return None;
     }
-    // The CPU's `overlay` writes into the base-sized accumulator, so a layer hanging off
-    // its edge is **clipped** before the composite is fitted into the canvas. The GPU
-    // draws straight into the canvas and has no such bound, so it would let the layer
-    // spill outside the base's band -- picture where the CPU has none. Reject instead of
-    // rendering the spill (RK-020); the cost is a fallback for a partly-offscreen
-    // overlay, which is the same answer as before #1633 for every overlay.
-    let (ox, oy) = (lp.x / bw, lp.y / bh);
-    if ox < -1e-6 || oy < -1e-6 || ox + lp.scale_x > 1.0 + 1e-6 || oy + lp.scale_y > 1.0 + 1e-6 {
+    let native =
+        (lp.scale_x - 1.0).abs() <= f32::EPSILON && (lp.scale_y - 1.0).abs() <= f32::EPSILON;
+    let (sx, sy) = if native {
+        (px(frame.0) / cw, px(frame.1) / ch)
+    } else {
+        (lp.scale_x, lp.scale_y)
+    };
+    if sx <= 0.0 || sy <= 0.0 {
         return None;
     }
     Some(LayerTransform {
-        // `base_fit`'s translate moves the whole base, so anything sitting on the base
-        // moves with it. `letterbox_transform` returns a centred fit (translate 0) today,
-        // which is why the term reads as dead -- but leaving it out would make that a
-        // silent precondition of this formula, and the two functions live in one file.
-        // With it, a fit that ever gains an offset carries its layers along.
-        x: (lp.x / bw + lp.scale_x / 2.0 - 0.5 + base_fit.x) / lp.scale_x,
-        y: (lp.y / bh + lp.scale_y / 2.0 - 0.5 + base_fit.y) / lp.scale_y,
-        scale_x: base_fit.scale_x * lp.scale_x,
-        scale_y: base_fit.scale_y * lp.scale_y,
+        x: (lp.x / cw + sx / 2.0 - 0.5) / sx,
+        y: (lp.y / ch + sy / 2.0 - 0.5) / sy,
+        scale_x: sx,
+        scale_y: sy,
         rotation: 0.0,
     })
 }
 
-/// The [`LayerTransform`] that fits an `fw` x `fh` frame inside `canvas`, letterboxing or
-/// pillarboxing the remainder, or `None` when the fit leaves no band to draw.
-///
-/// `transform.wgsl` samples `(uv - 0.5) / scale` and returns transparent outside `[0, 1]`,
-/// so a scale of `fit / canvas` draws the frame as a centred band of exactly that fraction
-/// of the canvas; `blend.wgsl` then leaves the canvas' black in the bars, matching the CPU
-/// path's `pad=…:color=black`. A frame that already matches the canvas aspect yields the
-/// identity, which `ff_render`'s compositor skips entirely -- so that (previously the only
-/// supported) case keeps its exact pixels and its per-frame cost.
-///
-/// Note that an **odd** canvas dimension never yields the identity: the fit rounds down to
-/// an even size, so a matching-aspect frame still scales (by one pixel) and centres half a
-/// pixel off the CPU's `pad=(ow-iw)/2`. That is `FFmpeg`'s own `force_divisible_by=2`
-/// behaviour, so the two paths still agree on geometry.
-fn letterbox_transform(fw: u32, fh: u32, canvas: (u32, u32)) -> Option<LayerTransform> {
-    let (fit_w, fit_h) = fit_size(fw, fh, canvas);
-    // An aspect extreme enough for one fitted side to round away to nothing has no band
-    // to draw. Passing that on as a zero scale would not fail loudly: `transform.wgsl`
-    // floors the divisor at 1e-4, so every sample lands outside `[0, 1]` and the layer
-    // disappears into a silently black frame -- exactly the wrong output this module
-    // must never produce (RK-020). The CPU leg cannot build its `scale` at that size
-    // either, so falling back is the honest answer.
-    if fit_w == 0 || fit_h == 0 {
-        return None;
-    }
-    if (fit_w, fit_h) == canvas {
-        return Some(LayerTransform::default());
-    }
-    Some(LayerTransform {
-        scale_x: ratio(fit_w, canvas.0),
-        scale_y: ratio(fit_h, canvas.1),
-        ..LayerTransform::default()
-    })
-}
-
-/// A pixel count as an `f32`, for the base-space arithmetic in [`layer_transform`].
+/// A pixel count as an `f32`, for the canvas-space arithmetic in [`layer_transform`].
 ///
 /// Distinct from [`ratio`]: `ratio(x, 1)` computes the same number but reads as a
 /// proportion, which this is not.
 #[allow(clippy::cast_precision_loss)] // pixel dimensions are far inside f32's exact range
 fn px(v: u32) -> f32 {
     v as f32
-}
-
-/// `a / b` as an `f32`, for the pixel counts this module deals in.
-#[allow(clippy::cast_precision_loss)] // pixel dimensions are far inside f32's exact range
-fn ratio(a: u32, b: u32) -> f32 {
-    a as f32 / b as f32
-}
-
-/// The size an `fw` x `fh` frame scales to when fitted inside `canvas`, mirroring the CPU
-/// path's `scale=w:h:force_original_aspect_ratio=decrease:force_divisible_by=2`
-/// (`composition_inner.rs`): each side is the aspect-preserving candidate clamped to the
-/// canvas, then rounded **down** to a multiple of two.
-///
-/// Reproducing the rounding rather than using the exact real-valued ratio is what keeps
-/// the band boundary within a pixel of the CPU leg; the parity test measures the residue.
-/// A degenerate zero-sized frame yields the canvas, i.e. the compositor's plain stretch.
-#[allow(clippy::cast_possible_truncation)] // each side is clamped to the canvas, a u32
-fn fit_size(fw: u32, fh: u32, canvas: (u32, u32)) -> (u32, u32) {
-    if fw == 0 || fh == 0 {
-        return canvas;
-    }
-    let (cw, ch) = (u64::from(canvas.0), u64::from(canvas.1));
-    let (fw, fh) = (u64::from(fw), u64::from(fh));
-    // `av_rescale` rounds to nearest, half away from zero.
-    let rescale = |num: u64, den: u64| (num + den / 2) / den;
-    let even = |v: u64| v / 2 * 2;
-    (
-        even(rescale(ch * fw, fh).min(cw)) as u32,
-        even(rescale(cw * fh, fw).min(ch)) as u32,
-    )
 }
 
 /// Loads a `LutNode` from a `.cube` or `.3dl` file, or `None` when the extension is
@@ -782,7 +683,7 @@ mod tests {
     /// written against the pixel box the CPU was *measured* to produce rather than
     /// against the transform's own numbers, which would just restate the formula.
     fn canvas_box(t: &LayerTransform, canvas: (u32, u32)) -> (f32, f32, f32, f32) {
-        let (cw, ch) = (ratio(canvas.0, 1), ratio(canvas.1, 1));
+        let (cw, ch) = (px(canvas.0), px(canvas.1));
         let cx = 0.5 + t.scale_x * t.x;
         let cy = 0.5 + t.scale_y * t.y;
         (
@@ -805,182 +706,107 @@ mod tests {
     }
 
     #[test]
-    fn layer_transform_should_ignore_the_base_layers_own_transform() {
-        // Measured: a lone layer given x=10, y=4 or scale=0.5 renders byte-identically
-        // to the same layer left alone, because the CPU builds no scale/rotate/overlay
-        // node for layer 0. So the base must get the fit and nothing else — applying its
-        // transform is what would diverge (#1633).
-        let fit = letterbox_transform(64, 32, (64, 64)).expect("a 2:1 fit has a band");
-        let moved = plan_layer(10.0, 4.0, (0.5, 0.25), 30.0);
-        let got = layer_transform(0, &moved, &fit, (64, 32)).expect("the base always places");
+    fn layer_transform_should_place_the_base_like_any_layer() {
+        // Measured on every route (ADR-0016): a lone 64x64 layer at (10, 4) scaled 0.5 on
+        // a 64x64 canvas lights (10, 4)..(41, 35) inclusive, the half-open box
+        // (10, 4)..(42, 36). The base gets no special treatment.
+        let moved = plan_layer(10.0, 4.0, (0.5, 0.5), 0.0);
+        let got = layer_transform(&moved, (64, 64), (64, 64)).expect("a placed layer");
         assert_box(
             canvas_box(&got, (64, 64)),
-            canvas_box(&fit, (64, 64)),
-            "a base layer's own transform must not move it",
+            (10.0, 4.0, 42.0, 36.0),
+            "base placement",
         );
     }
-
     #[test]
     fn layer_transform_should_place_an_overlay_at_the_measured_box() {
-        // Measured against `RealtimeComposer`: a 64x64 overlay at (10, 4) scaled 0.5 over
-        // a 64x64 base in a 64x64 canvas lit exactly (10, 4)..(41, 35) inclusive, i.e.
-        // the half-open box (10, 4)..(42, 36).
-        let fit = letterbox_transform(64, 64, (64, 64)).expect("a square fit is the identity");
+        // The same fixture as an overlay: a 64x64 overlay at (10, 4) scaled 0.5 over a
+        // 64x64 base in a 64x64 canvas lit exactly (10, 4)..(41, 35) inclusive.
         let over = plan_layer(10.0, 4.0, (0.5, 0.5), 0.0);
-        let got = layer_transform(1, &over, &fit, (64, 64)).expect("an overlay places");
+        let got = layer_transform(&over, (64, 64), (64, 64)).expect("an overlay places");
         assert_box(
             canvas_box(&got, (64, 64)),
             (10.0, 4.0, 42.0, 36.0),
             "overlay placement",
         );
     }
-
     #[test]
-    fn layer_transform_should_scale_against_the_base_not_the_canvas() {
-        // The fixture that distinguishes the two readings of the multiplier. Measured:
-        // the same 0.5-scaled overlay over a **64x32** base in a 64x64 canvas lit
-        // (0, 16)..(31, 31) inclusive — half-open (0, 16)..(32, 32). Against the *canvas*
-        // it would have been 32 tall, not 16, and would not sit inside the base's band.
-        let fit = letterbox_transform(64, 32, (64, 64)).expect("a 2:1 fit has a band");
-        let over = plan_layer(0.0, 0.0, (0.5, 0.5), 0.0);
-        let got = layer_transform(1, &over, &fit, (64, 32)).expect("an overlay places");
+    fn layer_transform_should_use_the_native_size_at_scale_one() {
+        // The export rule: exactly 1.0 leaves the frame at its own size, from the
+        // top-left, with no fit. A 64x32 frame on a 64x64 canvas is the top half.
+        let plain = plan_layer(0.0, 0.0, (1.0, 1.0), 0.0);
+        let got = layer_transform(&plain, (64, 32), (64, 64)).expect("places");
         assert_box(
             canvas_box(&got, (64, 64)),
-            (0.0, 16.0, 32.0, 32.0),
-            "the multiplier is against the base size",
+            (0.0, 0.0, 64.0, 32.0),
+            "native size, top-left",
+        );
+        // A canvas-sized identity layer must stay on the compositor's transform-free
+        // path, so its pixels are exact.
+        let same = layer_transform(&plain, (64, 64), (64, 64)).expect("places");
+        assert!(same.is_identity(), "canvas-sized identity: {same:?}");
+    }
+    #[test]
+    fn layer_transform_should_scale_against_the_canvas() {
+        // The fixture that tells the two readings of the multiplier apart: a 64x32 frame
+        // scaled 0.5 on a 64x64 canvas is 32x32 (canvas * scale, distorting the frame as
+        // the CPU's `scale=canvas*s` does), not 32x16.
+        let half = plan_layer(10.0, 4.0, (0.5, 0.5), 0.0);
+        let got = layer_transform(&half, (64, 32), (64, 64)).expect("places");
+        assert_box(
+            canvas_box(&got, (64, 64)),
+            (10.0, 4.0, 42.0, 36.0),
+            "the multiplier is against the canvas",
         );
     }
-
     #[test]
-    fn layer_transform_should_reject_a_rotated_overlay() {
+    fn layer_transform_should_decline_rotation_on_every_layer() {
         // The CPU's `rotate` fills the exposed corners with `fillcolor`; the GPU leaves
-        // them transparent. Nothing to map it to, so it falls back (RK-020).
-        let fit = letterbox_transform(64, 64, (64, 64)).expect("a square fit is the identity");
+        // them transparent. Nothing to map it to, so it falls back (RK-020), base or not.
         let spun = plan_layer(0.0, 0.0, (1.0, 1.0), 30.0);
-        assert!(layer_transform(1, &spun, &fit, (64, 64)).is_none());
-        // ... but the same rotation on the base is ignored, not a fallback: measured, the
-        // CPU renders a rotated lone layer unrotated.
-        assert!(layer_transform(0, &spun, &fit, (64, 64)).is_some());
+        assert!(layer_transform(&spun, (64, 64), (64, 64)).is_none());
+        let spun_and_scaled = plan_layer(10.0, 4.0, (0.5, 0.5), 30.0);
+        assert!(layer_transform(&spun_and_scaled, (64, 64), (64, 64)).is_none());
     }
-
     #[test]
-    fn layer_transform_should_carry_a_base_fit_offset_through_to_its_overlays() {
-        // `letterbox_transform` returns a centred fit today, so no other test moves an
-        // overlay by way of the base. Without this, dropping `base_fit.x` from the
-        // formula would pass every test and only break when the fit gains an offset --
-        // exactly the kind of unstated precondition a formula should not carry.
-        let centred = LayerTransform {
-            scale_x: 0.5,
-            scale_y: 0.5,
-            ..LayerTransform::default()
-        };
-        let shifted = LayerTransform {
-            x: 0.25,
-            ..centred.clone()
-        };
-        let over = plan_layer(0.0, 0.0, (1.0, 1.0), 0.0);
-        let a = layer_transform(1, &over, &centred, (64, 64)).expect("places");
-        let b = layer_transform(1, &over, &shifted, (64, 64)).expect("places");
-        let (ax, _, _, _) = canvas_box(&a, (64, 64));
-        let (bx, _, _, _) = canvas_box(&b, (64, 64));
-        // The base moved right by `scale_x * 0.25` of the canvas = 8 px; so must the overlay.
-        assert!(
-            (bx - ax - 8.0).abs() < 0.01,
-            "an overlay must follow the base's fit offset: {ax} -> {bx}"
+    fn layer_transform_should_let_a_layer_hang_off_the_canvas() {
+        // The canvas is the clipping bound on both paths: `overlay` clips to its
+        // canvas-sized accumulator, the GPU to its target. An overhang is drawn and
+        // clipped, never refused. Off the right edge: 40 + 0.5 * 64 = 72 > 64.
+        let over_right = plan_layer(40.0, 0.0, (0.5, 0.5), 0.0);
+        let got = layer_transform(&over_right, (64, 64), (64, 64)).expect("places");
+        assert_box(
+            canvas_box(&got, (64, 64)),
+            (40.0, 0.0, 72.0, 32.0),
+            "an overhang keeps its geometry",
+        );
+        // And a negative offset, off the top-left.
+        let over_left = plan_layer(-8.0, -8.0, (0.5, 0.5), 0.0);
+        let got = layer_transform(&over_left, (64, 64), (64, 64)).expect("places");
+        assert_box(
+            canvas_box(&got, (64, 64)),
+            (-8.0, -8.0, 24.0, 24.0),
+            "a negative offset keeps its geometry",
         );
     }
-
     #[test]
-    fn layer_transform_should_reject_an_overlay_that_spills_outside_the_base() {
-        // `overlay` clips to the base-sized accumulator on the CPU; the GPU would draw
-        // the overhang into the canvas. Found by a mutation check: no parity fixture had
-        // a layer crossing the base edge, so nothing was pinning this.
-        let fit = letterbox_transform(64, 64, (64, 64)).expect("a square fit is the identity");
-        let inside = plan_layer(10.0, 4.0, (0.5, 0.5), 0.0);
-        assert!(layer_transform(1, &inside, &fit, (64, 64)).is_some());
-        // Off the right edge: 10 + 0.9 * 64 > 64.
-        let over_right = plan_layer(10.0, 0.0, (0.9, 0.5), 0.0);
-        assert!(layer_transform(1, &over_right, &fit, (64, 64)).is_none());
-        // Off the bottom, and off the top-left.
-        assert!(
-            layer_transform(1, &plan_layer(0.0, 40.0, (0.5, 0.5), 0.0), &fit, (64, 64)).is_none()
-        );
-        assert!(
-            layer_transform(1, &plan_layer(-1.0, 0.0, (0.5, 0.5), 0.0), &fit, (64, 64)).is_none()
-        );
-        // Exactly flush with the edges is inside, not a spill.
-        assert!(
-            layer_transform(1, &plan_layer(32.0, 32.0, (0.5, 0.5), 0.0), &fit, (64, 64)).is_some()
-        );
-    }
-
-    #[test]
-    fn layer_transform_should_reject_a_degenerate_overlay() {
-        let fit = letterbox_transform(64, 64, (64, 64)).expect("a square fit is the identity");
+    fn layer_transform_should_reject_a_degenerate_layer() {
         // A non-positive scale has no extent to draw, and would divide by zero.
         assert!(
-            layer_transform(1, &plan_layer(0.0, 0.0, (0.0, 1.0), 0.0), &fit, (64, 64)).is_none()
+            layer_transform(&plan_layer(0.0, 0.0, (0.0, 1.0), 0.0), (64, 64), (64, 64)).is_none()
         );
         assert!(
-            layer_transform(1, &plan_layer(0.0, 0.0, (1.0, -1.0), 0.0), &fit, (64, 64)).is_none()
+            layer_transform(&plan_layer(0.0, 0.0, (1.0, -1.0), 0.0), (64, 64), (64, 64)).is_none()
         );
-        // A zero-sized base has no space to place into.
+        // A zero-sized canvas has no space to place into, and a zero-sized frame at
+        // scale 1 has no extent.
         assert!(
-            layer_transform(1, &plan_layer(0.0, 0.0, (1.0, 1.0), 0.0), &fit, (0, 64)).is_none()
+            layer_transform(&plan_layer(0.0, 0.0, (1.0, 1.0), 0.0), (64, 64), (0, 64)).is_none()
+        );
+        assert!(
+            layer_transform(&plan_layer(0.0, 0.0, (1.0, 1.0), 0.0), (0, 64), (64, 64)).is_none()
         );
     }
-
-    #[test]
-    fn fit_size_should_letterbox_a_wide_frame() {
-        // 16:9 into a square canvas: full width, bars top and bottom.
-        assert_eq!(fit_size(64, 36, (64, 64)), (64, 36));
-    }
-
-    #[test]
-    fn fit_size_should_pillarbox_a_tall_frame() {
-        // The mirror case, so the fit is not accidentally width-only.
-        assert_eq!(fit_size(36, 64, (64, 64)), (36, 64));
-    }
-
-    #[test]
-    fn fit_size_should_round_down_to_an_even_size() {
-        // 3:2 into a square: the exact fit is 66.67 rows, which `av_rescale` rounds to
-        // 67 and `force_divisible_by=2` then takes down to 66. Drives that branch on its
-        // own, since every other case here is already even.
-        assert_eq!(fit_size(30, 20, (100, 100)), (100, 66));
-    }
-
-    #[test]
-    fn letterbox_transform_should_scale_only_the_fitted_axis() {
-        let t = letterbox_transform(64, 36, (64, 64)).expect("a 16:9 fit has a band");
-        assert!((t.scale_x - 1.0).abs() < 1e-6, "full width: {}", t.scale_x);
-        assert!((t.scale_y - 0.5625).abs() < 1e-6, "36/64: {}", t.scale_y);
-        assert!(t.x.abs() < 1e-6 && t.y.abs() < 1e-6 && t.rotation.abs() < 1e-6);
-    }
-
-    #[test]
-    fn letterbox_transform_should_be_identity_for_a_canvas_aspect_frame() {
-        // The previously-only-supported shape must stay on the compositor's
-        // transform-free path, at both the canvas size and a larger one.
-        let same = letterbox_transform(64, 48, (64, 48)).expect("a matching aspect fits");
-        assert!(same.is_identity());
-        let larger = letterbox_transform(1920, 1080, (64, 36)).expect("a matching aspect fits");
-        assert!(larger.is_identity());
-    }
-
-    #[test]
-    fn letterbox_transform_should_reject_a_fit_that_rounds_away_to_nothing() {
-        // 64:1 into a square canvas: the fitted height is one row, which the
-        // even-rounding takes to zero. `transform.wgsl` floors the divisor at 1e-4, so a
-        // zero scale would not error -- it would sample the whole layer out of range and
-        // render a silently black frame. Falling back is the only correct answer.
-        assert_eq!(fit_size(4096, 64, (64, 64)), (64, 0));
-        assert!(letterbox_transform(4096, 64, (64, 64)).is_none());
-        // The mirror case, so the guard is not accidentally height-only.
-        assert_eq!(fit_size(64, 4096, (64, 64)), (0, 64));
-        assert!(letterbox_transform(64, 4096, (64, 64)).is_none());
-    }
-
     /// A `ShapeMask` whose rectangle differs must still reuse the cached graph, or an
     /// animated rectangle would rebuild the whole effect chain every frame (#1710).
     #[test]

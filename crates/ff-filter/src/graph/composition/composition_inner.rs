@@ -1082,6 +1082,27 @@ unsafe fn build_video_composition_unsafe(
 
 // Real-time composition graph builder
 
+/// Whether a step can leave its output at a size other than its input's, so a base
+/// carrying it has to be placed on the canvas accumulator to keep the output
+/// canvas-sized. Conservative: an opaque step (`Raw`, `ParseDesc`) counts.
+fn may_change_size(step: &FilterStep) -> bool {
+    matches!(
+        step,
+        FilterStep::Scale { .. }
+            | FilterStep::ScaleAnimated { .. }
+            | FilterStep::ScaleMultiplier { .. }
+            | FilterStep::Crop { .. }
+            | FilterStep::CropAnimated { .. }
+            | FilterStep::Pad { .. }
+            | FilterStep::FitToAspect { .. }
+            | FilterStep::FillToAspect { .. }
+            | FilterStep::Rotate { .. }
+            | FilterStep::RotateAnimated { .. }
+            | FilterStep::Raw { .. }
+            | FilterStep::ParseDesc { .. }
+    )
+}
+
 /// Safe entry point for [`build_realtime_composition_unsafe`].
 ///
 /// # Safety argument (RK-017)
@@ -1094,7 +1115,7 @@ unsafe fn build_video_composition_unsafe(
 pub(super) fn build_realtime_composition(
     layers: &[super::realtime_composer::RealtimeLayer],
     canvas: Option<(u32, u32)>,
-) -> Result<FilterGraph, FilterError> {
+) -> Result<(FilterGraph, Option<usize>), FilterError> {
     // Refused before any FFmpeg allocation: the filter path cannot build these
     // operators correctly (#1753, ADR-0014; the implementation is #1784).
     if let Some(layer) = layers
@@ -1113,12 +1134,13 @@ pub(super) fn build_realtime_composition(
 ///
 /// Unlike [`build_video_composition`] (which decodes internally via `movie`
 /// sources and is pulled to completion), this creates one `buffersrc` per layer
-/// so a host feeds externally-decoded frames per layer per tick. Layer 0 is the
-/// base (its [`effects`](super::realtime_composer::RealtimeLayer::effects) are
-/// applied directly); layers 1.. are composited on top via the **same**
-/// `add_blend_normal_step` / `add_blend_photographic_step` primitives the export
-/// path uses, so the per-clip effects and blend modes match the rendered output.
-/// Output is `rgba` for direct read-back.
+/// so a host feeds externally-decoded frames per layer per tick. Every layer is
+/// placed in canvas pixels (ADR-0016): layer 0 is overlaid onto a hidden black
+/// canvas `buffersrc` (the returned slot) unless placing it would be a per-frame
+/// copy, in which case it is the accumulator itself; layers 1.. are composited on
+/// top via the **same** `add_blend_normal_step` / `add_blend_photographic_step`
+/// primitives the export path uses, so the per-clip effects and blend modes match
+/// the rendered output. Output is `rgba`, canvas-sized, for direct read-back.
 ///
 /// # Safety
 ///
@@ -1126,7 +1148,7 @@ pub(super) fn build_realtime_composition(
 unsafe fn build_realtime_composition_unsafe(
     layers: &[super::realtime_composer::RealtimeLayer],
     canvas: Option<(u32, u32)>,
-) -> Result<FilterGraph, FilterError> {
+) -> Result<(FilterGraph, Option<usize>), FilterError> {
     use std::ffi::CString;
 
     macro_rules! bail {
@@ -1197,29 +1219,135 @@ unsafe fn build_realtime_composition_unsafe(
     // (V1) effect animations (e.g. Ken Burns `CropAnimated`) are collected too.
     let mut animations: Vec<AnimationEntry> = Vec::new();
 
-    // Base = layer 0's buffersrc with its effects applied
+    // The canvas every layer is placed on, in pixels (ADR-0016). `None` is a
+    // standalone caller with no project canvas: the base layer's own size.
+    let (canvas_w, canvas_h) = canvas.unwrap_or((layers[0].width, layers[0].height));
+
     let Some(base_src) = src_ctxs[0] else {
         bail!(graph, "layer 0 buffersrc missing");
     };
-    let mut acc = base_src.as_ptr();
-    for (j, step) in layers[0].effects.iter().enumerate() {
-        acc = match crate::filter_inner::add_and_link_step(
+    let base = &layers[0];
+    let base_sx = base.scale_x.value_at(Duration::ZERO);
+    let base_sy = base.scale_y.value_at(Duration::ZERO);
+    let base_rotation_deg = base.rotation.value_at(Duration::ZERO);
+    let base_placed = (base_sx - 1.0).abs() > f64::EPSILON
+        || (base_sy - 1.0).abs() > f64::EPSILON
+        || base_rotation_deg.abs() > f64::EPSILON
+        || !matches!(base.x, AnimatedValue::Static(v) if v.abs() <= f64::EPSILON)
+        || !matches!(base.y, AnimatedValue::Static(v) if v.abs() <= f64::EPSILON);
+    // Layer 0 stays the accumulator when placing it would only be a per-frame copy
+    // (measured at 4.5 ms per 1080p frame in release, too much to pay on the common
+    // identity base). With a project canvas that means: identity transform, already
+    // canvas-sized, no effect that could change its size. With no canvas the base's
+    // chain *defines* the output size, as it always has for a standalone caller, so an
+    // identity base keeps the direct chain whatever its effects do to its size.
+    let direct = !base_placed
+        && match canvas {
+            None => true,
+            Some(c) => (base.width, base.height) == c && !base.effects.iter().any(may_change_size),
+        };
+    let mut canvas_slot: Option<usize> = None;
+    let mut acc = if direct {
+        let mut acc = base_src.as_ptr();
+        for (j, step) in base.effects.iter().enumerate() {
+            acc = match crate::filter_inner::add_and_link_step(
+                graph,
+                acc,
+                step,
+                j,
+                "rt_base",
+                &mut animations,
+            ) {
+                Ok(c) => c,
+                Err(e) => bail!(graph, format!("base layer effect failed: {e:?}")),
+            };
+        }
+        acc
+    } else {
+        // The accumulator is a hidden rgba buffersrc the composer feeds one black
+        // canvas frame per tick (slot `layers.len()`, so the public slots keep their
+        // numbers). Layer 0 is placed onto it exactly as an overlay is, so a base
+        // transform renders in canvas space, the construction the export path has
+        // always used: `scale = canvas * s` when s != 1, `rotate`, then `overlay` at
+        // (x, y). Nothing fits the base; framing is a `FitMode` effect.
+        let canvas_args_str = crate::filter_inner::video_buffersrc_args(
+            canvas_w,
+            canvas_h,
+            crate::filter_inner::pixel_format_to_av(ff_format::PixelFormat::Rgba),
+            None,
+        );
+        let Ok(canvas_args) = CString::new(canvas_args_str.as_str()) else {
+            bail!(graph, "CString::new failed for canvas buffersrc args");
+        };
+        let mut canvas_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
+        let ret = ff_sys::avfilter_graph_create_filter(
+            &raw mut canvas_ctx,
+            buffer_filter,
+            c"canvas".as_ptr(),
+            canvas_args.as_ptr(),
+            std::ptr::null_mut(),
             graph,
-            acc,
-            step,
-            j,
-            "rt_base",
+        );
+        if ret < 0 {
+            bail!(
+                graph,
+                format!("failed to create canvas buffersrc code={ret}")
+            );
+        }
+        canvas_slot = Some(src_ctxs.len());
+        src_ctxs.push(Some(NonNull::new_unchecked(canvas_ctx)));
+
+        let mut base_steps: Vec<FilterStep> = Vec::with_capacity(base.effects.len() + 2);
+        if (base_sx - 1.0).abs() > f64::EPSILON || (base_sy - 1.0).abs() > f64::EPSILON {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let sw = ((f64::from(canvas_w) * base_sx).round() as u32).max(1);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let sh = ((f64::from(canvas_h) * base_sy).round() as u32).max(1);
+            base_steps.push(FilterStep::Scale {
+                width: sw,
+                height: sh,
+                algorithm: ScaleAlgorithm::Bicubic,
+            });
+        }
+        if base_rotation_deg.abs() > f64::EPSILON {
+            base_steps.push(FilterStep::RotateAnimated {
+                angle: AnimatedValue::Static(base_rotation_deg),
+                fill_color: "black".to_string(),
+            });
+        }
+        base_steps.extend(base.effects.iter().cloned());
+        let (x, x_track) = match &base.x {
+            AnimatedValue::Static(v) => (*v, None),
+            AnimatedValue::Track(t) => (0.0, Some(t)),
+        };
+        let (y, y_track) = match &base.y {
+            AnimatedValue::Static(v) => (*v, None),
+            AnimatedValue::Track(t) => (0.0, Some(t)),
+        };
+        // Base opacity is applied host-side (see `RealtimeLayer::opacity`), and the
+        // base blends `Normal` / `Over` against the canvas whatever its own mode says.
+        let params = crate::filter_inner::NormalBlendParams {
+            opacity: 1.0,
+            opacity_track: None,
+            x,
+            y,
+            x_track,
+            y_track,
+            alpha: ff_format::AlphaMode::Straight,
+        };
+        match crate::filter_inner::add_blend_normal_step(
+            graph,
+            canvas_ctx,
+            base_src.as_ptr(),
+            &base_steps,
+            &params,
+            0,
             &mut animations,
         ) {
             Ok(c) => c,
-            Err(e) => bail!(graph, format!("base layer effect failed: {e:?}")),
-        };
-    }
-
-    // Canvas dimensions are defined by the base layer; every other layer is
-    // scaled to match so the `overlay`/`blend` inputs share the same size (the
-    // `blend` filter requires identical input dimensions).
-    let (canvas_w, canvas_h) = (layers[0].width, layers[0].height);
+            Err(e) => bail!(graph, format!("base placement failed: {e:?}")),
+        }
+    };
 
     // Composite layers 1.. onto the accumulator
     for idx in 1..layers.len() {
@@ -1340,73 +1468,6 @@ unsafe fn build_realtime_composition_unsafe(
         };
     }
 
-    // Optional fit-to-canvas
-    // When a project canvas is set, letterbox/pillarbox the composited result to
-    // exactly `canvas_w × canvas_h` so the preview frame matches the project's
-    // output aspect. Runtime expressions (`force_original_aspect_ratio`,
-    // `(ow-iw)/2`) keep this correct regardless of the accumulator's actual size
-    // (per-clip effects may have resized it).
-    if let Some((canvas_w, canvas_h)) = canvas {
-        let scale_filter = ff_sys::avfilter_get_by_name(c"scale".as_ptr());
-        if scale_filter.is_null() {
-            bail!(graph, "filter not found: scale (fit-to-canvas)");
-        }
-        let Ok(fit_args) = CString::new(format!(
-            "w={canvas_w}:h={canvas_h}:force_original_aspect_ratio=decrease:force_divisible_by=2"
-        )) else {
-            bail!(graph, "CString::new failed for fit-to-canvas scale args");
-        };
-        let mut fit_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-        let ret = ff_sys::avfilter_graph_create_filter(
-            &raw mut fit_ctx,
-            scale_filter,
-            c"canvas_fit".as_ptr(),
-            fit_args.as_ptr(),
-            std::ptr::null_mut(),
-            graph,
-        );
-        if ret < 0 {
-            bail!(
-                graph,
-                format!("failed to create fit-to-canvas scale code={ret}")
-            );
-        }
-        let ret = ff_sys::avfilter_link(acc, 0, fit_ctx, 0);
-        if ret < 0 {
-            bail!(graph, "link failed: composite→canvas_fit");
-        }
-
-        let pad_filter = ff_sys::avfilter_get_by_name(c"pad".as_ptr());
-        if pad_filter.is_null() {
-            bail!(graph, "filter not found: pad (fit-to-canvas)");
-        }
-        let Ok(pad_args) = CString::new(format!(
-            "{canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:color=black"
-        )) else {
-            bail!(graph, "CString::new failed for fit-to-canvas pad args");
-        };
-        let mut pad_ctx: *mut ff_sys::AVFilterContext = std::ptr::null_mut();
-        let ret = ff_sys::avfilter_graph_create_filter(
-            &raw mut pad_ctx,
-            pad_filter,
-            c"canvas_pad".as_ptr(),
-            pad_args.as_ptr(),
-            std::ptr::null_mut(),
-            graph,
-        );
-        if ret < 0 {
-            bail!(
-                graph,
-                format!("failed to create fit-to-canvas pad code={ret}")
-            );
-        }
-        let ret = ff_sys::avfilter_link(fit_ctx, 0, pad_ctx, 0);
-        if ret < 0 {
-            bail!(graph, "link failed: canvas_fit→canvas_pad");
-        }
-        acc = pad_ctx;
-    }
-
     // format=rgba: constrain output for direct read-back
     let vfmt_filter = ff_sys::avfilter_get_by_name(c"format".as_ptr());
     if vfmt_filter.is_null() {
@@ -1465,11 +1526,12 @@ unsafe fn build_realtime_composition_unsafe(
         layers.len(),
         animations.len()
     );
-    if animations.is_empty() {
-        Ok(FilterGraph::from_prebuilt(inner))
+    let graph = if animations.is_empty() {
+        FilterGraph::from_prebuilt(inner)
     } else {
-        Ok(FilterGraph::from_prebuilt_animated(inner, animations))
-    }
+        FilterGraph::from_prebuilt_animated(inner, animations)
+    };
+    Ok((graph, canvas_slot))
 }
 
 // Audio mix graph builder

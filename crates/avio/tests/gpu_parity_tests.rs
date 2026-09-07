@@ -154,17 +154,13 @@ const TOL_SHAPEMASK_MEAN: f64 = 4.0;
 // two frames; a single frame is unblended on both paths and would be vacuous (RK-015).
 // The margin covers GPU-driver rounding on other machines.
 const TOL_MOTIONBLUR_MEAN: f64 = 15.0;
-// Letterbox (#1661): the GPU fits the layer via `LayerTransform` (bilinear sampling in
-// `transform.wgsl`) where the CPU uses `scale=…:force_original_aspect_ratio=decrease` +
-// `pad` (sws). The fitted size mirrors FFmpeg's rounding, so the geometry is identical and
-// only the resampling differs. The 16:9-into-square fixture fits 1:1 (no resampling at
-// all): measured mean 0.0 here, bit-exact. The margin covers GPU-driver rounding elsewhere.
+// Placement (ADR-0016): the GPU places a layer via `LayerTransform` (bilinear sampling in
+// `transform.wgsl`) where the CPU builds `scale=canvas*s` + `overlay` (sws). The geometry
+// is identical on both, so only the resampling of a scaled layer differs; a native-size
+// or canvas-sized layer is not resampled at all and measures bit-exact. The name is
+// historical (it certified the letterbox fit before ADR-0016); the tolerance covers
+// GPU-driver rounding elsewhere for the placement, clipping and native-size tests.
 const TOL_LETTERBOX_MEAN: f64 = 12.0;
-// The same parity where the fit *does* rescale (3:2 upscaled into a 100x66 band), so the
-// GPU's bilinear sampler meets sws's bicubic: measured mean 0.14 (max 1) here. A band
-// misplaced by one row would land far outside this, so the fitted-size rounding is what
-// this number actually certifies.
-const TOL_LETTERBOX_RESCALE_MEAN: f64 = 15.0;
 
 /// A deterministic non-uniform pattern: R ramps in x, G in y, B in x+y. A stretch,
 /// letterbox, axis-swap, or channel bug shows up here where a flat fill would not
@@ -501,11 +497,11 @@ fn overlay_placement_gpu_should_match_cpu_within_tolerance() {
 }
 
 #[test]
-fn overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance() {
-    // The fixture that pins the multiplier against the **base** size rather than the
-    // canvas: a 0.5-scaled overlay over a 64x32 base in a 64x64 canvas was measured at
-    // (0, 16)..(31, 31) inclusive. Scaled against the canvas it would be twice as tall
-    // and would not sit inside the base's letterbox band at all.
+fn overlay_over_a_smaller_base_gpu_should_match_cpu_within_tolerance() {
+    // The fixture that pins the multiplier against the **canvas** (ADR-0016): a
+    // 0.5-scaled overlay over a 64x32 base in a 64x64 canvas is 32x32 at (0, 0), on both
+    // routes. The base itself sits at its native size in the top half; nothing is
+    // letterboxed.
     let canvas = (64, 64);
     let base = flat_frame(64, 32, 0);
     let over = flat_frame(64, 64, 255);
@@ -521,14 +517,14 @@ fn overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance() {
         return;
     };
     let Some(gpu_out) = gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas) else {
-        panic!("an overlay over a letterboxed base must composite on the GPU");
+        panic!("an overlay over a smaller base must composite on the GPU");
     };
 
-    let want = (0u32, 16u32, 31u32, 31u32);
+    let want = (0u32, 0u32, 31u32, 31u32);
     assert_eq!(lit_bbox(&gpu_out, canvas.0, canvas.1), Some(want));
     assert_eq!(lit_bbox(&cpu, canvas.0, canvas.1), Some(want));
     let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
-    println!("overlay over letterboxed base GPU vs CPU: mean={mean:.3}");
+    println!("overlay over smaller base GPU vs CPU: mean={mean:.3}");
     assert!(
         mean <= TOL_LETTERBOX_MEAN,
         "placement diverged: mean={mean}"
@@ -536,12 +532,11 @@ fn overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance() {
 }
 
 #[test]
-fn offset_overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance() {
-    // The fixture a mutation check said was missing: the offset must be measured against
-    // the **base** size, and only a fixture with a non-canvas base *and* a non-zero
-    // offset can tell that apart from measuring against the canvas. Base 64x32 in a
-    // 64x64 canvas, overlay scaled 0.5 at (10, 4) in base pixels -> the band is rows
-    // 16..47, and the overlay sits at (10, 20)..(41, 35) inside it.
+fn offset_overlay_over_a_smaller_base_gpu_should_match_cpu_within_tolerance() {
+    // The offset is measured against the canvas too: base 64x32 in a 64x64 canvas,
+    // overlay scaled 0.5 at (10, 4) -> (10, 4)..(41, 35), the same box it lands on over
+    // a canvas-sized base. Only a non-canvas base can tell that apart from a base-space
+    // reading, which would have put it at (10, 20).
     let canvas = (64, 64);
     let base = flat_frame(64, 32, 0);
     let over = flat_frame(64, 64, 255);
@@ -559,15 +554,22 @@ fn offset_overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance(
         return;
     };
     let Some(gpu_out) = gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas) else {
-        panic!("an offset overlay over a letterboxed base must composite on the GPU");
+        panic!("an offset overlay over a smaller base must composite on the GPU");
     };
 
+    let want = (10u32, 4u32, 41u32, 35u32);
     let gpu_box = lit_bbox(&gpu_out, canvas.0, canvas.1);
     let cpu_box = lit_bbox(&cpu, canvas.0, canvas.1);
-    println!("offset overlay over letterboxed base: gpu={gpu_box:?} cpu={cpu_box:?}");
+    println!("offset overlay over smaller base: gpu={gpu_box:?} cpu={cpu_box:?}");
     assert_eq!(
-        gpu_box, cpu_box,
-        "the offset must be measured against the base size, not the canvas"
+        gpu_box,
+        Some(want),
+        "the offset is measured against the canvas"
+    );
+    assert_eq!(
+        cpu_box,
+        Some(want),
+        "the CPU fixture must land where it was measured"
     );
     let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
     println!("offset overlay GPU vs CPU: mean={mean:.3}");
@@ -578,57 +580,68 @@ fn offset_overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance(
 }
 
 #[test]
-fn an_overlay_spilling_outside_the_base_should_fall_back() {
-    // `overlay` clips the layer to the base-sized accumulator on the CPU, while the GPU
-    // draws straight into the canvas and would show the overhang. Nothing to map that
-    // to, so it falls back (RK-020). Found by a mutation check: no fixture crossed the
-    // base edge, so nothing pinned it.
+fn an_overlay_hanging_off_the_canvas_should_clip_like_the_cpu() {
+    // The canvas is the clipping bound on both paths (ADR-0016): `overlay` clips to its
+    // canvas-sized accumulator, the GPU to its target. An overhang used to fall back
+    // (RK-020, when the base's letterbox band was the CPU's bound); now it is drawn and
+    // clipped identically. 40 + 0.5 * 64 = 72 > 64, so the visible part is (40, 0)..(63, 31).
     let canvas = (64, 64);
     let base = flat_frame(64, 64, 0);
     let over = flat_frame(64, 64, 255);
     let bottom = base_layer(64, 64, vec![]);
     let mut top = base_layer(64, 64, vec![]);
-    top.x = AnimatedValue::Static(40.0); // 40 + 0.5 * 64 = 72 > 64
+    top.x = AnimatedValue::Static(40.0);
     top.scale_x = AnimatedValue::Static(0.5);
     top.scale_y = AnimatedValue::Static(0.5);
 
     let Some(mut gpu) = GpuCompositor::new() else {
         return;
     };
-    assert!(
-        gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas).is_none(),
-        "an overlay hanging off the base edge must fall back"
-    );
+    let Some(cpu) = cpu_composite2(&[&bottom, &top], &[&base, &over], canvas) else {
+        return;
+    };
+    let Some(gpu_out) = gpu_composite2(&mut gpu, &[&bottom, &top], &[&base, &over], canvas) else {
+        panic!("an overlay hanging off the canvas must composite on the GPU, clipped");
+    };
+    let want = (40u32, 0u32, 63u32, 31u32);
+    assert_eq!(lit_bbox(&gpu_out, canvas.0, canvas.1), Some(want));
+    assert_eq!(lit_bbox(&cpu, canvas.0, canvas.1), Some(want));
+    let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
+    println!("overhang GPU vs CPU: mean={mean:.3}");
+    assert!(mean <= TOL_LETTERBOX_MEAN, "clipping diverged: mean={mean}");
 }
 
 #[test]
-fn a_positioned_single_layer_should_composite_on_the_gpu_unmoved() {
-    // A lone layer is the compositor's *base*, whose transform the CPU ignores entirely
-    // (measured). So the GPU must ignore it too -- and, since both agree, must stop
-    // falling back. Asserting it renders identically to the same layer left alone is
-    // what pins "ignored" rather than "applied a little".
+fn a_positioned_single_layer_gpu_should_match_cpu_within_tolerance() {
+    // A lone layer is the compositor's base, and its transform renders in canvas space on
+    // every route (ADR-0016): (10, 4) scaled 0.5 on a 64x64 canvas lights
+    // (10, 4)..(41, 35) inclusive. This used to pin "ignored", which the CPU export never
+    // was; the four-route check lives in `base_transform_tests`.
     let canvas = (64, 64);
-    let frame = VideoFrame::from_rgba(64, 64, gradient_rgba(64, 64)).unwrap();
-    let plain = base_layer(64, 64, vec![]);
+    let frame = flat_frame(64, 64, 255);
     let mut moved = base_layer(64, 64, vec![]);
     moved.x = AnimatedValue::Static(10.0);
     moved.y = AnimatedValue::Static(4.0);
     moved.scale_x = AnimatedValue::Static(0.5);
     moved.scale_y = AnimatedValue::Static(0.5);
-    moved.rotation = AnimatedValue::Static(30.0);
 
     let Some(mut gpu) = GpuCompositor::new() else {
         return;
     };
-    let Some(reference) = gpu_composite(&mut gpu, &plain, &frame, canvas) else {
-        panic!("an identity layer must composite");
+    let Some(cpu) = cpu_composite(&moved, &frame, canvas) else {
+        return;
     };
     let Some(got) = gpu_composite(&mut gpu, &moved, &frame, canvas) else {
-        panic!("a positioned base layer must no longer fall back (#1633)");
+        panic!("a positioned base layer must composite on the GPU");
     };
-    assert_eq!(
-        got, reference,
-        "a base layer transform is ignored on the CPU, so the GPU must not apply it"
+    let want = (10u32, 4u32, 41u32, 35u32);
+    assert_eq!(lit_bbox(&got, canvas.0, canvas.1), Some(want));
+    assert_eq!(lit_bbox(&cpu, canvas.0, canvas.1), Some(want));
+    let mean = mean_abs_diff_rgb(&got, &cpu);
+    println!("positioned single layer GPU vs CPU: mean={mean:.3}");
+    assert!(
+        mean <= TOL_LETTERBOX_MEAN,
+        "placement diverged: mean={mean}"
     );
 }
 
@@ -709,10 +722,11 @@ fn passthrough_gpu_should_match_cpu_within_tolerance() {
 }
 
 #[test]
-fn letterbox_gpu_should_match_cpu_within_tolerance() {
-    // #1661: a 16:9 layer on a square canvas used to fall back to CPU, because the
-    // compositor stretched it where the CPU path fits and pads. It now letterboxes, so
-    // both routes must agree. Double-gated (adapter + filters).
+fn a_base_smaller_than_the_canvas_gpu_should_match_cpu_at_native_size() {
+    // A 64x36 layer on a 64x64 canvas used to be letterboxed by both routes (#1661).
+    // Framing is a `FitMode` effect now (ADR-0016): the base sits at its native size from
+    // the top-left and the rest of the canvas stays black, on both routes. Double-gated
+    // (adapter + filters).
     let (fw, fh) = (64, 36);
     let canvas = (64, 64);
     let frame = VideoFrame::from_rgba(fw, fh, gradient_rgba(fw, fh)).unwrap();
@@ -724,85 +738,63 @@ fn letterbox_gpu_should_match_cpu_within_tolerance() {
         return; // filters unavailable
     };
     let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, canvas) else {
-        panic!("a 16:9 layer on a square canvas must now composite on the GPU");
+        panic!("a layer smaller than the canvas must composite on the GPU");
     };
     assert_eq!(gpu_out.len(), cpu.len());
 
-    // The bars are (64 - 36) / 2 = 14 rows top and bottom.
-    let bar = (canvas.1 - fh) / 2;
-    let top = box_mean_rgb(&gpu_out, canvas.0, 0, 0, canvas.0, bar);
-    let bottom = box_mean_rgb(&gpu_out, canvas.0, 0, canvas.1 - bar, canvas.0, canvas.1);
-    let band = box_mean_rgb(&gpu_out, canvas.0, 0, bar, canvas.0, canvas.1 - bar);
-    println!("letterbox GPU bars: top={top:?} bottom={bottom:?} band={band:?}");
-    // Non-vacuity, and the acceptance criterion itself: a *stretched* render fills the
-    // canvas, so its bar rows carry picture, while an all-black render would trivially
-    // match a black reference. Asserting both ends pins the geometry, not just the diff.
-    // RGB only: the compositor writes the canvas alpha to every output pixel (RK-024).
-    for (name, mean) in [("top", top), ("bottom", bottom)] {
-        assert!(
-            mean.iter().all(|c| *c < 2.0),
-            "the {name} letterbox bar must be black, got {mean:?} (a stretch fills it)"
-        );
-    }
+    // Rows 0..36 carry the picture; rows 36..64 are the canvas.
+    let picture = box_mean_rgb(&gpu_out, canvas.0, 0, 0, canvas.0, fh);
+    let below = box_mean_rgb(&gpu_out, canvas.0, 0, fh, canvas.0, canvas.1);
+    println!("native-size base GPU: picture={picture:?} below={below:?}");
+    // Non-vacuity, and the criterion itself: a *fit* would put picture in the lower
+    // rows and a *stretch* would fill them; both leave `below` non-black.
     assert!(
-        band.iter().any(|c| *c > 32.0),
-        "the letterboxed picture band must carry the source, got {band:?}"
+        below.iter().all(|c| *c < 2.0),
+        "the canvas below a native-size base must be black, got {below:?}"
+    );
+    assert!(
+        picture.iter().any(|c| *c > 32.0),
+        "the base rows must carry the source, got {picture:?}"
     );
 
     let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
     println!(
-        "letterbox GPU vs CPU: mean={mean:.3} max={}",
+        "native-size base GPU vs CPU: mean={mean:.3} max={}",
         max_abs_diff_rgb(&gpu_out, &cpu)
     );
     assert!(
         mean <= TOL_LETTERBOX_MEAN,
-        "GPU and CPU letterbox diverged beyond tolerance: mean={mean}"
+        "GPU and CPU native-size placement diverged beyond tolerance: mean={mean}"
     );
 }
 
 #[test]
-fn letterbox_gpu_should_match_cpu_when_the_fit_rescales() {
-    // The 16:9-into-square case above fits 1:1 (64x36 into a 64x36 band), so it drives
-    // the placement but neither the resampling nor the size rounding. This one does
-    // both: a 3:2 source into a 100x100 canvas fits to 100x66 — the exact height is
-    // 66.67, which `av_rescale` takes to 67 and `force_divisible_by=2` back down to 66.
-    // Getting that rounding wrong offsets the whole band by a row against the CPU leg.
-    let (fw, fh) = (30, 20);
-    let canvas = (100, 100);
+fn a_base_larger_than_the_canvas_gpu_should_match_cpu_clipped() {
+    // The mirror case: a 96x96 gradient on a 64x64 canvas is clipped at the canvas edge on
+    // both routes, so the visible picture is the top-left 64x64 of the source, not a
+    // downscaled whole. Double-gated (adapter + filters).
+    let (fw, fh) = (96, 96);
+    let canvas = (64, 64);
     let frame = VideoFrame::from_rgba(fw, fh, gradient_rgba(fw, fh)).unwrap();
     let layer = base_layer(fw, fh, vec![]);
     let Some(mut gpu) = GpuCompositor::new() else {
-        return; // no adapter
+        return;
     };
     let Some(cpu) = cpu_composite(&layer, &frame, canvas) else {
-        return; // filters unavailable
+        return;
     };
     let Some(gpu_out) = gpu_composite(&mut gpu, &layer, &frame, canvas) else {
-        panic!("a 3:2 layer on a square canvas must composite on the GPU");
+        panic!("a layer larger than the canvas must composite on the GPU, clipped");
     };
-
-    // The fitted band is 66 rows, so the bars are (100 - 66) / 2 = 17 rows each.
-    let bar = (canvas.1 - 66) / 2;
-    let top = box_mean_rgb(&gpu_out, canvas.0, 0, 0, canvas.0, bar);
-    let band = box_mean_rgb(&gpu_out, canvas.0, 0, bar, canvas.0, canvas.1 - bar);
-    println!("rescaled letterbox GPU bars: top={top:?} band={band:?}");
-    assert!(
-        top.iter().all(|c| *c < 2.0),
-        "the bar above a rescaled fit must be black, got {top:?}"
-    );
-    assert!(
-        band.iter().any(|c| *c > 32.0),
-        "the rescaled picture band must carry the source, got {band:?}"
-    );
-
+    assert_eq!(gpu_out.len(), cpu.len());
     let mean = mean_abs_diff_rgb(&gpu_out, &cpu);
     println!(
-        "rescaled letterbox GPU vs CPU: mean={mean:.3} max={}",
+        "clipped base GPU vs CPU: mean={mean:.3} max={}",
         max_abs_diff_rgb(&gpu_out, &cpu)
     );
     assert!(
-        mean <= TOL_LETTERBOX_RESCALE_MEAN,
-        "GPU and CPU rescaled letterbox diverged beyond tolerance: mean={mean}"
+        mean <= TOL_LETTERBOX_MEAN,
+        "GPU and CPU clipping diverged beyond tolerance: mean={mean}"
     );
 }
 
@@ -2367,13 +2359,10 @@ fn gpu_compositor_should_fall_back_not_panic_for_unsupported_inputs() {
         return; // no adapter
     };
 
-    // A positioned layer and a mixed-aspect stack both used to be listed here. #1633
-    // removed those fallbacks rather than fixing them, because neither was rendering
-    // anything wrong: a lone layer is the *base*, whose transform the CPU ignores, and
-    // an overlay is stretched to the base size, so its own aspect never survives to
-    // disagree with the base band. They are covered now by
-    // `a_positioned_single_layer_should_composite_on_the_gpu_unmoved` and
-    // `overlay_over_a_letterboxed_base_gpu_should_match_cpu_within_tolerance`, which
+    // A positioned layer and a mixed-aspect stack both used to be listed here. Neither
+    // is a refusal any more: every layer is placed in canvas space (ADR-0016), so they
+    // are covered by `a_positioned_single_layer_gpu_should_match_cpu_within_tolerance`
+    // and `overlay_over_a_smaller_base_gpu_should_match_cpu_within_tolerance`, which
     // assert the placement against the CPU instead of asserting a refusal.
     //
     // A **rotated overlay** is still genuinely unmappable, so it takes their place here.
@@ -2387,17 +2376,29 @@ fn gpu_compositor_should_fall_back_not_panic_for_unsupported_inputs() {
         "a rotated overlay must fall back"
     );
 
-    // An aspect so extreme that the fitted height rounds away to nothing (#1661): a
-    // 64x1 frame fits to 64x0 in a square canvas. A zero scale does not fail in
-    // `transform.wgsl` — it floors the divisor at 1e-4 and samples the layer entirely
-    // out of range — so without the guard this would render a silently black frame
-    // rather than fall back (RK-020).
-    let sliver = VideoFrame::from_rgba(w, 1, gradient_rgba(w, 1)).unwrap();
+    // A 64x1 sliver on a square canvas used to fall back because its *fit* rounded away
+    // to nothing (#1661). Nothing is fitted any more (ADR-0016): it sits at its native
+    // size on the top row on both routes, so it is a parity case now, not a refusal.
+    // Solid white, not a gradient: a one-row gradient's dim columns sit near the lit
+    // threshold and the two routes' resampling can disagree on them (measured once in
+    // the full suite), which would fail the box for content, not placement.
+    let sliver = VideoFrame::from_rgba(w, 1, solid_rgba(w, 1, [255; 3])).unwrap();
     let sliver_layer = base_layer(w, 1, vec![]);
-    assert!(
-        gpu_composite(&mut gpu, &sliver_layer, &sliver, (w, w)).is_none(),
-        "an aspect whose fit rounds away to nothing must fall back"
+    let want = Some((0, 0, w - 1, 0));
+    let gpu_out = gpu_composite(&mut gpu, &sliver_layer, &sliver, (w, w))
+        .expect("a sliver at native size composites on the GPU");
+    assert_eq!(
+        lit_bbox(&gpu_out, w, w),
+        want,
+        "the sliver is the top row on the GPU"
     );
+    if let Some(cpu) = cpu_composite(&sliver_layer, &sliver, (w, w)) {
+        assert_eq!(
+            lit_bbox(&cpu, w, w),
+            want,
+            "the sliver is the top row on the CPU"
+        );
+    }
 
     // No blend-mode case here: since #1669 every `ff_filter::BlendMode` maps to a
     // GPU node, so none can trigger a fallback. `map_blend_mode`'s remaining
