@@ -36,8 +36,8 @@ use ff_filter::{
 };
 use ff_format::VideoFrame;
 use ff_preview::{
-    FrameSink, Pacing, PlayerHandle, PreviewCompositor, Scene, ScenePlacement, ScenePlayer,
-    SceneSource, SceneVideoTrack,
+    FrameSink, Pacing, PlayerEvent, PlayerHandle, PreviewCompositor, Scene, ScenePlacement,
+    ScenePlayer, SceneSource, SceneVideoTrack,
 };
 
 /// The colour the injected blender returns. Opaque magenta: the source is real video and
@@ -209,10 +209,19 @@ fn run_scene(inject: bool) -> Option<(bool, u32)> {
     runner.set_sink(Box::new(SentinelSink {
         saw_sentinel: Arc::clone(&saw),
         frames: Arc::new(Mutex::new(0)),
-        handle,
+        handle: handle.clone(),
         max_frames: 40,
     }));
     runner.run().ok()?;
+    // A decoder that fails mid-stream ends the run before the window and looks like
+    // EOF to the runner. That is the environment (the macOS CI runner's automatic
+    // hardware decoder has done it), not the seam under test.
+    while let Some(event) = handle.poll_event() {
+        if let PlayerEvent::Error(msg) = event {
+            println!("skipping: the decoder failed mid-stream: {msg}");
+            return None;
+        }
+    }
 
     let saw = *saw.lock().unwrap();
     let blends = *blends.lock().unwrap();

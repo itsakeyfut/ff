@@ -82,6 +82,9 @@ Concretely:
   every frame, not real-time delivery.
 * Bad, because tests driven unpaced no longer exercise the drop path; `pacing_test` and
   `av_sync_test` are what keep it covered.
+* Neutral: this removes the wall clock as a cause of macOS flakes, not every cause. Measuring the
+  repeated runs exposed a second one, a hardware decoder failing mid-stream and ending the run as
+  if at EOF (#1789); the e2e tests skip on the resulting `PlayerEvent::Error` until that is fixed.
 * What would reverse this: a runner that no longer owns pacing (for instance one driven by a
   caller-supplied clock), at which point `Pacing` becomes the caller's concern.
 

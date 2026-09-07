@@ -106,7 +106,10 @@ See [perf.md](./perf.md). Critical paths only; not run in CI.
   (`av_sync_test`, and the ignored control-timing tests in `timeline_preview_tests`). The
   real-time loop drops any frame more than a period late, so a lower bound on delivered frames or
   on the frames inside a transition window is flaky by construction on a loaded runner; unpaced,
-  every decoded frame is delivered and the bound can be exact (ADR-0015).
+  every decoded frame is delivered and the bound can be exact (ADR-0015). After `run`, drain
+  `handle.poll_event()` and skip on a `PlayerEvent::Error`: a decoder that fails mid-stream ends
+  the run as if at EOF, which the macOS runner's automatic hardware decoder does intermittently
+  (#1789), and that is the environment, not the runner.
 
 ---
 
