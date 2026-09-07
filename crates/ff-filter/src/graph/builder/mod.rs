@@ -896,6 +896,9 @@ impl FilterGraphBuilder {
             });
         }
 
+        // Pure and registry-independent, so it runs first: `validate_filter_steps`
+        // returns `Ok` early when the registry is empty and would mask it.
+        crate::filter_inner::validate_composite_ops(&self.steps)?;
         crate::filter_inner::validate_filter_steps(&self.steps)?;
         crate::filter_inner::validate_parse_descs(&self.steps)?;
         let output_resolution = self.steps.iter().rev().find_map(|s| {

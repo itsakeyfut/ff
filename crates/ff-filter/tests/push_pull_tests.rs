@@ -2462,171 +2462,79 @@ fn composite_under_should_place_bottom_over_top() {
     assert_eq!(out.height(), 64, "output height must match input");
 }
 
+/// The expression operators are refused at `build()` on the filter path (#1753,
+/// ADR-0014). What the chain could compute for them is per-channel arithmetic on
+/// `yuv420p`, not alpha compositing, so it does not build them at all until #1784
+/// carries alpha through the chain.
+///
+/// No probe gate: the check is pure and runs before the filter-name lookup, so it
+/// reports identically on CI's minimal `FFmpeg` (the second exception to "build()
+/// is lazy", next to `parse_desc`).
 #[test]
-fn composite_in_should_produce_black_where_bottom_is_black() {
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
+fn composite_expression_operators_should_be_rejected_at_build() {
+    for op in [
+        CompositeOp::In,
+        CompositeOp::Out,
+        CompositeOp::Atop,
+        CompositeOp::Xor,
+    ] {
+        let top = FilterGraphBuilder::new().trim(0.0, 5.0);
+        let built = FilterGraph::builder()
+            .trim(0.0, 5.0)
+            .composite(top, op, 1.0, AlphaMode::Straight)
+            .build();
+        assert!(
+            matches!(
+                built,
+                Err(ff_filter::FilterError::UnsupportedCompositeOp { op: got }) if got == op
+            ),
+            "{op:?} must be refused at build with UnsupportedCompositeOp"
+        );
+    }
+}
+
+/// The check recurses: an operator hidden inside the *top* layer's own chain is
+/// refused too, even when the outer composite is a supported `Over`.
+#[test]
+fn composite_expression_operator_nested_in_a_top_chain_should_be_rejected_at_build() {
+    let inner = FilterGraphBuilder::new().trim(0.0, 5.0);
+    let top = FilterGraphBuilder::new().trim(0.0, 5.0).composite(
+        inner,
+        CompositeOp::Xor,
+        1.0,
+        AlphaMode::Straight,
+    );
+    let built = FilterGraph::builder()
         .trim(0.0, 5.0)
-        .composite(top, CompositeOp::In, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 0);
-    let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+        .composite(top, CompositeOp::Over, 1.0, AlphaMode::Straight)
+        .build();
     assert!(
-        avg < 10.0,
-        "Composite In with black bottom should produce black output (avg={avg})"
+        matches!(
+            built,
+            Err(ff_filter::FilterError::UnsupportedCompositeOp {
+                op: CompositeOp::Xor
+            })
+        ),
+        "a Xor nested inside the top chain must be refused at build"
     );
 }
 
+/// The refusal is selective: `Under` (the swapped-pad `overlay` construction) passes
+/// the eager check. `build()` is lazy past that point, so only "not refused" is
+/// asserted here; `composite_under_should_place_bottom_over_top` above pushes a frame.
 #[test]
-fn composite_atop_should_combine_both_layers_by_luma() {
+fn composite_under_should_not_be_rejected_at_build() {
     let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
+    let built = FilterGraph::builder()
         .trim(0.0, 5.0)
-        .composite(top, CompositeOp::Atop, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 100);
-    let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
+        .composite(top, CompositeOp::Under, 1.0, AlphaMode::Straight)
+        .build();
     assert!(
-        avg > 85.0 && avg < 115.0,
-        "Composite Atop output luma should equal bottom luma (~100), got avg={avg}"
-    );
-}
-
-#[test]
-fn composite_xor_identical_luma_should_produce_black() {
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .composite(top, CompositeOp::Xor, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 255);
-    let top_frame = make_solid_yuv_frame(64, 64, 255);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
-    assert!(
-        avg < 10.0,
-        "Composite Xor of identical full-luma shapes should produce black (avg={avg})"
-    );
-}
-
-#[test]
-fn composite_out_should_produce_black_where_bottom_is_white() {
-    let top = FilterGraphBuilder::new().trim(0.0, 5.0);
-    let mut graph = match FilterGraph::builder()
-        .trim(0.0, 5.0)
-        .composite(top, CompositeOp::Out, 1.0, AlphaMode::Straight)
-        .build()
-    {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    };
-    let bottom = make_solid_yuv_frame(64, 64, 255);
-    let top_frame = make_solid_yuv_frame(64, 64, 200);
-    match graph.push_video(0, &bottom) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    match graph.push_video(1, &top_frame) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("Skipping: {e}");
-            return;
-        }
-    }
-    let out = graph
-        .pull_video()
-        .expect("pull_video must not fail")
-        .expect("expected Some(frame)");
-    let luma = out.plane(0).expect("Y plane must exist");
-    let avg = luma.iter().map(|&b| b as f32).sum::<f32>() / luma.len() as f32;
-    assert!(
-        avg < 10.0,
-        "Composite Out with white bottom should produce black output (avg={avg})"
+        !matches!(
+            built,
+            Err(ff_filter::FilterError::UnsupportedCompositeOp { .. })
+        ),
+        "Under is implemented on the filter path and must not be refused"
     );
 }
 

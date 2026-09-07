@@ -111,6 +111,37 @@ pub(crate) fn validate_filter_steps(steps: &[FilterStep]) -> Result<(), FilterEr
     Ok(())
 }
 
+/// Refuse every [`FilterStep::Composite`] whose operator the filter path cannot
+/// build correctly, before anything touches `FFmpeg`.
+///
+/// `In`/`Out`/`Atop`/`Xor` need the backdrop's alpha, which the filter chain
+/// does not carry (#1784); building them would compute per-channel arithmetic
+/// and present it as Porter-Duff. So `build()` returns
+/// [`FilterError::UnsupportedCompositeOp`] instead (#1753, ADR-0014). This is
+/// the second step kind checked eagerly at `build()` (the first is
+/// `ParseDesc`), and unlike that one it is pure: no filter registry is consulted,
+/// so it reports the same way on a minimal `FFmpeg` build.
+///
+/// Recurses into every step that nests a builder (`Blend`, `Composite`,
+/// `AlphaMatte`), so an operator hidden inside a layer of its own chain is
+/// refused too.
+pub(crate) fn validate_composite_ops(steps: &[FilterStep]) -> Result<(), FilterError> {
+    for step in steps {
+        match step {
+            FilterStep::Composite { op, top, .. } => {
+                if !op.is_filter_path_supported() {
+                    return Err(FilterError::UnsupportedCompositeOp { op: *op });
+                }
+                validate_composite_ops(top.steps())?;
+            }
+            FilterStep::Blend { top, .. } => validate_composite_ops(top.steps())?,
+            FilterStep::AlphaMatte { matte, .. } => validate_composite_ops(matte.steps())?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Check every [`FilterStep::ParseDesc`] by parsing its description into a
 /// scratch `AVFilterGraph` that is thrown away.
 ///

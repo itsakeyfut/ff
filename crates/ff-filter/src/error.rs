@@ -51,6 +51,22 @@ pub enum FilterError {
         reason: String,
     },
 
+    /// A [`CompositeOp`](crate::CompositeOp) the filter path does not implement
+    /// correctly yet.
+    ///
+    /// `In`, `Out`, `Atop` and `Xor` need the backdrop's alpha, which the filter
+    /// chain does not carry (#1784). Rather than compute per-channel arithmetic
+    /// and present it as Porter-Duff, the graph refuses to build; the GPU
+    /// compositor renders these operators.
+    #[error(
+        "composite operator {op:?} is not implemented on the filter path; \
+         it renders on the GPU compositor only (#1784)"
+    )]
+    UnsupportedCompositeOp {
+        /// The operator that was asked for.
+        op: crate::CompositeOp,
+    },
+
     /// An analysis operation failed for a structural reason.
     ///
     /// Returned by [`LoudnessMeter::measure`](crate::analysis::LoudnessMeter::measure)
@@ -83,6 +99,7 @@ impl MediaError for FilterError {
             Self::BuildFailed
             | Self::InvalidConfig { .. }
             | Self::CompositionFailed { .. }
+            | Self::UnsupportedCompositeOp { .. }
             | Self::AnalysisFailed { .. }
             | Self::GplRequired { .. } => ErrorSeverity::Fatal,
         }

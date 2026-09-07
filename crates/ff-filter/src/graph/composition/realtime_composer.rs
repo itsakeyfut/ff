@@ -1951,14 +1951,13 @@ mod tests {
     }
 
     #[test]
-    fn overlay_composite_expr_ops_should_build_and_pull() {
-        // C4b: the expression-based Porter-Duff operators (In/Out/Atop/Xor) must build
-        // the `blend all_expr` node in the realtime compositor and pull an rgba frame.
-        // Probe-gated.
-        if RealtimeComposer::new(&[base_8x8()]).is_err() {
-            println!("Skipping: FFmpeg filters unavailable");
-            return;
-        }
+    fn overlay_composite_expr_ops_should_be_rejected_at_build() {
+        // C4b, inverted by #1753 (ADR-0014): the expression operators are refused
+        // when the realtime composer is built, because the filter path cannot carry
+        // the backdrop's alpha and would otherwise compute per-channel arithmetic
+        // under the operator's name. The `all_opacity` branch those operators drove
+        // is unreachable until #1784. Pure check, so no probe gate: it reports the
+        // same on CI's minimal FFmpeg.
         for op in [
             CompositeOp::In,
             CompositeOp::Out,
@@ -1967,62 +1966,14 @@ mod tests {
         ] {
             let mut overlay = base_8x8();
             overlay.composite_op = op;
-            // The no-effect probe above guarantees the base filter set; `blend` may
-            // still be absent on a partial host, so degrade gracefully (RK-002).
-            let mut composer = match RealtimeComposer::new(&[base_8x8(), overlay]) {
-                Ok(c) => c,
-                Err(e) => {
-                    println!("Skipping {op:?}: {e}");
-                    continue;
-                }
-            };
-            let bf = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
-            let tf = VideoFrame::from_rgba(8, 8, vec![180u8; 8 * 8 * 4]).unwrap();
-            if composer.push_layer(0, &bf).is_err() || composer.push_layer(1, &tf).is_err() {
-                println!("Skipping {op:?}: push failed (FFmpeg unavailable?)");
-                continue;
-            }
-            match composer.pull() {
-                Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
-                Ok(None) => println!("Skipping {op:?}: no frame produced"),
-                Err(e) => println!("Skipping {op:?}: {e}"),
-            }
-        }
-    }
-
-    #[test]
-    fn overlay_composite_expr_op_with_opacity_should_build_and_pull() {
-        // C4b: an expr operator (`In`) with opacity < 1.0 exercises the `all_opacity`
-        // branch of `add_blend_expr_step` — this asserts FFmpeg accepts the
-        // `all_expr=…:all_opacity=0.500000` argument (validated at push, RK-001) and the
-        // graph pulls an rgba frame. Note: on the realtime rgba inputs `blend`'s
-        // `all_opacity` currently has no visible effect (it is planar-oriented, which is
-        // why export normalises to yuv420p); real attenuation for the channel-math
-        // operators lands with the Q2 colour-space reconciliation. Probe-gated.
-        if RealtimeComposer::new(&[base_8x8()]).is_err() {
-            println!("Skipping: FFmpeg filters unavailable");
-            return;
-        }
-        let mut overlay = base_8x8();
-        overlay.composite_op = CompositeOp::In;
-        overlay.opacity = AnimatedValue::Static(0.5);
-        let mut composer = match RealtimeComposer::new(&[base_8x8(), overlay]) {
-            Ok(c) => c,
-            Err(e) => {
-                println!("Skipping: {e}");
-                return;
-            }
-        };
-        let bf = VideoFrame::from_rgba(8, 8, vec![120u8; 8 * 8 * 4]).unwrap();
-        let tf = VideoFrame::from_rgba(8, 8, vec![180u8; 8 * 8 * 4]).unwrap();
-        if composer.push_layer(0, &bf).is_err() || composer.push_layer(1, &tf).is_err() {
-            println!("Skipping: push failed (FFmpeg unavailable? / bad all_opacity arg)");
-            return;
-        }
-        match composer.pull() {
-            Ok(Some(out)) => assert_eq!(out.format(), PixelFormat::Rgba),
-            Ok(None) => println!("Skipping: no frame produced"),
-            Err(e) => println!("Skipping: {e}"),
+            let built = RealtimeComposer::new(&[base_8x8(), overlay]);
+            assert!(
+                matches!(
+                    built,
+                    Err(FilterError::UnsupportedCompositeOp { op: got }) if got == op
+                ),
+                "{op:?} must be refused at build on the realtime composer"
+            );
         }
     }
 

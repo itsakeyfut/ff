@@ -1103,12 +1103,12 @@ fn multi_track_composition_should_produce_yuv420p_frames() {
 
 // #1222: non-Over CompositeOp layer compositing
 
-/// A layer with a non-`Over` `composite_op` (here `In`) composites via the
-/// Porter-Duff `blend all_expr` construction. Uses a `lavfi` source so no fixture
-/// file is needed. Probe-gated: CI's Linux FFmpeg has no filters compiled in, so
-/// `build`/`pull` failure → skip (RK-002).
+/// A layer with an expression operator (here `In`) is refused when the composer is
+/// built: the filter path cannot carry the backdrop's alpha, so it does not build
+/// these operators at all (#1753, ADR-0014; #1784 lifts this). The check is pure
+/// and runs before any `FFmpeg` call, so it is asserted without a probe gate.
 #[test]
-fn composite_op_in_layer_should_build_and_produce_frame() {
+fn composite_op_in_layer_should_be_rejected_at_build() {
     let layer = VideoLayer {
         source: LayerSource::Lavfi("color=c=white:s=64x64:r=25:d=1".to_string()),
         proxy: None,
@@ -1122,29 +1122,16 @@ fn composite_op_in_layer_should_build_and_produce_frame() {
         composite_op: ff_filter::CompositeOp::In,
         effects: vec![],
     };
-    let mut graph = match MultiTrackComposer::new(64, 64).add_layer(layer).build() {
-        Ok(g) => g,
-        Err(e) => {
-            println!("Skipping: MultiTrackComposer::build failed: {e}");
-            return;
-        }
-    };
-    match graph.pull_video() {
-        Ok(Some(frame)) => {
-            assert_eq!(
-                frame.width(),
-                64,
-                "composite In must not change frame width"
-            );
-            assert_eq!(
-                frame.height(),
-                64,
-                "composite In must not change frame height"
-            );
-        }
-        Ok(None) => println!("Skipping: composite graph produced no frame"),
-        Err(e) => println!("Skipping: pull_video failed: {e}"),
-    }
+    let built = MultiTrackComposer::new(64, 64).add_layer(layer).build();
+    assert!(
+        matches!(
+            built,
+            Err(ff_filter::FilterError::UnsupportedCompositeOp {
+                op: ff_filter::CompositeOp::In
+            })
+        ),
+        "an In layer must be refused when the composer is built"
+    );
 }
 
 /// A layer with `composite_op = Under` composites via the swapped-pad `overlay`

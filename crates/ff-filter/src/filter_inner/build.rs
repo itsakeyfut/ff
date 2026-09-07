@@ -1964,6 +1964,12 @@ pub(crate) unsafe fn add_composite_step(
     alpha: AlphaMode,
     index: usize,
 ) -> Result<*mut ff_sys::AVFilterContext, FilterError> {
+    // Every public entry point refuses these before reaching here; this keeps the
+    // invariant local so no future caller can build the per-channel arithmetic and
+    // call it Porter-Duff (#1753, ADR-0014).
+    if !op.is_filter_path_supported() {
+        return Err(FilterError::UnsupportedCompositeOp { op });
+    }
     // `blend_all_expr` is `Some` for In/Out/Atop/Xor (built via `blend all_expr`),
     // `None` for Over/Under (built via the `overlay` filter).
     match op.blend_all_expr() {
