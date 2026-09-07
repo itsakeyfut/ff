@@ -17,6 +17,7 @@ In editing work, being able to confirm the result of a change on the spot is ind
 ## Capabilities
 
 - Instant playback of the video being edited (play, pause, and stop operations)
+- Playback paced to real time, or unpaced so that every frame is delivered as soon as it is ready (exhaustive checks, thumbnail strips)
 - Precise movement to any time position and confirmation there
 - Audio-synchronized playback of audio and video
 - Handoff of video in a form suited to rendering, where the display target can be prepared by the caller

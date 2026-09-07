@@ -44,7 +44,7 @@ use crate::playback::player_handle::PlayerHandle;
 
 pub use compositor::PreviewCompositor;
 pub use inner::apply_xfade;
-pub use runner::SceneRunner;
+pub use runner::{Pacing, SceneRunner};
 pub use types::{
     Scene, SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneSource, SceneVideoTrack,
 };

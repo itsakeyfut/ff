@@ -169,8 +169,8 @@ pub use ff_pipeline::{EncoderConfig, EncoderConfigBuilder, Progress};
 mod player;
 #[cfg(feature = "preview")]
 pub use ff_preview::{
-    PlayerHandle, PreviewCompositor, PreviewError, Scene, SceneAudioPlacement, SceneAudioTrack,
-    ScenePlacement, SceneRunner, SceneSource, SceneVideoTrack,
+    Pacing, PlayerHandle, PreviewCompositor, PreviewError, Scene, SceneAudioPlacement,
+    SceneAudioTrack, ScenePlacement, SceneRunner, SceneSource, SceneVideoTrack,
 };
 #[cfg(feature = "preview")]
 pub use player::TimelinePlayer;

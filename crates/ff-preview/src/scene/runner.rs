@@ -129,10 +129,42 @@ fn ensure_dissolve_field(field: &mut Vec<f32>, dims: &mut (u32, u32), w: u32, h:
     true
 }
 
+/// How [`SceneRunner::run`] paces frame delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Pacing {
+    /// Deliver frames against the wall clock: sleep until a frame is due and
+    /// drop one that is more than a frame period late. Playback.
+    #[default]
+    RealTime,
+    /// Deliver every frame as soon as it is decoded: the clock is the runner's
+    /// own position, moved one frame period per presented frame, so nothing is
+    /// ever late and nothing is dropped or slept for. For checks that must see
+    /// each frame (tests, thumbnail strips). Reverse playback and the pause
+    /// poll still wait on the wall clock.
+    Unpaced,
+}
+
 impl SceneRunner {
     /// Register the frame sink. Call before [`run`](Self::run).
     pub fn set_sink(&mut self, sink: Box<dyn FrameSink>) {
         self.sink = Some(sink);
+    }
+
+    /// Choose how frames are paced. Call before [`run`](Self::run); the default
+    /// is [`Pacing::RealTime`]. Switching keeps the current position.
+    pub fn set_pacing(&mut self, pacing: Pacing) {
+        let current = self.clock.current_pts();
+        self.clock = match pacing {
+            Pacing::RealTime => MasterClock::System {
+                started_at: std::time::Instant::now(),
+                base_pts: current,
+                // A wall clock only runs forward; reverse playback keeps its own
+                // stepping and never reads the clock's rate.
+                rate: if self.rate > 0.0 { self.rate } else { 1.0 },
+            },
+            Pacing::Unpaced => MasterClock::Stepped { pts: current },
+        };
     }
 
     /// Register an external GPU compositor tried before the built-in CPU path.
@@ -356,6 +388,9 @@ impl SceneRunner {
 
         let fps = self.fps.max(1.0);
         let frame_period = Duration::from_secs_f64(1.0 / fps);
+        // `Pacing::Unpaced`: the clock is moved by this loop, never by wall time,
+        // so the pacing sleep and the late-frame drop below are both skipped.
+        let stepped = self.clock.is_stepped();
         self.clock.reset(Duration::ZERO);
 
         loop {
@@ -926,13 +961,17 @@ impl SceneRunner {
                                         None => sink.push_frame(&self.gap_buf, gw, gh, gap_pts),
                                     }
                                 }
-                                thread::sleep(frame_period);
+                                if stepped {
+                                    self.clock.advance(frame_period);
+                                } else {
+                                    thread::sleep(frame_period);
+                                }
                             }
-                        } else if diff > fp {
+                        } else if !stepped && diff > fp {
                             let sleep_secs =
                                 (diff - fp / 2.0).max(0.0) / self.rate.max(f64::MIN_POSITIVE);
                             thread::sleep(Duration::from_secs_f64(sleep_secs));
-                        } else if diff < -fp {
+                        } else if !stepped && diff < -fp {
                             log::debug!(
                                 "timeline dropped late frame timeline_pts={timeline_pts:?} \
                                  clock_pts={clock_pts:?}"
@@ -1094,6 +1133,11 @@ impl SceneRunner {
                                 }
                                 None => sink.push_frame(&self.rgba_a, w, h, timeline_pts),
                             }
+                        }
+                        // Unpaced: the next frame is due now, and a gap after this
+                        // one is measured from the slot following it.
+                        if stepped {
+                            self.clock.reset(timeline_pts + frame_period);
                         }
 
                         // Advance past a completed transition.

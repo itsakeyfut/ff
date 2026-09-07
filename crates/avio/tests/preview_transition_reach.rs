@@ -25,7 +25,7 @@ mod fixtures;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use avio::{Clip, PlayerHandle, PreviewCompositor, Timeline, TimelinePlayer};
+use avio::{Clip, Pacing, PlayerHandle, PreviewCompositor, Timeline, TimelinePlayer};
 use ff_encode::{VideoCodec, VideoEncoder};
 use ff_filter::{RealtimeLayer, XfadeTransition};
 use ff_format::{VideoFrame, VideoFrame as Frame};
@@ -210,6 +210,7 @@ fn the_preview_runner_should_reach_the_transition_on_a_derived_scene() {
                 return;
             }
         };
+        runner.set_pacing(Pacing::Unpaced);
         runner.set_gpu_compositor(Box::new(CountingBlender {
             blends: Arc::clone(&blends),
         }));
@@ -221,12 +222,12 @@ fn the_preview_runner_should_reach_the_transition_on_a_derived_scene() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     println!("the runner offered {blends} blends");
-    // Not a frame count: the runner is real-time and drops frames under load, so the
-    // window can deliver fewer than its nominal 15. What is asserted is that it opened
-    // at all, which is the whole of #1737.
-    assert!(
-        blends > 0,
-        "the runner never armed the transition on an engine-derived scene: the preview \
-         is showing a hard cut where the export writes a cross-fade (#1737)"
+    // Unpaced, every frame in the window is offered, so the count is the window's
+    // nominal 15 frames exactly (ADR-0015). Zero is #1737: the preview showing a hard
+    // cut where the export writes a cross-fade.
+    assert_eq!(
+        blends, 15,
+        "the runner must offer every frame of the transition window on an \
+         engine-derived scene; zero means it never armed the transition (#1737)"
     );
 }

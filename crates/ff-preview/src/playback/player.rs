@@ -212,7 +212,7 @@ impl PreviewPlayer {
             MasterClock::Audio {
                 samples_consumed, ..
             } => Some(Arc::clone(samples_consumed)),
-            MasterClock::System { .. } => None,
+            MasterClock::System { .. } | MasterClock::Stepped { .. } => None,
         };
 
         let audio_buf_for_handle = self.audio_buf.clone();

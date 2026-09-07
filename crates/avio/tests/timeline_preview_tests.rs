@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-use avio::{Clip, PlayerHandle, Timeline, TimelinePlayer};
+use avio::{Clip, Pacing, PlayerHandle, Timeline, TimelinePlayer};
 // `FrameSink` / `PlayerEvent` are ff-preview primitives (avio no longer re-exports
 // standalone preview types; it keeps only the TimelinePlayer engine surface).
 use ff_preview::{FrameSink, PlayerEvent};
@@ -53,6 +53,7 @@ fn timeline_runner_run_should_deliver_frames_for_single_clip() {
         }
     };
 
+    runner.set_pacing(Pacing::Unpaced);
     runner.set_sink(Box::new(CountSink(0, handle.clone())));
     let _ = runner.run();
 
@@ -246,6 +247,7 @@ fn timeline_runner_should_render_and_advance_generated_solid_sources() {
     };
 
     let pts = Arc::new(Mutex::new(Vec::<Duration>::new()));
+    runner.set_pacing(Pacing::Unpaced);
     runner.set_sink(Box::new(PtsSink {
         pts: Arc::clone(&pts),
         handle: handle.clone(),

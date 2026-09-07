@@ -25,7 +25,7 @@ mod fixtures;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use avio::{Clip, GpuPreviewCompositor, PlayerHandle, Timeline, TimelinePlayer};
+use avio::{Clip, GpuPreviewCompositor, Pacing, PlayerHandle, Timeline, TimelinePlayer};
 use ff_encode::{VideoCodec, VideoEncoder};
 use ff_filter::FilterStep;
 use ff_format::VideoFrame;
@@ -169,6 +169,7 @@ fn a_motion_blur_trail_should_not_survive_a_seek_in_preview() {
 
     let target = CLIP + Duration::from_millis(400);
     let frames = Arc::new(Mutex::new(Vec::new()));
+    runner.set_pacing(Pacing::Unpaced);
     runner.set_gpu_compositor(Box::new(compositor));
     runner.set_sink(Box::new(SeekingSink {
         frames: Arc::clone(&frames),
@@ -234,6 +235,7 @@ fn a_motion_blur_trail_should_not_bleed_across_a_clip_cut_in_preview() {
     };
 
     let frames = Arc::new(Mutex::new(Vec::new()));
+    runner.set_pacing(Pacing::Unpaced);
     runner.set_gpu_compositor(Box::new(compositor));
     runner.set_sink(Box::new(RecordingSink {
         frames: Arc::clone(&frames),
