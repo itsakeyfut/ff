@@ -3,9 +3,9 @@
 //! Wraps [`GpuCompositor`](crate::gpu_compositor::GpuCompositor) as an
 //! `ff_preview::PreviewCompositor`, so the preview runner composites on the GPU by
 //! default and falls back to its built-in CPU compositor when the core returns `None`
-//! (an unsupported layer, no adapter, or a GPU error). All the compositing logic, the
-//! v1 identity gate, and the letterbox live in the shared core; this file only adapts
-//! the preview layer type.
+//! (an unsupported layer, no adapter, or a GPU error). All the compositing logic and
+//! the layer placement live in the shared core; this file only adapts the preview
+//! layer type.
 
 use std::time::Duration;
 
@@ -263,29 +263,37 @@ mod tests {
     }
 
     #[test]
-    fn gpu_preview_compositor_should_render_a_positioned_base_layer_unmoved() {
-        // This used to assert a fallback. A lone layer is the compositor's **base**,
-        // and the CPU ignores a base layer transform entirely (measured; see
-        // `gpu_compositor::layer_transform`), so falling back bought nothing -- both
-        // routes render the same pixels either way. #1633.
+    fn gpu_preview_compositor_should_place_a_positioned_base_layer() {
+        // A lone layer is the compositor's **base**, and its placement renders in
+        // canvas space like any layer's (ADR-0016): moved two pixels right on a 4x4
+        // canvas, the left two columns are the canvas and the right two the frame.
         // Probe-gated (RK-002).
         let Some(mut gpu) = GpuPreviewCompositor::new() else {
             return;
         };
-        let frame = VideoFrame::from_rgba(4, 4, vec![50u8; 4 * 4 * 4]).unwrap();
-        let plain = identity_layer(4, 4);
-        let reference = gpu
-            .composite(&[(&plain, &frame)], (4, 4), Duration::ZERO)
-            .expect("an identity layer composites");
-
+        // Opaque: an alpha of 50 would composite at a fifth of its colour and read as
+        // "not moved" for the wrong reason.
+        let mut pixels = vec![50u8; 4 * 4 * 4];
+        for px in pixels.as_chunks_mut::<4>().0 {
+            px[3] = 255;
+        }
+        let frame = VideoFrame::from_rgba(4, 4, pixels).unwrap();
         let mut layer = identity_layer(4, 4);
-        layer.x = AnimatedValue::Static(100.0);
-        let moved = gpu
+        layer.x = AnimatedValue::Static(2.0);
+        let (rgba, w, _h) = gpu
             .composite(&[(&layer, &frame)], (4, 4), Duration::ZERO)
-            .expect("a positioned base layer must no longer fall back");
-        assert_eq!(
-            moved.0, reference.0,
-            "a base layer transform is ignored on the CPU, so it must not move here"
-        );
+            .expect("a positioned base layer composites");
+        let red = |x: u32, y: u32| rgba[((y * w + x) * 4) as usize];
+        for y in 0..4 {
+            let row: Vec<u8> = (0..4).map(|x| red(x, y)).collect();
+            assert!(
+                red(0, y) < 4 && red(1, y) < 4,
+                "row {y}: the vacated columns stay canvas: {row:?}"
+            );
+            assert!(
+                red(2, y) > 40 && red(3, y) > 40,
+                "row {y}: the frame moved right by two: {row:?}"
+            );
+        }
     }
 }

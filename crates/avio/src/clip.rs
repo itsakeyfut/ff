@@ -190,10 +190,11 @@ pub struct Clip {
     /// Takes precedence over the static [`opacity`](Self::opacity) when set.
     /// Defaults to `None` (use the static `opacity`).
     pub opacity_track: Option<AnimationTrack<f64>>,
-    /// Static overlay position (pixels) of this clip's top-left on the canvas.
+    /// Static position (pixels) of this clip's top-left on the canvas.
     ///
-    /// Maps to the `overlay` filter's `x`/`y`. Default `(0.0, 0.0)`. Meaningful for
-    /// overlay (non-base) layers — a Picture-in-Picture placement.
+    /// Maps to the `overlay` filter's `x`/`y`. Default `(0.0, 0.0)`. Applies to every
+    /// clip, the bottom track's included (ADR-0016): a lone clip placed at `(320, 180)`
+    /// renders there on every route, with the canvas background around it.
     pub x: f64,
     /// See [`x`](Self::x).
     pub y: f64,
@@ -213,7 +214,9 @@ pub struct Clip {
     ///
     /// Drives both the horizontal and vertical scale of the clip's
     /// [`VideoLayer`](ff_filter::VideoLayer). Default `1.0`. Superseded by
-    /// [`scale_track`](Self::scale_track) when a track is set.
+    /// [`scale_track`](Self::scale_track) when a track is set. Note that the
+    /// compositors size a scaled layer as `canvas * scale`, so any value other than
+    /// exactly `1.0` is relative to the canvas, not to the source frame.
     pub scale: f64,
     /// Optional keyframe track animating this clip's [`scale`](Self::scale) over time
     /// (timeline-global time). Drives both scale axes; takes precedence over the

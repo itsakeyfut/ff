@@ -42,19 +42,22 @@ pub struct RealtimeLayer {
     /// [`AnimatedValue::Track`] registers the node for per-frame `send_command`. No
     /// effect on the base layer 0 (apply base opacity host-side).
     pub opacity: AnimatedValue<f64>,
-    /// Overlay X position (pixels) on the canvas, static or animated. Maps to the
-    /// `overlay` filter's `x` (Normal blend only); a [`AnimatedValue::Track`] uses
-    /// `:eval=frame` + per-frame `send_command`. No effect on the base layer 0.
+    /// X position (pixels) of this layer's top-left on the canvas, static or
+    /// animated. Maps to the `overlay` filter's `x` (Normal blend only); a
+    /// [`AnimatedValue::Track`] uses `:eval=frame` + per-frame `send_command`.
+    /// Applies to the base layer 0 too (ADR-0016).
     pub x: AnimatedValue<f64>,
     /// Overlay Y position; see [`x`](Self::x).
     pub y: AnimatedValue<f64>,
     /// Horizontal scale multiplier, evaluated statically at t=0 (matching the export
-    /// path). `1.0` = unscaled. Applied to overlay layers before their effects.
+    /// path): `1.0` leaves the frame at its native size, any other value scales it
+    /// to `canvas * scale_x`. Applied before the layer's effects, on every layer.
     pub scale_x: AnimatedValue<f64>,
     /// Vertical scale multiplier; see [`scale_x`](Self::scale_x).
     pub scale_y: AnimatedValue<f64>,
-    /// Rotation in degrees, evaluated statically at t=0 (matching the export path).
-    /// `0.0` = no rotation. Applied to overlay layers before their effects.
+    /// Clockwise rotation in degrees, evaluated statically at t=0 (matching the
+    /// export path); `0.0` = no rotation, exposed corners fill black. Applied before
+    /// the layer's effects, on every layer.
     pub rotation: AnimatedValue<f64>,
     /// How this layer blends with the layer below. [`BlendMode::Normal`] uses
     /// `overlay`; other modes use `blend=all_mode=<token>`.
@@ -136,6 +139,12 @@ impl RealtimeLayer {
 pub struct RealtimeComposer {
     graph: FilterGraph,
     layer_count: usize,
+    /// The hidden input slot of the canvas accumulator, when the base layer is placed
+    /// rather than used as the accumulator itself (ADR-0016).
+    canvas_slot: Option<usize>,
+    /// The black canvas frame pushed into `canvas_slot` before every base frame,
+    /// stamped with that frame's timestamp so the `overlay` sees them as one tick.
+    canvas_frame: Option<VideoFrame>,
 }
 
 impl RealtimeComposer {
@@ -149,10 +158,13 @@ impl RealtimeComposer {
         Self::with_canvas(layers, None)
     }
 
-    /// Like [`new`](Self::new), but composites onto a fixed project canvas: the
-    /// output is letterboxed/pillarboxed to `canvas = (width, height)` so the
-    /// composited frame matches the project's output aspect. `None` composites at
-    /// the base layer's own size (identical to [`new`](Self::new)).
+    /// Like [`new`](Self::new), but composites onto a project canvas of
+    /// `canvas = (width, height)` pixels: every layer, the base included, is placed
+    /// in canvas pixels by its `x` / `y` / `scale` / `rotation` (ADR-0016), and the
+    /// output is exactly canvas-sized. A base whose frames are not canvas-sized sits
+    /// at its native size from the top-left; framing against the canvas is a
+    /// `FitMode` effect, never implicit. `None` uses the base layer's own size as the
+    /// canvas (identical to [`new`](Self::new)).
     ///
     /// # Errors
     ///
@@ -163,8 +175,29 @@ impl RealtimeComposer {
         canvas: Option<(u32, u32)>,
     ) -> Result<Self, FilterError> {
         let layer_count = layers.len();
-        let graph = super::composition_inner::build_realtime_composition(layers, canvas)?;
-        Ok(Self { graph, layer_count })
+        let (graph, canvas_slot) =
+            super::composition_inner::build_realtime_composition(layers, canvas)?;
+        let canvas_frame = match canvas_slot {
+            Some(_) => {
+                let (w, h) = canvas.unwrap_or((layers[0].width, layers[0].height));
+                let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
+                for px in rgba.as_chunks_mut::<4>().0 {
+                    px[3] = 255;
+                }
+                Some(VideoFrame::from_rgba(w, h, rgba).map_err(|e| {
+                    FilterError::CompositionFailed {
+                        reason: format!("canvas frame: {e}"),
+                    }
+                })?)
+            }
+            None => None,
+        };
+        Ok(Self {
+            graph,
+            layer_count,
+            canvas_slot,
+            canvas_frame,
+        })
     }
 
     /// Number of layers (== number of input slots).
@@ -180,10 +213,30 @@ impl RealtimeComposer {
     ///
     /// # Errors
     ///
-    /// Returns [`FilterError`] if `idx` is out of range or the frame cannot be
-    /// pushed.
+    /// Returns [`FilterError::InvalidInput`] if `idx` is not a layer slot, and the
+    /// graph's error if the frame cannot be pushed. After a push error the composer's
+    /// current tick is incomplete and it must be rebuilt.
     pub fn push_layer(&mut self, idx: usize, frame: &VideoFrame) -> Result<(), FilterError> {
-        self.graph.push_video(idx, frame)
+        // The graph may own one more buffersrc than there are layers (the canvas
+        // accumulator), so the public slot range is checked here, not by the graph.
+        if idx >= self.layer_count {
+            return Err(FilterError::InvalidInput {
+                slot: idx,
+                reason: format!("layer slot out of range (layers={})", self.layer_count),
+            });
+        }
+        // The base goes first: a host frame is the push that can fail (wrong size or
+        // format), and a failure then leaves the graph without a half-pushed tick. A
+        // failed canvas push after it still strands the base frame, so an error from
+        // this method leaves the composer's tick state undefined: rebuild it.
+        self.graph.push_video(idx, frame)?;
+        if idx == 0
+            && let (Some(slot), Some(canvas)) = (self.canvas_slot, self.canvas_frame.as_mut())
+        {
+            canvas.set_timestamp(frame.timestamp());
+            self.graph.push_video(slot, canvas)?;
+        }
+        Ok(())
     }
 
     /// Pulls the next composited frame (`rgba`), or `None` if not yet available.
@@ -581,46 +634,219 @@ mod tests {
         }
     }
 
-    #[test]
-    fn with_canvas_letterboxes_output_to_canvas_size() {
-        // A 640×360 (16:9) base composited onto a 1080×1920 (9:16) canvas must
-        // produce a 1080×1920 frame (letterboxed), not the base's own size.
-        let base = RealtimeLayer {
-            width: 640,
-            height: 360,
+    /// The lit box of an rgba buffer as `(x0, y0, x1, y1)` inclusive: pixels whose red
+    /// channel is above 128.
+    fn lit_box(rgba: &[u8], w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+        let mut b: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..h {
+            for x in 0..w {
+                if rgba[((y * w + x) * 4) as usize] > 128 {
+                    b = Some(match b {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
+                }
+            }
+        }
+        b
+    }
+
+    fn placed_base(w: u32, h: u32, x: f64, y: f64, scale: f64, rotation: f64) -> RealtimeLayer {
+        RealtimeLayer {
+            width: w,
+            height: h,
             pixel_format: PixelFormat::Rgba,
             effects: vec![],
             opacity: AnimatedValue::Static(1.0),
-            x: AnimatedValue::Static(0.0),
-            y: AnimatedValue::Static(0.0),
-            scale_x: AnimatedValue::Static(1.0),
-            scale_y: AnimatedValue::Static(1.0),
-            rotation: AnimatedValue::Static(0.0),
+            x: AnimatedValue::Static(x),
+            y: AnimatedValue::Static(y),
+            scale_x: AnimatedValue::Static(scale),
+            scale_y: AnimatedValue::Static(scale),
+            rotation: AnimatedValue::Static(rotation),
             blend_mode: BlendMode::Normal,
             composite_op: CompositeOp::Over,
+        }
+    }
+
+    /// Pushes one `w`x`h` white frame through a composer built for `layer` on
+    /// `canvas`, returning the rgba output, or `None` when `FFmpeg` filters are
+    /// unavailable (skip).
+    fn composite_white(layer: RealtimeLayer, canvas: (u32, u32)) -> Option<(Vec<u8>, u32, u32)> {
+        let (w, h) = (layer.width, layer.height);
+        let mut composer = match RealtimeComposer::with_canvas(&[layer], Some(canvas)) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return None;
+            }
         };
-        let mut composer = match RealtimeComposer::with_canvas(&[base], Some((1080, 1920))) {
+        let frame = VideoFrame::from_rgba(w, h, vec![255u8; (w * h * 4) as usize]).unwrap();
+        if composer.push_layer(0, &frame).is_err() {
+            println!("Skipping: push failed (FFmpeg unavailable?)");
+            return None;
+        }
+        match composer.pull() {
+            Ok(Some(out)) => {
+                let rgba = out.to_rgba().expect("rgba");
+                Some((rgba, out.width(), out.height()))
+            }
+            other => {
+                println!("Skipping: pull -> {other:?}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn with_canvas_should_place_the_base_at_native_size_on_the_canvas() {
+        // A 640x360 base on a 1080x1920 canvas is neither letterboxed nor stretched
+        // (ADR-0016): the output is canvas-sized with the base at its own size from the
+        // top-left and the canvas black elsewhere. Framing is a `FitMode` effect.
+        let Some((rgba, w, h)) =
+            composite_white(placed_base(640, 360, 0.0, 0.0, 1.0, 0.0), (1080, 1920))
+        else {
+            return;
+        };
+        assert_eq!((w, h), (1080, 1920));
+        assert_eq!(
+            lit_box(&rgba, w, h),
+            Some((0, 0, 639, 359)),
+            "native size, top-left"
+        );
+    }
+
+    #[test]
+    fn base_layer_position_and_scale_should_render_in_canvas_space() {
+        // Measured on the export composer and now on this one: a 64x64 base at (10, 4)
+        // scaled 0.5 on a 64x64 canvas lights (10, 4)..(41, 35) inclusive.
+        let Some((rgba, w, h)) =
+            composite_white(placed_base(64, 64, 10.0, 4.0, 0.5, 0.0), (64, 64))
+        else {
+            return;
+        };
+        assert_eq!(
+            lit_box(&rgba, w, h),
+            Some((10, 4, 41, 35)),
+            "canvas-space placement"
+        );
+    }
+
+    #[test]
+    fn base_layer_scale_should_be_canvas_relative() {
+        // The export rule: a 64x32 base scaled 0.5 on a 64x64 canvas is 32x32, not 32x16.
+        let Some((rgba, w, h)) =
+            composite_white(placed_base(64, 32, 10.0, 4.0, 0.5, 0.0), (64, 64))
+        else {
+            return;
+        };
+        assert_eq!(
+            lit_box(&rgba, w, h),
+            Some((10, 4, 41, 35)),
+            "canvas * scale"
+        );
+    }
+
+    #[test]
+    fn base_layer_rotation_should_fill_the_exposed_corners_black() {
+        // A white 64x64 base rotated 45 degrees: the frame's corners are outside the
+        // rotated square, and `rotate` fills them black, while the centre stays white.
+        let Some((rgba, w, h)) =
+            composite_white(placed_base(64, 64, 0.0, 0.0, 1.0, 45.0), (64, 64))
+        else {
+            return;
+        };
+        let at = |x: u32, y: u32| rgba[((y * w + x) * 4) as usize];
+        assert!(
+            at(0, 0) < 16,
+            "top-left corner must be black, got {}",
+            at(0, 0)
+        );
+        assert!(
+            at(w - 1, h - 1) < 16,
+            "bottom-right corner must be black, got {}",
+            at(w - 1, h - 1)
+        );
+        assert!(
+            at(32, 32) > 200,
+            "the centre must stay white, got {}",
+            at(32, 32)
+        );
+    }
+
+    #[test]
+    fn push_layer_should_reject_the_hidden_canvas_slot() {
+        // A placed base gives the graph one more buffersrc than there are layers. That
+        // slot is the composer's, and `push_layer` must refuse it like any index past
+        // the layers rather than let a host frame into the accumulator.
+        let mut composer = match RealtimeComposer::with_canvas(
+            &[placed_base(8, 8, 2.0, 0.0, 1.0, 0.0)],
+            Some((8, 8)),
+        ) {
             Ok(c) => c,
             Err(e) => {
                 println!("Skipping: {e}");
                 return;
             }
         };
-        let frame = VideoFrame::from_rgba(640, 360, vec![120u8; 640 * 360 * 4]).unwrap();
-        if composer.push_layer(0, &frame).is_err() {
-            println!("Skipping: push failed (FFmpeg unavailable?)");
-            return;
-        }
-        match composer.pull() {
-            Ok(Some(out)) => {
-                assert_eq!(out.width(), 1080);
-                assert_eq!(out.height(), 1920);
-                let rgba = out.to_rgba().expect("rgba");
-                assert_eq!(rgba.len(), 1080 * 1920 * 4);
+        assert_eq!(composer.layer_count(), 1);
+        let frame = VideoFrame::from_rgba(8, 8, vec![255u8; 8 * 8 * 4]).unwrap();
+        let err = composer
+            .push_layer(1, &frame)
+            .expect_err("slot 1 is not a layer");
+        assert!(
+            matches!(err, FilterError::InvalidInput { slot: 1, .. }),
+            "the hidden canvas slot must read as out of range, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn base_layer_position_track_should_move_per_frame() {
+        // An animated base position goes through the same `overlay:eval=frame` +
+        // `send_command` wiring an overlay's does: two frames a second apart land at
+        // the track's value for each.
+        use crate::animation::{AnimationTrack, Easing, Keyframe};
+        use ff_format::{Rational, Timestamp};
+        use std::time::Duration;
+        let track = AnimationTrack::new()
+            .push(Keyframe::new(Duration::ZERO, 0.0, Easing::Linear))
+            .push(Keyframe::new(Duration::from_secs(1), 20.0, Easing::Linear));
+        let mut base = placed_base(64, 64, 0.0, 0.0, 0.5, 0.0);
+        base.x = AnimatedValue::Track(track);
+        let mut composer = match RealtimeComposer::with_canvas(&[base], Some((64, 64))) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Skipping: {e}");
+                return;
             }
-            Ok(None) => println!("Skipping: no frame produced"),
-            Err(e) => println!("Skipping: {e}"),
+        };
+        let mut boxes = Vec::new();
+        for secs in [0u64, 1] {
+            let mut frame = VideoFrame::from_rgba(64, 64, vec![255u8; 64 * 64 * 4]).unwrap();
+            frame.set_timestamp(Timestamp::from_duration(
+                Duration::from_secs(secs),
+                Rational::new(1, 1_000_000),
+            ));
+            if composer.push_layer(0, &frame).is_err() {
+                println!("Skipping: push failed (FFmpeg unavailable?)");
+                return;
+            }
+            match composer.pull() {
+                Ok(Some(out)) => {
+                    let rgba = out.to_rgba().expect("rgba");
+                    boxes.push(lit_box(&rgba, out.width(), out.height()));
+                }
+                other => {
+                    println!("Skipping: pull -> {other:?}");
+                    return;
+                }
+            }
         }
+        assert_eq!(boxes[0], Some((0, 0, 31, 31)), "at t=0 the track reads 0");
+        assert_eq!(
+            boxes[1],
+            Some((20, 0, 51, 31)),
+            "at t=1s the track reads 20"
+        );
     }
 
     #[test]
@@ -1736,8 +1962,8 @@ mod tests {
         // Mirrors the DEMO's real preview path more closely than the 8×8 test above:
         // the overlay is a DIFFERENT size than the base (so `build_realtime_composition`
         // prepends a non-identity `Scale{canvas, Fast}` force-scale before the rotate),
-        // and a project canvas is set (adding the fit-to-canvas letterbox pass). The
-        // rotated overlay's transparent corners must still composite to the red base.
+        // and a project canvas is set. The rotated overlay's transparent corners must
+        // still composite to the red base.
         use crate::animation::AnimatedValue;
         use ff_format::{Rational, Timestamp};
         use std::time::Duration;

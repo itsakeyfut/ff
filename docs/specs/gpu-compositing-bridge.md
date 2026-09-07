@@ -80,12 +80,16 @@ Per composited frame:
      frame and falls back to the CPU compositor on `None`. **Deferred:** the zero-copy `push_frame_gpu` /
      `GpuFrameSink` / `display`-feature path (hand a `wgpu::Texture` to the sink without readback).
 
-   **v1 layer coverage (Br3 preview / Br4 export, shared core):** the GPU path renders only layers that need no
-   geometric placement -- an identity transform and a frame whose aspect matches the canvas. A non-identity
-   transform (the model's pixel/degree units do not yet map to the compositor's UV-space/radian
-   `LayerTransform`) or an aspect mismatch (the compositor stretches to the canvas where the CPU path
-   letterboxes) falls back to CPU -- per frame in preview, and by making the timeline ineligible (whole-export
-   CPU fallback) in export. Correct GPU transforms and letterboxing, with GPU-vs-CPU parity tests, are Br5.
+   **Layer placement (shared core, [ADR-0016](../adr/0016-base-layer-placed-in-canvas-space.md)):** every
+   layer, the base included, is placed in canvas space by `gpu_compositor::layer_transform`: top-left at
+   `(x, y)` canvas pixels, native size at `scale == 1` and `canvas * scale` otherwise, clipped at the canvas
+   edge. That is the CPU export composer's construction, which the realtime composer shares, so the GPU is
+   pinned against both by measurement. Nothing is fitted or stretched to the canvas by a compositor; framing
+   is a `FitMode` effect. A **rotated** layer falls back (the CPU's `rotate` fills the exposed corners, the
+   GPU transform leaves them transparent): per frame in preview, and by making the timeline
+   ineligible (whole-export CPU fallback) in export. A transition between placed clips on the base
+   track is ineligible too: the CPU blends the two placed-size chains and overlays the result,
+   while the drain would blend two canvas-composited frames.
 
 `ff_render::Compositor::new` and `RenderGraph::new` both take an `Arc<RenderContext>`; the bridge builds one
 `RenderContext` per session (`RenderContext::init().await`, or `RenderContext::new(device, queue)` to share a
@@ -107,7 +111,7 @@ it drifted badly between Br2 and #1630 and listed covered steps as fallbacks.
 
 | Derived construct (source) | v1 mapping | Status |
 |---|---|---|
-| `x`/`y`/`scale`/`rotation` transform | evaluated at frame `t` -> the layer's `LayerTransform` scalars | **covered** (all layers) |
+| `x`/`y`/`scale`/`rotation` transform | evaluated at frame `t` -> the layer's `LayerTransform` scalars, in canvas space ([ADR-0016](../adr/0016-base-layer-placed-in-canvas-space.md)) | **covered** (all layers, the base included) for `x`/`y`/`scale`; a non-zero `rotation` on any layer -> **fallback** |
 | `opacity` | evaluated at `t` -> `FrameLayer.opacity` | **covered** (all layers) |
 | `blend_mode: ff_filter::BlendMode` (40) | `ff_render::BlendMode`, **all 40** (#1669; 14 before that) | **covered** (every mode; no blend mode forces a fallback). The GPU formulas reproduce `FFmpeg`'s `vf_blend`, so the GPU and the CPU compositor render a mode alike -- see [ADR-0010](../adr/0010-gpu-blend-modes-follow-ffmpeg.md) for the reference, the `A`=base/`B`=overlay pad wiring, and the bitwise-mode exception. (`ff_render` also has `Hue`/`Saturation`/`Color`/`Luminosity`, but `ff_filter::BlendMode` has no such variants -- removed in #1219 -- so they are unreachable from the derived scene.) |
 | `composite_op: ff_filter::CompositeOp` (6) | `ff_render::CompositeOp`, **all 6** (#1670; `Over` only before that) | **covered** (every operator). The GPU evaluates the W3C Porter-Duff `Fa`/`Fb` definitions on premultiplied colour, which needs the coverage alpha #1750 added. The filter path implements `Over`/`Under` and **refuses `In`/`Out`/`Atop`/`Xor` at `build()`** ([ADR-0014](../adr/0014-reject-porter-duff-on-the-filter-path.md), #1753): it cannot carry the backdrop's alpha, so rather than compute per-channel arithmetic under the operator's name it returns `FilterError::UnsupportedCompositeOp`, and `TimelinePlayer::open` refuses such a timeline up front when no GPU compositor is attached. A frame that falls back for an unrelated reason while a GPU is attached (an effect with no GPU node, an overlay that spills outside the base, a rotated overlay) logs a warning and shows the base frame; that residual goes away with #1784, the filter-path implementation, which also reconciles ADR-0007's "the CPU is the reference" for these four. |
@@ -118,7 +122,7 @@ it drifted badly between Br2 and #1630 and listed covered steps as fallbacks.
 | `FilterStep::ScaleAnimated` | `GpuEffect::Scale` -> `ScaleNode`, both dimensions evaluated at `t` (`map_scene` runs per frame). The `algorithm` carries through | **covered** (#1630) |
 | `FilterStep::RotateAnimated` | folded onto the layer's `rotation` (added to the layer scalar, not replacing it) rather than becoming a node -- rotation is a layer property, there is no GPU rotate node | **covered** when `fillcolor` is `black` or `none` (#1630); any other fill -> **fallback**. The GPU leaves the corners a rotation exposes transparent while `rotate` fills them, which is the same difference the *static* layer rotation already has, so folding makes the animated case behave like the static one rather than adding a divergence |
 | colour: `Hue`, `Hsl` / `HslAnimated` | `GpuEffect::Hsl` -> `HslNode` (`Hue` is `Hsl` with a neutral saturation/lightness; both compile to the same `hue` filter's `h=`) | **covered** (`Hue` in #1630) |
-| colour: `Curves`, `Vignette` / `VignetteAnimated`, `ThreeWayCC` / `ThreeWayCCAnimated`, `Lut3d`, `Glow` / `GlowAnimated`, `FilmGrain` / `FilmGrainAnimated`, `Unsharp` / `UnsharpAnimated` | `CurvesNode` / `VignetteNode` / `ColorWheelsNode` / `LutNode` / `GlowNode` / `FilmGrainNode` / `SharpenNode` | **covered**. An off-centre `vignette`, a non-zero `unsharp` chroma amount, and a `lut3d` file that will not load each fall back rather than render something else (RK-020) |
+| colour: `Curves`, `Vignette` / `VignetteAnimated`, `ThreeWayCC` / `ThreeWayCCAnimated`, `Lut3d`, `Glow` / `GlowAnimated`, `FilmGrain` / `FilmGrainAnimated`, `Unsharp` / `UnsharpAnimated` | `CurvesNode` / `VignetteNode` / `ColorWheelsNode` / `LutNode` / `GlowNode` / `FilmGrainNode` / `SharpenNode` | **covered**. An off-centre `vignette`, a non-zero `unsharp` chroma amount, and a `lut3d` file that will not load each fall back rather than render something else |
 | blur: `GBlur` / `GBlurAnimated` | `GpuEffect::Blur` -> `GaussianBlurNode` (animated sigma at `t`) | **covered** |
 | `MotionBlur` / `MotionBlurAnimated` | `MotionBlurNode` (stateful). An animated shutter is pushed into the live node each frame (`NodeParam::MotionBlurShutter`) rather than rebuilding it, so the exposure trail survives the change; the CPU renders the same animation through `tblend`'s `all_expr` with `T` | **covered** (animated shutter in #1705) |
 | keying: `ChromaKey` / `ChromaKeyAnimated` | `ChromaKeyNode`, key colour via `ff_format::Color::parse_ffmpeg` | **covered**, including **colour names** (#1630; hex-only before that). A string no colour table has -> **fallback** |
