@@ -165,12 +165,18 @@ pub use ff_pipeline::{EncoderConfig, EncoderConfigBuilder, Progress};
 // `Timeline` and hands it to `ff-preview`'s runner. The `Scene` value types and the
 // `SceneRunner` / `PlayerHandle` handles + `PreviewError` are named by
 // `TimelinePlayer::open`. All are gated on `preview` (`ff-preview` is optional).
+//
+// `FrameSink` and its reference implementation come with them: a runner's only output
+// channel is the sink `SceneRunner::set_sink` takes, so without the trait the preview is
+// write-only for anyone depending on avio alone, and without `RgbaSink` every consumer
+// re-writes the same latest-frame store.
 #[cfg(feature = "preview")]
 mod player;
 #[cfg(feature = "preview")]
 pub use ff_preview::{
-    Pacing, PlayerHandle, PreviewCompositor, PreviewError, Scene, SceneAudioPlacement,
-    SceneAudioTrack, ScenePlacement, SceneRunner, SceneSource, SceneVideoTrack,
+    FrameSink, Pacing, PlayerHandle, PreviewCompositor, PreviewError, RgbaFrame, RgbaSink, Scene,
+    SceneAudioPlacement, SceneAudioTrack, ScenePlacement, SceneRunner, SceneSource,
+    SceneVideoTrack,
 };
 #[cfg(feature = "preview")]
 pub use player::TimelinePlayer;
