@@ -7,8 +7,12 @@
 
 use std::path::{Path, PathBuf};
 
-use avio::{BitrateMode, PixelFormat, Rational, Timestamp, VideoCodec, VideoFrame};
+use avio::{
+    BitrateMode, EncoderConfig, PixelFormat, Rational, Timeline, TimelineError, Timestamp,
+    VideoCodec, VideoFrame,
+};
 use ff_common::PooledBuffer;
+use ff_decode::VideoDecoder;
 use ff_encode::VideoEncoder;
 
 /// Convenience result type for the scripts (`fn main() -> BoxResult<()>`).
@@ -183,6 +187,16 @@ impl Report {
         self.all_ok &= ok;
     }
 
+    /// Records a check the environment could not run, printing `[SKIP]` and leaving
+    /// the verdict untouched.
+    ///
+    /// A machine without the codec, filter or GPU adapter a script needs must neither
+    /// fail (nothing is wrong with avio) nor pass (nothing was verified), so the two
+    /// outcomes `check` offers are both wrong for it.
+    pub fn skip(&mut self, label: &str, reason: &str) {
+        println!("  [SKIP] {label} ({reason})");
+    }
+
     /// Prints the overall verdict and returns `Ok` only if every check passed.
     ///
     /// # Errors
@@ -196,6 +210,86 @@ impl Report {
             Err(format!("{}: FAIL", self.name).into())
         }
     }
+}
+
+/// The mean R/G/B of every frame of a rendered file, in decode order.
+///
+/// Scripts that assert an effect reached the output measure it here: a mean per frame
+/// is coarse enough to survive a lossy encode and specific enough to show a colour
+/// change and its direction. Alpha is ignored (the encode is opaque).
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or decoded, which for a script means
+/// the environment lacks the decoder rather than that avio is wrong.
+pub fn decoded_frame_means(path: &Path) -> BoxResult<Vec<[f64; 3]>> {
+    let mut decoder = VideoDecoder::open(path)
+        .output_format(PixelFormat::Rgba)
+        .build()?;
+    let mut means = Vec::new();
+    while let Some(frame) = decoder.decode_one()? {
+        let Some(rgba) = frame.to_rgba() else {
+            return Err("decoded frame is not convertible to rgba".into());
+        };
+        means.push(mean_rgb(&rgba));
+    }
+    Ok(means)
+}
+
+/// The mean R/G/B of a contiguous rgba buffer (alpha ignored).
+#[must_use]
+pub fn mean_rgb(rgba: &[u8]) -> [f64; 3] {
+    let (mut sum, mut pixels) = ([0f64; 3], 0f64);
+    for px in rgba.as_chunks::<4>().0 {
+        sum[0] += f64::from(px[0]);
+        sum[1] += f64::from(px[1]);
+        sum[2] += f64::from(px[2]);
+        pixels += 1.0;
+    }
+    if pixels == 0.0 {
+        return [0.0; 3];
+    }
+    [sum[0] / pixels, sum[1] / pixels, sum[2] / pixels]
+}
+
+/// The mean of a frame's three channel means: one number per frame, for comparing
+/// overall lightness between two renders of the same content.
+///
+/// Not Rec.601 luma: the channels are weighted equally, which is what a like-for-like
+/// comparison of two renders of the same frame wants.
+#[must_use]
+pub fn mean_channel(mean: [f64; 3]) -> f64 {
+    (mean[0] + mean[1] + mean[2]) / 3.0
+}
+
+/// Whether a render error means "this environment cannot run the pipeline" (skip) as
+/// opposed to a real regression (fail). Mirrors the crates' own test convention.
+#[must_use]
+pub fn is_environment_unavailable(e: &TimelineError) -> bool {
+    matches!(
+        e,
+        TimelineError::Filter(_) | TimelineError::Encode(_) | TimelineError::Decode(_)
+    )
+}
+
+/// Renders `timeline` to `out`. `Ok(None)` rendered; `Ok(Some(reason))` the environment
+/// cannot render here (report it with [`Report::skip`]); `Err` a genuine failure.
+///
+/// # Errors
+///
+/// Returns the render error when it is not one this environment merely lacks.
+pub fn render_or_skip(timeline: Timeline, out: &Path) -> BoxResult<Option<String>> {
+    match timeline.render(out, EncoderConfig::builder().build()) {
+        Ok(()) => Ok(None),
+        Err(e) if is_environment_unavailable(&e) => Ok(Some(e.to_string())),
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
+/// The largest per-channel difference between two frame means.
+#[must_use]
+pub fn channel_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3).fold(0.0f64, |acc, i| acc.max((a[i] - b[i]).abs()))
 }
 
 /// Converts a hue angle (0-360 degrees) to an sRGB triplet (saturation = value = 1).
@@ -232,6 +326,32 @@ mod tests {
         r.check("a", true);
         r.check("b", false);
         assert!(r.finish().is_err());
+    }
+
+    #[test]
+    fn report_should_stay_ok_when_a_check_is_skipped() {
+        let mut r = Report::new("t");
+        r.check("a", true);
+        r.skip("b", "no decoder here");
+        assert!(r.finish().is_ok(), "a skip is not a failure");
+    }
+
+    #[test]
+    fn mean_rgb_should_average_each_channel_independently() {
+        // Two pixels, so a channel-blind implementation (one mean over all bytes)
+        // would collapse these three distinct answers into one.
+        let rgba = [10u8, 20, 30, 255, 30, 60, 90, 255];
+        let mean = mean_rgb(&rgba);
+        assert!((mean[0] - 20.0).abs() < 1e-9);
+        assert!((mean[1] - 40.0).abs() < 1e-9);
+        assert!((mean[2] - 60.0).abs() < 1e-9);
+        assert!((mean_channel(mean) - 40.0).abs() < 1e-9);
+        assert!((channel_distance(mean, [20.0, 40.0, 45.0]) - 15.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mean_rgb_should_be_zero_for_an_empty_buffer() {
+        assert_eq!(mean_rgb(&[]), [0.0; 3]);
     }
 
     #[test]

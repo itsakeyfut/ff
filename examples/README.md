@@ -29,6 +29,8 @@ cargo run -p avio-examples --bin single_clip_export
 cargo run -p avio-examples --bin multitrack_export
 cargo run -p avio-examples --bin transition_export
 cargo run -p avio-examples --bin keyframe_export
+cargo run -p avio-examples --bin effect_color_correct
+cargo run -p avio-examples --bin preview_matches_export
 ```
 
 Point a script at a real media file, and keep the temp files for inspection:
@@ -56,8 +58,8 @@ A script prints one line per check and exits non-zero if any check fails.
 | Multi-track composition / PiP + blend | `multitrack_export` | done |
 | Transitions (`XfadeTransition`) | `transition_export` | done |
 | Keyframe animation (`AnimationTrack`) | `keyframe_export` | done |
-| Per-clip effects (`FilterStep`) | `effect_<name>` | TODO |
-| Preview matches export | `preview_matches_export` | TODO |
+| Per-clip effects (typed `EffectKind`, keyframeable) | `effect_color_correct` | done |
+| Preview matches export | `preview_matches_export` | done |
 | Audio mix + per-clip volume/fades | `audio_mix` | TODO |
 | Ken Burns pan & zoom | `ken_burns` | TODO (after #1295) |
 
