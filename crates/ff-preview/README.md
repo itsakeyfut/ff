@@ -10,13 +10,13 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 
 ```toml
 [dependencies]
-ff-preview = "0.17"
+ff-preview = "0.18"
 
 # Enable async support
-ff-preview = { version = "0.17", features = ["tokio"] }
+ff-preview = { version = "0.18", features = ["tokio"] }
 
 # Enable proxy generation
-ff-preview = { version = "0.17", features = ["proxy"] }
+ff-preview = { version = "0.18", features = ["proxy"] }
 ```
 
 ## Quick Start
