@@ -16,6 +16,7 @@
 //! | `hwaccel` | yes     | hardware-accelerated export (`ff-encode/hwaccel`) |
 //! | `preview` | no      | real-time `TimelinePlayer` + `Scene` types        |
 //! | `serde`   | no      | `serde` (de)serialization of the model            |
+//! | `gpu`     | no      | GPU compositing for preview and export (`wgpu`)   |
 //! | `gpl`     | no      | GPL-only codecs (x264 / x265)                     |
 //!
 //! The editing model, `render`, probe ([`open`]), and media analysis are always present.
@@ -188,6 +189,12 @@ mod tests {
     // model speaks + the convenience keeps (probe / analysis). Standalone primitives
     // (decoders, encoders, pipelines, stream outputs, the render module) are no longer
     // reachable through `avio` (docs/adr/0004-avio-engine-not-facade.md).
+    //
+    // These resolve names through `use super::*`, which sees crate-internal items, so
+    // they check that the crate compiles and the names exist, *not* that they are
+    // public: a `pub use` demoted to `pub(crate) use` still passes here. Public
+    // reachability is asserted from outside the crate in
+    // `crates/avio/tests/public_surface_tests.rs`.
 
     #[test]
     fn format_value_types_should_be_accessible() {
