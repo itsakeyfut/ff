@@ -39,9 +39,18 @@ argument-string construction, math (keyframe interpolation, atempo decomposition
 Token / value regressions belong in **deterministic, build-independent string-equality unit
 tests** — they must not depend on which FFmpeg is installed.
 
-### 2. Integration tests (real FFmpeg)
+### 2. Integration tests (real FFmpeg, and anything about the public surface)
 
 `crates/<crate>/tests/`. Drive the real FFmpeg API against short fixtures.
+
+**A test that asserts an item is public belongs here even though it needs no FFmpeg.** A unit
+test resolves names through `use super::*`, which sees crate-internal items, so a `pub use`
+demoted to `pub(crate) use` still compiles in one; only an external crate path enforces `pub`.
+This bites in `avio`, where CLAUDE.md makes re-exporting every new public type into
+`avio/src/lib.rs` a rule, so that list is edited constantly, and CI cannot catch a regression in
+it any other way (the feature powerset job runs `--no-dev-deps`, which never compiles a test).
+`crates/avio/tests/public_surface_tests.rs` is the anchor; `lib.rs`'s own module checks that the
+names resolve, which is a different property, so neither replaces the other.
 
 **Skip when FFmpeg is unavailable:**
 

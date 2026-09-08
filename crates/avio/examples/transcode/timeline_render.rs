@@ -8,7 +8,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example timeline_render --features filter,pipeline -- \
+//! cargo run --example timeline_render -- \
 //!   --clip-a  intro.mp4   \
 //!   --clip-b  main.mp4    \
 //!   --output  rendered.mp4
