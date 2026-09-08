@@ -10,7 +10,7 @@ It is an independent crate: use it on its own, or combine it with the other `ff-
 
 ```toml
 [dependencies]
-ff-probe = "0.17"
+ff-probe = "0.18"
 ```
 
 ## Quick Start

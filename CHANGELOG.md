@@ -11,6 +11,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.0] - 2026-09-08
+
+This release makes `avio` a **GPU-default editing engine**: preview and export both composite on the
+GPU, with automatic CPU fallback when no adapter is available or a construct has no GPU mapping
+(ADR-0007). It also replaces the opaque per-clip `FilterStep` chain with a **typed, keyframeable
+effect model** ([#1458](https://github.com/itsakeyfut/avio/issues/1458), ADR-0006), so a host can build, introspect, animate, reorder and persist
+a clip's effect stack through the editing model rather than by assembling filter steps. Underneath,
+`ff-render` grows the node set the model maps onto, and the `ff-*` primitives gain the escape
+hatches a real integration needs.
+
+### Added
+
+#### avio
+
+- Typed, re-editable per-clip effect model: `ClipEffect` / `EffectKind` / `Param` addressed by a
+  stable `EffectId`, with `Param::Const` or a keyframed `AnimationTrack` per parameter, and the
+  `AddEffect` / `RemoveEffect` / `SetEffectKind` / `SetEffectEnabled` / `ReorderEffects` commands on
+  the `Editor` (ADR-0006) ([#1458](https://github.com/itsakeyfut/avio/issues/1458), [#1643](https://github.com/itsakeyfut/avio/issues/1643))
+- Host-facing effect and parameter introspection: descriptors a UI can build a control panel from
+  without knowing each variant ([#1640](https://github.com/itsakeyfut/avio/issues/1640))
+- Forward-compatible serialization for the typed effect model ([#1709](https://github.com/itsakeyfut/avio/issues/1709))
+- Typed audio effect surface: audio and video effects share one ordered `Clip::effects` list, each
+  derivation selecting its own domain ([#1712](https://github.com/itsakeyfut/avio/issues/1712))
+- The typed effect set, each mapped to a GPU node and pinned against the CPU filter path by a
+  measured per-node tolerance: colour grade with temperature/tint ([#1658](https://github.com/itsakeyfut/avio/issues/1658)), Gaussian blur
+  ([#1650](https://github.com/itsakeyfut/avio/issues/1650)), sharpen ([#1651](https://github.com/itsakeyfut/avio/issues/1651)), vignette ([#1648](https://github.com/itsakeyfut/avio/issues/1648)), film grain ([#1649](https://github.com/itsakeyfut/avio/issues/1649)), glow ([#1652](https://github.com/itsakeyfut/avio/issues/1652)),
+  colour wheels ([#1647](https://github.com/itsakeyfut/avio/issues/1647)), curves ([#1645](https://github.com/itsakeyfut/avio/issues/1645)), HSL ([#1646](https://github.com/itsakeyfut/avio/issues/1646)), 3D LUT ([#1644](https://github.com/itsakeyfut/avio/issues/1644)), chroma key
+  ([#1654](https://github.com/itsakeyfut/avio/issues/1654)), luma mask ([#1655](https://github.com/itsakeyfut/avio/issues/1655)), shape mask ([#1656](https://github.com/itsakeyfut/avio/issues/1656)) and motion blur ([#1653](https://github.com/itsakeyfut/avio/issues/1653))
+- GPU compositing bridge ([#1365](https://github.com/itsakeyfut/avio/issues/1365)): the derive-to-`ff-render` mapping ([#1624](https://github.com/itsakeyfut/avio/issues/1624), [#1625](https://github.com/itsakeyfut/avio/issues/1625)), the GPU
+  preview path with per-frame CPU fallback ([#1626](https://github.com/itsakeyfut/avio/issues/1626)), the GPU export drain ([#1627](https://github.com/itsakeyfut/avio/issues/1627)), and the
+  fallback and parity tests that hold both ([#1628](https://github.com/itsakeyfut/avio/issues/1628))
+- GPU export maturity: broader node coverage ([#1630](https://github.com/itsakeyfut/avio/issues/1630)), multi-track export with overlays, speed
+  and letterbox ([#1633](https://github.com/itsakeyfut/avio/issues/1633)), cross-fades on the export drain ([#1659](https://github.com/itsakeyfut/avio/issues/1659)), source frame-rate conform
+  ([#1660](https://github.com/itsakeyfut/avio/issues/1660)) and aspect handling for non-canvas-aspect layers ([#1661](https://github.com/itsakeyfut/avio/issues/1661))
+- GPU transition set (dissolve, wipe, dip to colour) driven from the clip transition model, with the
+  placement semantics recorded in ADR-0009 ([#1657](https://github.com/itsakeyfut/avio/issues/1657))
+- Id-keyed track automation: automation addresses tracks by `TrackId`, not by index ([#1590](https://github.com/itsakeyfut/avio/issues/1590))
+- Audio and animation parity between export and preview: clip pan, per-frame scale and rotation, and
+  generated `Text` / `Solid` sources ([#1591](https://github.com/itsakeyfut/avio/issues/1591), [#1614](https://github.com/itsakeyfut/avio/issues/1614), ADR-0005)
+- Serialization completeness for the document, including `Track.audio_effects` ([#1592](https://github.com/itsakeyfut/avio/issues/1592))
+
+#### ff-render
+
+- Effect nodes: 3D LUT from `.cube` / `.3dl` ([#1043](https://github.com/itsakeyfut/avio/issues/1043)), Gaussian blur and sharpen ([#1044](https://github.com/itsakeyfut/avio/issues/1044)), glow
+  ([#1045](https://github.com/itsakeyfut/avio/issues/1045)), vignette and film grain ([#1046](https://github.com/itsakeyfut/avio/issues/1046)), HSL, curves and colour wheels ([#1047](https://github.com/itsakeyfut/avio/issues/1047)),
+  chroma key ([#1665](https://github.com/itsakeyfut/avio/issues/1665)), luma mask ([#1666](https://github.com/itsakeyfut/avio/issues/1666)), shape mask ([#1667](https://github.com/itsakeyfut/avio/issues/1667)) and motion blur ([#1051](https://github.com/itsakeyfut/avio/issues/1051))
+- Transition nodes: dissolve ([#1668](https://github.com/itsakeyfut/avio/issues/1668)), directional wipe and dip to colour ([#1048](https://github.com/itsakeyfut/avio/issues/1048))
+- The full photographic blend-mode set, reproducing `FFmpeg`'s `vf_blend` rather than Photoshop
+  (ADR-0010) ([#1669](https://github.com/itsakeyfut/avio/issues/1669)), the Porter-Duff composite operators on the GPU ([#1670](https://github.com/itsakeyfut/avio/issues/1670)), and a
+  reference-image regression suite covering both ([#1671](https://github.com/itsakeyfut/avio/issues/1671))
+- Multi-pass / multi-input graph executor ([#1586](https://github.com/itsakeyfut/avio/issues/1586)), a real `ScaleNode` with variable output
+  dimensions plus a CPU scaler ([#1588](https://github.com/itsakeyfut/avio/issues/1588)), and `YuvUploadNode` with the BT.601/BT.709 inconsistency
+  resolved ([#1589](https://github.com/itsakeyfut/avio/issues/1589))
+- HDR: `Rgba16Float` textures auto-detected from high-bit-depth input ([#1054](https://github.com/itsakeyfut/avio/issues/1054)) and a P010
+  semi-planar 10-bit upload path ([#1607](https://github.com/itsakeyfut/avio/issues/1607))
+- `DisplaySink` and `push_frame_gpu` for GPU-resident output ([#1587](https://github.com/itsakeyfut/avio/issues/1587))
+
+#### ff-preview
+
+- `Pacing::Unpaced`, a clock the loop moves one frame period per presented frame, so an e2e test
+  observes every frame instead of whatever the machine kept up with (ADR-0015) ([#1757](https://github.com/itsakeyfut/avio/issues/1757))
+- Generated `Text` and `Solid` sources render in the preview ([#1615](https://github.com/itsakeyfut/avio/issues/1615))
+
+#### ff-sys / ff-decode / ff-encode / ff-filter / ff-remux
+
+- FFmpeg's `av_log` is bridged into the Rust `log` facade ([#1599](https://github.com/itsakeyfut/avio/issues/1599))
+- Custom AVIO I/O: decode from any `Read + Seek` and encode into any `Write + Seek` ([#1600](https://github.com/itsakeyfut/avio/issues/1600))
+- Filter-description escape hatch via `avfilter_graph_parse2`, alongside the typed API (ADR-0012)
+  ([#1601](https://github.com/itsakeyfut/avio/issues/1601))
+- Explicit bitstream filters for stream-copy correctness (ADR-0011) ([#1602](https://github.com/itsakeyfut/avio/issues/1602))
+- `+faststart` for progressive MP4/MOV output ([#1603](https://github.com/itsakeyfut/avio/issues/1603))
+- Codec private-option passthrough (`av_opt`) for options the typed API does not model ([#1604](https://github.com/itsakeyfut/avio/issues/1604))
+
+### Changed
+
+- **Breaking:** per-clip video and audio effects are unified onto the typed effect model. `Clip`
+  carries one ordered `effects` list instead of the opaque `FilterStep` chains, and the flat colour
+  fields fold into `EffectKind::ColorCorrect` ([#1622](https://github.com/itsakeyfut/avio/issues/1622), [#1712](https://github.com/itsakeyfut/avio/issues/1712))
+- **Behaviour:** every layer, the base included, is placed in canvas space on every route: top-left
+  at `(x, y)`, native size at `scale == 1`, `canvas * scale` otherwise, clipped at the canvas edge,
+  with no implicit fit (ADR-0016). A base layer's position, scale and rotation previously rendered
+  only on the CPU export route, and a clip smaller than the canvas was letterboxed by the preview;
+  framing is now a `FitMode` effect ([#1766](https://github.com/itsakeyfut/avio/issues/1766))
+- `unsafe` is confined to `*_inner` modules in `ff-filter`, `ff-stream` and `ff-analysis` ([#1597](https://github.com/itsakeyfut/avio/issues/1597))
+
+### Fixed
+
+- Alpha is carried through the compositor's layer stack, so a keyed or masked layer composites
+  against what is behind it ([#1750](https://github.com/itsakeyfut/avio/issues/1750))
+- The preview's cross-fade matches `FFmpeg`'s `xfade`, so it no longer shows a different blend from
+  the one the export writes ([#1732](https://github.com/itsakeyfut/avio/issues/1732))
+- The preview transition arms for the placements the engine actually produces ([#1737](https://github.com/itsakeyfut/avio/issues/1737))
+- The filter path refuses `In` / `Out` / `Atop` / `Xor` at `build()` rather than computing
+  per-channel arithmetic under the operator's name, and the engine refuses such a timeline up front
+  when no GPU compositor is attached (ADR-0014) ([#1753](https://github.com/itsakeyfut/avio/issues/1753))
+- A motion-blur trail no longer bleeds across a clip cut or a seek in the preview, and an animated
+  shutter animates on both routes ([#1705](https://github.com/itsakeyfut/avio/issues/1705))
+- A generated held frame is rebuilt when the canvas is resized during playback ([#1619](https://github.com/itsakeyfut/avio/issues/1619))
+- The GPU transition seam test no longer depends on real-time pacing on a loaded runner ([#1757](https://github.com/itsakeyfut/avio/issues/1757))
+
+### Performance
+
+- `TexturePool` reuses GPU textures: zero allocations per frame ([#1585](https://github.com/itsakeyfut/avio/issues/1585))
+- The GPU effect graph is cached across frames, with an owned-frame entry point that stops the
+  compositor deep-copying every frame ([#1634](https://github.com/itsakeyfut/avio/issues/1634))
+- Mask effects evaluate in the shader, removing the per-frame full-frame allocation and the
+  per-frame mask upload ([#1710](https://github.com/itsakeyfut/avio/issues/1710))
+- The `xfade` `frand` field is cached instead of being recomputed per frame ([#1736](https://github.com/itsakeyfut/avio/issues/1736))
+
+### Docs
+
+- The zero-copy GPU-to-encoder handoff is deferred, with the measurement behind the decision
+  (ADR-0013) ([#1662](https://github.com/itsakeyfut/avio/issues/1662))
+- Per-crate design docs published under `docs/specs`
+
+### Internal
+
+- GPU/CPU parity across the full supported effect set, with a per-node tolerance table ([#1663](https://github.com/itsakeyfut/avio/issues/1663)),
+  and preview-vs-export structural parity ([#1664](https://github.com/itsakeyfut/avio/issues/1664))
+- The `avio-examples` harness drives the typed effect model and preview-vs-export through the public
+  facade ([#1785](https://github.com/itsakeyfut/avio/issues/1785)), and the public surface is pinned from outside the crate ([#1794](https://github.com/itsakeyfut/avio/issues/1794))
+
+---
+
 ## [0.17.0] - 2026-08-28
 
 This release matures the `avio` editing model into a host-adoptable engine and hardens the `ff-*` primitive family. `avio` gains stable clip and track identity, a full command-based `Editor` with undo/redo, typed clip sources, markers, groups, and serde persistence, and it is now unconditionally the editing engine rather than a facade over the primitives (ADR-0004). Underneath, `ff-sys` grows a curated RAII safe layer of owned types and a typed error (ADR-0003), and the entire family migrates onto it, so no `ff-*` crate exposes raw FFmpeg pointers across its boundaries.
